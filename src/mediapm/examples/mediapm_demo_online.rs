@@ -33,7 +33,7 @@
 //!
 //! # Expected post-sync hierarchy
 //!
-//! Paths below are relative to `<artifact_root>/media/` (`runtime.hierarchy_root_dir = "media"`).
+//! Paths below are relative to `<output_root>/media/` (`runtime.hierarchy_root_dir = "media"`).
 //! Canonical machine checks: `tests/fixtures/demo_hierarchy_golden.json` (`online`) and
 //! [`mediapm::demo_hierarchy_spec`]. Offline demo tree: see `mediapm_demo`.
 //!
@@ -384,7 +384,7 @@ struct DemoOnlineTimeoutError {
 #[must_use]
 fn format_graceful_timeout_notice(timeout_seconds: u64) -> String {
     format!(
-        "Online demo timed out after {timeout_seconds} seconds. This usually indicates a code, workflow, or environment issue; check logs/artifacts before retrying."
+        "Online demo timed out after {timeout_seconds} seconds. This usually indicates a code, workflow, or environment issue; check logs/outputs before retrying."
     )
 }
 
@@ -511,16 +511,16 @@ fn example_cache_root() -> PathBuf {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DemoRunPaths {
-    artifact_root: PathBuf,
+    output_root: PathBuf,
     workspace_root: PathBuf,
     manifest_path: PathBuf,
 }
 
-fn artifact_root() -> PathBuf {
-    if let Some(root) = std::env::var_os(example_isolation::ARTIFACT_ROOT_ENV) {
+fn output_root() -> PathBuf {
+    if let Some(root) = std::env::var_os(example_isolation::OUTPUT_ROOT_ENV) {
         return PathBuf::from(root);
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples").join("artifacts").join("demo-online")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples").join("outputs").join("demo-online")
 }
 
 fn unix_timestamp_seconds() -> u64 {
@@ -734,13 +734,13 @@ fn display_path(path: &Path) -> String {
     path.display().to_string().replace('\\', "/")
 }
 
-fn reset_artifact_root() -> ExampleResult<(PathBuf, Option<mediapm_utils::temp::ManagedTempDir>)> {
-    let root = artifact_root();
+fn reset_output_root() -> ExampleResult<(PathBuf, Option<mediapm_utils::temp::ManagedTempDir>)> {
+    let root = output_root();
     if root.exists()
         && let Err(error) = example_isolation::remove_dir_all_with_retry(&root)
     {
         if is_share_violation_remove_error(&error) {
-            let (fallback_dir, fallback_path) = example_isolation::isolated_artifact_dir()?;
+            let (fallback_dir, fallback_path) = example_isolation::isolated_output_dir()?;
             eprintln!(
                 "[demo_online] canonical artifact root '{}' is locked; using fallback root '{}'",
                 root.display(),
@@ -3661,7 +3661,7 @@ impl<'a> OfflineRun<'a> {
     /// Returns an error when the chain directory cannot be created, or when the
     /// caller's `PATH` cannot carry the chain's directory.
     async fn mount(env_lock: &'a parking_lot::MutexGuard<'static, ()>) -> ExampleResult<Self> {
-        let chain_dir = mediapm_utils::temp::artifact_dir()
+        let chain_dir = mediapm_utils::temp::output_dir()
             .map_err(|error| format!("cannot create the stub chain directory: {error}"))?;
         let fixture =
             mediapm_test_support::media_fixture_path(Path::new(env!("CARGO_MANIFEST_DIR")));
@@ -3810,7 +3810,7 @@ async fn run_online_demo(
         .with_writer(std::io::stderr)
         .try_init();
 
-    let (root, _fallback_artifact) = reset_artifact_root()?;
+    let (root, _fallback_output) = reset_output_root()?;
     let workspace_root = root.clone();
     let runtime_storage = example_runtime_storage();
 
@@ -3969,7 +3969,7 @@ async fn run_online_demo(
         .into());
     }
 
-    Ok(DemoRunPaths { artifact_root: root, workspace_root, manifest_path })
+    Ok(DemoRunPaths { output_root: root, workspace_root, manifest_path })
 }
 
 fn logical_name_from_managed_tool_id(tool_id: &str) -> Option<&str> {
@@ -4169,7 +4169,7 @@ async fn main() -> ExampleResult<()> {
         },
     };
 
-    println!("generated artifacts root: {}", paths.artifact_root.display());
+    println!("generated outputs root: {}", paths.output_root.display());
     println!("generated workspace root: {}", paths.workspace_root.display());
     println!("manifest: {}", paths.manifest_path.display());
     println!("sync executed: true");
@@ -4364,7 +4364,7 @@ mod tests {
     #[test]
     fn mediapm_ncl_records_inherited_env_vars_for_all_platforms() -> super::ExampleResult<()> {
         let isolated = IsolatedExampleRoots::with_cache();
-        let workspace_root = isolated.artifact_root_path();
+        let workspace_root = isolated.output_root_path();
         super::configure_document_for_online_demo(workspace_root, None)?;
 
         let document = super::load_mediapm_document(&workspace_root.join("mediapm.ncl"))?;
@@ -4425,7 +4425,7 @@ mod tests {
     #[test]
     fn the_title_chain_prefers_the_tagged_variant() -> super::ExampleResult<()> {
         let isolated = IsolatedExampleRoots::with_cache();
-        let workspace_root = isolated.artifact_root_path();
+        let workspace_root = isolated.output_root_path();
         super::configure_document_for_online_demo(workspace_root, None)?;
 
         let document = super::load_mediapm_document(&workspace_root.join("mediapm.ncl"))?;
@@ -4622,7 +4622,7 @@ mod tests {
     #[test]
     fn the_online_demo_saves_what_the_hierarchy_materializes() {
         let _isolated = IsolatedExampleRoots::with_cache();
-        let workspace_root = super::artifact_root();
+        let workspace_root = super::output_root();
         let tool_ids = super::configure_document_for_online_demo(&workspace_root, None)
             .expect("configure the online demo document");
         assert_eq!(tool_ids.len(), 6, "the online demo configures six tool requirements");
@@ -4712,9 +4712,8 @@ mod tests {
     #[test]
     fn resolve_tool_binaries_skips_a_payload_free_builtin() {
         let _isolated = IsolatedExampleRoots::with_cache();
-        let configured_ids =
-            super::configure_document_for_online_demo(&super::artifact_root(), None)
-                .expect("configure the online demo document");
+        let configured_ids = super::configure_document_for_online_demo(&super::output_root(), None)
+            .expect("configure the online demo document");
         assert_eq!(
             configured_ids.iter().map(String::as_str).collect::<Vec<_>>(),
             DEMO_CONFIGURED_TOOL_IDS.to_vec(),
@@ -4774,18 +4773,17 @@ mod tests {
         /// Installs the two roots, then runs `configure` for the run's knobs while
         /// the process env lock is still held.
         fn install(configure: impl FnOnce(&parking_lot::MutexGuard<'static, ()>)) -> Self {
-            let artifact = mediapm_utils::temp::artifact_dir().expect("create temp artifact root");
+            let artifact = mediapm_utils::temp::output_dir().expect("create temp artifact root");
             let cache = mediapm_utils::temp::cache_dir().expect("create temp cache root");
             let env_lock = example_isolation::lock_process_env();
-            let previous =
-                [example_isolation::ARTIFACT_ROOT_ENV, example_isolation::CACHE_ROOT_ENV]
-                    .into_iter()
-                    .chain(MAIN_RUN_KNOBS)
-                    .map(|name| (name, std::env::var_os(name)))
-                    .collect();
+            let previous = [example_isolation::OUTPUT_ROOT_ENV, example_isolation::CACHE_ROOT_ENV]
+                .into_iter()
+                .chain(MAIN_RUN_KNOBS)
+                .map(|name| (name, std::env::var_os(name)))
+                .collect();
             // SAFETY: the process env lock is held for every write in this scope.
             unsafe {
-                std::env::set_var(example_isolation::ARTIFACT_ROOT_ENV, artifact.path());
+                std::env::set_var(example_isolation::OUTPUT_ROOT_ENV, artifact.path());
                 std::env::set_var(example_isolation::CACHE_ROOT_ENV, cache.path());
             }
             configure(&env_lock);
@@ -4794,7 +4792,7 @@ mod tests {
         }
 
         /// The artifact root the run writes into.
-        fn artifact_root(&self) -> &Path {
+        fn output_root(&self) -> &Path {
             self.artifact.path()
         }
     }
@@ -4874,7 +4872,7 @@ mod tests {
         // The default path ran a full sync, which is what the run prints as
         // `sync executed: true`. The manifest records the idempotency re-run's
         // tally, which is written by that path alone.
-        let manifest_path = roots.artifact_root().join("manifest.json");
+        let manifest_path = roots.output_root().join("manifest.json");
         let manifest: serde_json::Value = serde_json::from_slice(
             &std::fs::read(&manifest_path).expect("the offline run should write a manifest.json"),
         )
@@ -5149,23 +5147,23 @@ mod tests {
 
     /// Ensures artifact root remains stable for docs/scripts that reference it.
     #[test]
-    fn artifact_root_is_stable() {
+    fn output_root_is_stable() {
         let _env_lock = example_isolation::lock_process_env();
-        let previous_artifact_root = std::env::var_os(example_isolation::ARTIFACT_ROOT_ENV);
+        let previous_output_root = std::env::var_os(example_isolation::OUTPUT_ROOT_ENV);
         // SAFETY: test clears one process env key in a controlled scope and
         // restores the previous value before exit.
         unsafe {
-            std::env::remove_var(example_isolation::ARTIFACT_ROOT_ENV);
+            std::env::remove_var(example_isolation::OUTPUT_ROOT_ENV);
         }
 
-        let text = super::display_path(&super::artifact_root());
-        assert!(text.ends_with("src/mediapm/examples/artifacts/demo-online"));
+        let text = super::display_path(&super::output_root());
+        assert!(text.ends_with("src/mediapm/examples/outputs/demo-online"));
 
         // SAFETY: restore previous env var value for test isolation.
         unsafe {
-            match &previous_artifact_root {
-                Some(value) => std::env::set_var(example_isolation::ARTIFACT_ROOT_ENV, value),
-                None => std::env::remove_var(example_isolation::ARTIFACT_ROOT_ENV),
+            match &previous_output_root {
+                Some(value) => std::env::set_var(example_isolation::OUTPUT_ROOT_ENV, value),
+                None => std::env::remove_var(example_isolation::OUTPUT_ROOT_ENV),
             }
         }
     }
@@ -5174,7 +5172,7 @@ mod tests {
     /// prior tool downloads on repeated demo runs.
     #[test]
     fn remove_dir_all_with_retry_handles_readonly_tree() {
-        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
+        let temp = mediapm_utils::temp::output_dir().expect("tempdir");
         let tree_root = temp.path().join("readonly-tree");
         std::fs::create_dir_all(&tree_root).expect("create tree root");
 
@@ -5207,7 +5205,7 @@ mod tests {
         let message = super::DemoOnlineTimeoutError { timeout_seconds: 120 }.to_string();
         assert_eq!(
             message,
-            "Online demo timed out after 120 seconds. This usually indicates a code, workflow, or environment issue; check logs/artifacts before retrying."
+            "Online demo timed out after 120 seconds. This usually indicates a code, workflow, or environment issue; check logs/outputs before retrying."
         );
     }
 
@@ -5464,7 +5462,7 @@ mod tests {
     /// thumbnail/link file projections while `sidecars/` also exists.
     #[test]
     fn media_root_sidecars_accept_root_subtitle_file_named_from_output_base() {
-        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
+        let temp = mediapm_utils::temp::output_dir().expect("tempdir");
         let root = temp.path();
         let output_base = "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]";
 
@@ -5504,7 +5502,7 @@ mod tests {
     /// directory in addition to root projections.
     #[test]
     fn media_root_sidecars_require_dedicated_sidecars_folder() {
-        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
+        let temp = mediapm_utils::temp::output_dir().expect("tempdir");
         let root = temp.path();
         // The stem carries the artist prefix the helper requires; the subject here is the missing
         // `sidecars/` folder, not the title text.
@@ -5526,7 +5524,7 @@ mod tests {
     /// media-id suffix; link projections must match exact mediapm rename basenames.
     #[test]
     fn media_root_sidecars_accept_thumbnail_files_aligned_by_media_id_suffix() {
-        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
+        let temp = mediapm_utils::temp::output_dir().expect("tempdir");
         let root = temp.path();
         let output_base = "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]";
 
@@ -5579,7 +5577,7 @@ mod tests {
     /// test measures is the shape the demo measures.
     #[tokio::test]
     async fn store_size_sums_every_materialized_blob() -> super::ExampleResult<()> {
-        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
+        let temp = mediapm_utils::temp::output_dir().expect("tempdir");
         let cas_root = temp.path().join("store");
         let cas = FileSystemCas::open(&cas_root).await?;
 
@@ -5629,7 +5627,7 @@ mod tests {
     /// title has to pass, or the check would only prove that *some* file exists.
     #[test]
     fn sidecar_links_accept_the_recorded_provider_title() {
-        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let temp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let links = seed_sidecar_links(
             temp.path(),
             &[
@@ -5654,7 +5652,7 @@ mod tests {
     /// string fails a clean sync here, and this test is what detects that regression.
     #[test]
     fn sidecar_links_accept_a_provider_title_upstream_extended() {
-        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let temp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let links = seed_sidecar_links(
             temp.path(),
             &[
@@ -5680,7 +5678,7 @@ mod tests {
     /// unasserted.
     #[test]
     fn sidecar_links_reject_a_mediapm_root_projection_basename() {
-        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let temp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let links = seed_sidecar_links(
             temp.path(),
             &[
@@ -5702,7 +5700,7 @@ mod tests {
     /// Ensures a missing link extension is reported rather than passed over.
     #[test]
     fn sidecar_links_reject_a_missing_extension() {
-        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let temp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let links = seed_sidecar_links(
             temp.path(),
             &[
@@ -5726,7 +5724,7 @@ mod tests {
     /// provider title, and accepting it would leave the title half effectively unasserted.
     #[test]
     fn sidecar_links_reject_an_unrelated_title() {
-        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let temp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let links = seed_sidecar_links(
             temp.path(),
             &[
@@ -5748,7 +5746,7 @@ mod tests {
     /// Ensures two links for one extension are reported.
     #[test]
     fn sidecar_links_reject_a_duplicate_extension() {
-        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let temp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let links = seed_sidecar_links(
             temp.path(),
             &[
@@ -5821,7 +5819,7 @@ mod tests {
     /// file as long as the three links were present.
     #[test]
     fn sidecar_links_reject_a_file_outside_the_link_family() {
-        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let temp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let links = seed_sidecar_links(
             temp.path(),
             &[
@@ -5848,7 +5846,7 @@ mod tests {
     /// result.
     #[test]
     fn resolve_interpolated_demo_root_reports_canonical_dir_missing_info_json() {
-        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let temp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let hierarchy_root = temp.path();
         let parent = hierarchy_root.join(super::DEMO_LIBRARY_ROOT);
         let canonical = parent.join(super::expected_demo_media_root_name());

@@ -2,7 +2,7 @@
 //!
 //! Uses `MediaPmService::add_local_source` and `add_media_source` directly
 //! instead of spawning the CLI. Writes generated documents under
-//! `src/mediapm/examples/artifacts/cli-add-sources/`.
+//! `src/mediapm/examples/outputs/cli-add-sources/`.
 
 use std::error::Error;
 use std::fs;
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use mediapm::{AddInsertPosition, MediaPmService, MediaSourceSpec, example_isolation};
 use url::Url;
 
-const EXAMPLE_ARTIFACT_FOLDER: &str = "cli-add-sources";
+const EXAMPLE_OUTPUT_FOLDER: &str = "cli-add-sources";
 const DUMMY_LOCAL_SOURCE_FILE: &str = "dummy-local-video.mp4";
 const DUMMY_YOUTUBE_URL: &str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 
@@ -29,16 +29,14 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn artifact_root() -> PathBuf {
-    match std::env::var_os(example_isolation::ARTIFACT_ROOT_ENV) {
+fn output_root() -> PathBuf {
+    match std::env::var_os(example_isolation::OUTPUT_ROOT_ENV) {
         Some(root) => PathBuf::from(root),
-        None => {
-            workspace_root().join("src/mediapm/examples/artifacts").join(EXAMPLE_ARTIFACT_FOLDER)
-        }
+        None => workspace_root().join("src/mediapm/examples/outputs").join(EXAMPLE_OUTPUT_FOLDER),
     }
 }
 
-fn reset_artifact_root(root: &Path) -> ExampleResult<()> {
+fn reset_output_root(root: &Path) -> ExampleResult<()> {
     if root.exists() {
         example_isolation::remove_dir_all_with_retry(root)?;
     }
@@ -59,8 +57,8 @@ fn write_dummy_local_source(root: &Path) -> ExampleResult<PathBuf> {
 /// `Conductor::shutdown` awaits the background pass that would otherwise write
 /// into the caller's removed directory.
 async fn run_add_sources_example() -> ExampleResult<()> {
-    let root = artifact_root();
-    reset_artifact_root(&root)?;
+    let root = output_root();
+    reset_output_root(&root)?;
 
     let mut service = MediaPmService::new_fs_at(&root).await?;
 
@@ -85,7 +83,7 @@ async fn run_add_sources_example() -> ExampleResult<()> {
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
     run_add_sources_example().await?;
-    let root = artifact_root();
+    let root = output_root();
 
     println!("mediapm config: {}", root.join("mediapm.ncl").display());
 
@@ -103,9 +101,9 @@ mod tests {
 
     #[tokio::test]
     async fn cli_add_sources_writes_expected_config_documents() {
-        let _isolated = IsolatedExampleRoots::artifact_only();
+        let _isolated = IsolatedExampleRoots::output_only();
         run_add_sources_example().await.expect("run add-sources example");
-        let root = super::artifact_root();
+        let root = super::output_root();
         let mediapm_ncl = root.join("mediapm.ncl");
 
         assert!(
@@ -169,7 +167,7 @@ mod tests {
     /// Ensures the documented CLI entry point runs end to end via `main()`.
     #[test]
     fn main_is_exercised() {
-        let _isolated = IsolatedExampleRoots::artifact_only();
+        let _isolated = IsolatedExampleRoots::output_only();
         super::main().expect("example main should run to completion");
     }
 }

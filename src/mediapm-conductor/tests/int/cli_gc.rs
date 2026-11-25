@@ -107,7 +107,7 @@ fn read_state(path: &Path) -> ConductorState {
 /// because the line alone would not say the library changed.
 #[tokio::test]
 async fn the_spawned_gc_pass_starts_the_clock_then_reclaims_the_aged_record() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
     write_conductor_config(
         dir.path(),
         doc_with_workflows(
@@ -190,7 +190,7 @@ async fn the_spawned_gc_pass_starts_the_clock_then_reclaims_the_aged_record() {
 /// started (nothing was judged), and no blob touched.
 #[tokio::test]
 async fn the_spawned_gc_pass_abstains_on_a_workflow_that_never_ran() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
     write_conductor_config(
         dir.path(),
         doc_with_workflows(

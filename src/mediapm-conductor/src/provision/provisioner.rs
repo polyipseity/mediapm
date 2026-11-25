@@ -428,7 +428,7 @@ mod tests {
     /// Builds a cache over a fresh tools root, with a payload in CAS.
     async fn cache_with_payload()
     -> (mediapm_utils::temp::ManagedTempDir, ProvisionCache<mediapm_cas::InMemoryCas>) {
-        let tools_dir = mediapm_utils::temp::artifact_dir().expect("tools dir");
+        let tools_dir = mediapm_utils::temp::output_dir().expect("tools dir");
         let cas = Arc::new(mediapm_cas::InMemoryCas::new());
         cas.put(bytes::Bytes::from_static(b"tool binary content")).await.expect("cas put");
         let cache = ProvisionCache::new(tools_dir.path().to_path_buf(), cas, None);
@@ -869,8 +869,8 @@ mod tests {
 
     #[test]
     fn link_to_sandbox_filtered_skips_foreign_platform_dirs() {
-        let payload = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-        let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let payload = mediapm_utils::temp::output_dir().expect("artifact dir");
+        let sandbox = mediapm_utils::temp::output_dir().expect("artifact dir");
 
         for os in &["linux", "macos", "windows"] {
             let dir = payload.path().join(os);
@@ -887,8 +887,8 @@ mod tests {
 
     #[test]
     fn link_to_sandbox_filtered_no_foreign_dirs_copies_all() {
-        let payload = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-        let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let payload = mediapm_utils::temp::output_dir().expect("artifact dir");
+        let sandbox = mediapm_utils::temp::output_dir().expect("artifact dir");
 
         for os in &["linux", "windows"] {
             let dir = payload.path().join(os);
@@ -904,8 +904,8 @@ mod tests {
 
     #[test]
     fn link_to_sandbox_filtered_empty_payload_creates_empty_sandbox() {
-        let payload = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-        let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let payload = mediapm_utils::temp::output_dir().expect("artifact dir");
+        let sandbox = mediapm_utils::temp::output_dir().expect("artifact dir");
 
         link_to_sandbox_filtered(payload.path(), sandbox.path(), &["linux"]).unwrap();
 
@@ -915,7 +915,7 @@ mod tests {
 
     #[test]
     fn link_to_sandbox_filtered_nonexistent_payload_errors() {
-        let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let sandbox = mediapm_utils::temp::output_dir().expect("artifact dir");
         let result = link_to_sandbox_filtered(
             &PathBuf::from("/nonexistent/payload"),
             sandbox.path(),
@@ -934,7 +934,7 @@ mod tests {
 
         use crate::provision::ProvisionCache;
 
-        let tools_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tools_dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let cas = Arc::new(InMemoryCas::new());
 
         // Put some content in the CAS.

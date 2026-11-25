@@ -30,7 +30,7 @@ use std::process::Command;
 
 use clap::ValueEnum;
 use clap_complete::Shell;
-use mediapm_utils::temp::artifact_dir;
+use mediapm_utils::temp::output_dir;
 
 /// One CLI the workspace ships, paired with the file-name stem its build script
 /// passes and the command definition that build script renders.
@@ -200,7 +200,7 @@ fn read_script(dir: &Path, file_name: &str) -> String {
 /// reports an error for a shell it was never asked about.
 #[test]
 fn generated_scripts_cover_every_shell_the_generator_supports() {
-    let dir = artifact_dir().expect("artifact dir");
+    let dir = output_dir().expect("artifact dir");
     generate_all(dir.path());
     for cli in SHIPPED_CLIS {
         assert_eq!(
@@ -222,7 +222,7 @@ fn generated_scripts_cover_every_shell_the_generator_supports() {
 /// here, so the list cannot outlive the divergence it records.
 #[test]
 fn declared_completion_shells_match_the_generated_ones() {
-    let dir = artifact_dir().expect("artifact dir");
+    let dir = output_dir().expect("artifact dir");
     generate_all(dir.path());
     for cli in SHIPPED_CLIS {
         let is_free_form = FREE_FORM_SHELL_ARGUMENT.contains(&cli.bin_name);
@@ -261,7 +261,7 @@ fn declared_completion_shells_match_the_generated_ones() {
 /// `mediapm-conductor.bash` and the function inside is `_conductor`.
 #[test]
 fn generated_scripts_register_under_the_command_name() {
-    let dir = artifact_dir().expect("artifact dir");
+    let dir = output_dir().expect("artifact dir");
     generate_all(dir.path());
     for cli in SHIPPED_CLIS {
         let command = (cli.command)();
@@ -292,7 +292,7 @@ fn generated_scripts_register_under_the_command_name() {
 /// disagreement this asserts against, byte for byte.
 #[test]
 fn the_binary_renders_what_the_build_wrote() {
-    let dir = artifact_dir().expect("artifact dir");
+    let dir = output_dir().expect("artifact dir");
     generate_all(dir.path());
     let cli = &SHIPPED_CLIS[MEDIAPM_INDEX];
     for shell in declared_shells(cli).expect("mediapm declares its completion shells") {

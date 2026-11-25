@@ -254,7 +254,7 @@ async fn captured_content(conductor: &Conductor<mediapm_cas::InMemoryCas>) -> By
 
 /// Runs the synthesized tagging step and returns the document it captured.
 async fn run_tagging_step() -> String {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let workspace = mediapm_utils::temp::output_dir().expect("artifact dir");
     let musicbrainz = wiremock::MockServer::start().await;
     mount_musicbrainz(&musicbrainz).await;
 

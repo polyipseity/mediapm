@@ -13,8 +13,8 @@ pub(crate) async fn put_static(cas: &impl CasApi, data: &'static [u8]) -> mediap
 }
 
 /// Creates a fresh artifact tempdir (RAII guard dropped at end of test).
-pub(crate) fn artifact_dir() -> mediapm_utils::temp::ManagedTempDir {
-    mediapm_utils::temp::artifact_dir().unwrap()
+pub(crate) fn output_dir() -> mediapm_utils::temp::ManagedTempDir {
+    mediapm_utils::temp::output_dir().unwrap()
 }
 
 /// A file-system CAS together with the temp directory that owns it.
@@ -26,7 +26,7 @@ pub(crate) fn artifact_dir() -> mediapm_utils::temp::ManagedTempDir {
 /// `(TempDir, FileSystemCas)` tuple instead would make that ordering something
 /// every call site has to remember, and getting it backwards resurrects the
 /// tree from a write the aborted task had already dispatched, leaking a
-/// `$TMPDIR/mediapm-artifact-*` directory holding one orphaned object.
+/// `$TMPDIR/mediapm-output-*` directory holding one orphaned object.
 ///
 /// Call sites use the fixture as the store: it derefs to
 /// [`FileSystemCas`](mediapm_cas::FileSystemCas), so `cas.put(..)` and
@@ -53,7 +53,7 @@ impl Deref for FileCasFixture {
 /// Returns the fixture so the directory outlives every operation performed
 /// during the test, and is removed only after the store is quiesced.
 pub(crate) async fn open_file_cas() -> FileCasFixture {
-    let dir = artifact_dir();
+    let dir = output_dir();
     let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.unwrap();
     FileCasFixture { cas, _dir: dir }
 }
@@ -107,7 +107,7 @@ pub(crate) async fn open_file_cas_with_quiesced_consumer() -> FileCasFixture {
 /// Creates a fresh artifact tempdir and opens a `FileSystemCas` whose
 /// background WAL consumer runs every `bg_interval`.
 pub(crate) async fn open_file_cas_with_background(bg_interval: Duration) -> FileCasFixture {
-    let dir = artifact_dir();
+    let dir = output_dir();
     let cas = mediapm_cas::FileSystemCas::open_with_strategies_and_interval(
         dir.path(),
         vec![],
@@ -125,7 +125,7 @@ pub(crate) async fn open_file_cas_with_background(bg_interval: Duration) -> File
 /// back silently and a test of corruption behaviour would assert nothing. This
 /// opens the store the way a configuration with `verify_on_read` does.
 pub(crate) async fn open_file_cas_verifying() -> FileCasFixture {
-    let dir = artifact_dir();
+    let dir = output_dir();
     let cas = mediapm_cas::FileSystemCas::open_with_strategies(
         dir.path(),
         vec![mediapm_cas::VerifyTriggerStrategy::Always],
@@ -141,7 +141,7 @@ pub(crate) async fn open_file_cas_verifying() -> FileCasFixture {
 /// This is the regression surface for form-aware mtime checks: the evaluator
 /// must compare against the physical form being read, not an unrelated one.
 pub(crate) async fn open_file_cas_modified() -> FileCasFixture {
-    let dir = artifact_dir();
+    let dir = output_dir();
     let cas = mediapm_cas::FileSystemCas::open_with_strategies(
         dir.path(),
         vec![mediapm_cas::VerifyTriggerStrategy::Modified],

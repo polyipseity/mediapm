@@ -11,7 +11,7 @@ use super::*;
 
 #[tokio::test]
 async fn reconcile_desired_tools_skipped_tool_preserves_env_entries() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     // Pre-populate generated doc with a tool that has content_map entries.
@@ -106,7 +106,7 @@ async fn reconcile_desired_tools_skipped_tool_preserves_env_entries() {
 /// `ProvisionCache` deployment layout.
 #[tokio::test]
 async fn reconcile_keys_tool_runtimes_by_conductor_tool_id() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     // Pre-populate generated doc with an active `{name}@{hash}` key.
@@ -206,7 +206,7 @@ async fn reconcile_keys_tool_runtimes_by_conductor_tool_id() {
 /// without network access, so the skip path fires hermetically.
 #[tokio::test]
 async fn regression_skip_path_registers_managed_tool() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
 
@@ -313,7 +313,7 @@ async fn reconcile_media_tagger(
     MediaPmPaths,
     ToolSyncReport,
 ) {
-    let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
     let paths = MediaPmPaths::from_root(tmp.path());
     let spec_hash = content_map_hash(&spec_content_map);
@@ -600,7 +600,7 @@ impl SkipPathFixture {
     /// and a pinned version spec so the first skip check can evaluate the
     /// record.
     fn new(tool_id: &str) -> Self {
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let paths = MediaPmPaths::from_root(tmp.path());
         let spec_content_map = BTreeMap::new();

@@ -1011,7 +1011,7 @@ pub async fn process_tool_sources(
     cas: &impl mediapm_cas::CasApi,
     progress_cb: Option<ProviderProgressCallback>,
 ) -> Result<ProvisionResult, crate::error::ConductorError> {
-    let temp_root = mediapm_utils::temp::artifact_dir().map_err(|source| {
+    let temp_root = mediapm_utils::temp::output_dir().map_err(|source| {
         crate::error::ConductorError::io(
             "creating temp directory for tool extraction",
             std::path::PathBuf::new(),
@@ -2097,7 +2097,7 @@ mod tests {
 
     #[test]
     fn find_file_at_root() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let file_path = dir.path().join("sd");
         std::fs::write(&file_path, "").unwrap();
         assert_eq!(
@@ -2108,7 +2108,7 @@ mod tests {
 
     #[test]
     fn find_file_in_nested_dir() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let sub = dir.path().join("bin");
         std::fs::create_dir(&sub).unwrap();
         std::fs::write(sub.join("sd"), "").unwrap();
@@ -2120,7 +2120,7 @@ mod tests {
 
     #[test]
     fn find_file_absent_returns_none() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         assert!(find_file_relative(dir.path(), dir.path(), "nonexistent").is_none());
     }
 
@@ -2128,21 +2128,21 @@ mod tests {
 
     #[test]
     fn find_os_exec_direct_match() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         std::fs::write(dir.path().join("sd"), "").unwrap();
         assert_eq!(find_os_executable(dir.path(), "sd"), Some("sd".into()));
     }
 
     #[test]
     fn find_os_exec_finds_exe_variant() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         std::fs::write(dir.path().join("sd.exe"), "").unwrap();
         assert_eq!(find_os_executable(dir.path(), "sd"), Some("sd.exe".into()));
     }
 
     #[test]
     fn find_os_exec_not_found_returns_none() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         assert!(find_os_executable(dir.path(), "nonexistent").is_none());
     }
 
@@ -2152,7 +2152,7 @@ mod tests {
     async fn process_zip_archive_linux_label() {
         let zip = synthetic_zip(&[("sd", EXEC_BYTES)]);
         let cas = InMemoryCas::default();
-        let os_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let os_dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let mut budget = MultiItemBudget::new();
         budget.add_item(0);
         budget.add_item(0);
@@ -2183,7 +2183,7 @@ mod tests {
     async fn process_tar_gz_archive_macos_label() {
         let tgz = synthetic_tar_gz(&[("sd", EXEC_BYTES)]);
         let cas = InMemoryCas::default();
-        let os_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let os_dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let mut budget = MultiItemBudget::new();
         budget.add_item(0);
         budget.add_item(0);
@@ -2214,7 +2214,7 @@ mod tests {
     async fn process_tar_xz_archive_windows_label() {
         let txz = synthetic_tar_xz(&[("sd.exe", EXEC_BYTES)]);
         let cas = InMemoryCas::default();
-        let os_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let os_dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let mut budget = MultiItemBudget::new();
         budget.add_item(0);
         budget.add_item(0);
@@ -2244,7 +2244,7 @@ mod tests {
     #[tokio::test]
     async fn process_binary_format_produces_file_entry() {
         let cas = InMemoryCas::default();
-        let os_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let os_dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let payload = b"#!/bin/sh\necho payload\n";
         let mut budget = MultiItemBudget::new();
         budget.add_item(0);
@@ -2277,7 +2277,7 @@ mod tests {
     #[tokio::test]
     async fn process_binary_with_url_derived_filename_cas_roundtrip() {
         let cas = InMemoryCas::default();
-        let os_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let os_dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let binary_content = b"mock-binary-content-for-cas-test";
         let tool_id = "my-tool";
         let filename = "my-tool-v1.2.3"; // URL-derived, differs from tool_id
@@ -2649,7 +2649,7 @@ mod tests {
     #[tokio::test]
     async fn process_single_source_binary_budget_advances_correct_item() {
         let cas = InMemoryCas::default();
-        let os_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let os_dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let content = b"binary-content-for-cost-test";
         let mut budget = MultiItemBudget::new();
         budget.add_item(0);
@@ -2684,7 +2684,7 @@ mod tests {
         let content = b"some-content-that-will-be-in-the-archive";
         let zip = synthetic_zip(&[("file.bin", content)]);
         let cas = InMemoryCas::default();
-        let os_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let os_dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let mut budget = MultiItemBudget::new();
         budget.add_item(0);
         budget.add_item(0);
@@ -2737,7 +2737,7 @@ mod tests {
         ];
         let tgz = synthetic_tar_gz(&entries);
         let cas = InMemoryCas::default();
-        let os_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let os_dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let mut budget = MultiItemBudget::new();
         budget.add_item(tgz.len() as u64);
         budget.add_item(0); // compress estimate — will be refined
@@ -2951,21 +2951,21 @@ mod tests {
     #[test]
     fn extract_zip_rejects_tar_xz_bytes() {
         let txz = synthetic_tar_xz(&[("x", &[0u8; 4])]);
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         assert!(extract_archive(&txz, Some(ARCHIVE_ZIP), dir.path(), None).is_err());
     }
 
     #[test]
     fn extract_tar_gz_rejects_zip_bytes() {
         let zip = synthetic_zip(&[("x", &[0u8; 4])]);
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         assert!(extract_archive(&zip, Some(ARCHIVE_TAR_GZ), dir.path(), None).is_err());
     }
 
     #[test]
     fn extract_tar_xz_rejects_zip_bytes() {
         let zip = synthetic_zip(&[("x", &[0u8; 4])]);
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         assert!(extract_archive(&zip, Some(ARCHIVE_TAR_XZ), dir.path(), None).is_err());
     }
 
@@ -2973,7 +2973,7 @@ mod tests {
 
     #[test]
     fn pack_directory_creates_zip_with_all_files() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         std::fs::write(dir.path().join("a.txt"), b"aaa").unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         std::fs::write(dir.path().join("sub").join("b.txt"), b"bbb").unwrap();
@@ -3016,7 +3016,7 @@ mod tests {
         let entries: [(&str, &[u8]); 3] =
             [("small.bin", &[0u8; 50]), ("medium.bin", &[1u8; 200]), ("large.bin", &[2u8; 800])];
         let zip = synthetic_zip(&entries);
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let (cb, count) = counting_local_cb();
         extract_zip(&zip, dir.path(), Some(&cb)).unwrap();
         let call_count = count.load(Ordering::Relaxed);
@@ -3036,7 +3036,7 @@ mod tests {
             ("d.bin", &[3u8; 400]),
         ];
         let tgz = synthetic_tar_gz(&entries);
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let (cb, count) = counting_local_cb();
         extract_tar_gz(&tgz, dir.path(), Some(&cb)).unwrap();
         let call_count = count.load(Ordering::Relaxed);
@@ -3052,7 +3052,7 @@ mod tests {
         let entries: [(&str, &[u8]); 3] =
             [("x.bin", &[0u8; 64]), ("y.bin", &[1u8; 128]), ("z.bin", &[2u8; 256])];
         let txz = synthetic_tar_xz(&entries);
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let (cb, count) = counting_local_cb();
         extract_tar_xz(&txz, dir.path(), Some(&cb)).unwrap();
         let call_count = count.load(Ordering::Relaxed);
@@ -3077,7 +3077,7 @@ mod tests {
         let large = pseudo_random_buffer(200_000);
         let entries = [("large.bin", large.as_slice())];
         let zip = synthetic_zip(&entries);
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let (cb, count) = counting_local_cb();
         extract_zip(&zip, dir.path(), Some(&cb)).unwrap();
         let call_count = count.load(Ordering::Relaxed);
@@ -3092,7 +3092,7 @@ mod tests {
         let large = pseudo_random_buffer(300_000);
         let entries = [("large.bin", large.as_slice())];
         let tgz = synthetic_tar_gz(&entries);
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let (cb, count) = counting_local_cb();
         extract_tar_gz(&tgz, dir.path(), Some(&cb)).unwrap();
         let call_count = count.load(Ordering::Relaxed);
@@ -3140,7 +3140,7 @@ mod tests {
             ("d.bin", &[3u8; 800]),
         ];
         let zip_bytes = synthetic_zip(&entries);
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let (recorder, cb) = PositionRecorder::new();
 
         extract_zip(&zip_bytes, dir.path(), Some(&cb)).expect("extract_zip should succeed");
@@ -3164,7 +3164,7 @@ mod tests {
         let entries: [(&str, &[u8]); 3] =
             [("x.bin", &[0u8; 256]), ("y.bin", &[1u8; 512]), ("z.bin", &[2u8; 128])];
         let tgz = synthetic_tar_gz(&entries);
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let (recorder, cb) = PositionRecorder::new();
 
         extract_tar_gz(&tgz, dir.path(), Some(&cb)).expect("extract_tar_gz should succeed");
@@ -3183,7 +3183,7 @@ mod tests {
     fn extract_tar_xz_progress_position_non_decreasing() {
         let entries: [(&str, &[u8]); 2] = [("a.bin", &[0u8; 200]), ("b.bin", &[1u8; 300])];
         let txz = synthetic_tar_xz(&entries);
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let (recorder, cb) = PositionRecorder::new();
 
         extract_tar_xz(&txz, dir.path(), Some(&cb)).expect("extract_tar_xz should succeed");
@@ -3534,7 +3534,7 @@ mod tests {
         let cb = move |pos: u64| {
             positions_clone.lock().unwrap().push(pos);
         };
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         extract_zip(&zip_buf, dir.path(), Some(&cb)).expect("extract_zip");
 
         let recorded = positions.lock().unwrap();
@@ -3569,7 +3569,7 @@ mod tests {
         let cb = move |pos: u64| {
             positions_clone.lock().unwrap().push(pos);
         };
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         extract_zip(&zip_buf, dir.path(), Some(&cb)).expect("extract_zip");
 
         let recorded = positions.lock().unwrap();
@@ -3609,7 +3609,7 @@ mod tests {
         let cb = move |pos: u64| {
             recorder.lock().unwrap().push(pos);
         };
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         extract_zip(zip_bytes, dir.path(), Some(&cb)).expect("extract_zip");
         positions.lock().unwrap().clone()
     }
@@ -3728,7 +3728,7 @@ mod tests {
         // final ZIP output size (central directory + EOCD overhead is
         // appended after all entries). Verify that the final position equals
         // the total uncompressed content size.
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let content_sizes: [(&str, usize); 3] =
             [("large.bin", 100_000), ("small.bin", 500), ("nested/data.bin", 2000)];
         for (path, size) in &content_sizes {
@@ -3761,7 +3761,7 @@ mod tests {
     #[test]
     fn compress_monotonic_non_decreasing() {
         // Verify position never decreases during packing.
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         std::fs::write(dir.path().join("a.bin"), [0xAAu8; 10_000]).unwrap();
         std::fs::write(dir.path().join("b.bin"), vec![0xBBu8; 20_000]).unwrap();
         std::fs::write(dir.path().join("c.bin"), vec![0xCCu8; 30_000]).unwrap();
@@ -3924,7 +3924,7 @@ mod tests {
             file_name in "[a-z]{1,8}\\.txt",
             depth in 0..3usize,
         ) {
-            let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+            let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
             let root = dir.path();
 
             // Build nested directory structure up to `depth`.

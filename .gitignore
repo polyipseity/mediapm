@@ -129,6 +129,6 @@ target
 # }
 
 # self {
-**/examples/artifacts/
+**/examples/outputs/
 /.bin/
 # }

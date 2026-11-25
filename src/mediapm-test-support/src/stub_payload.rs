@@ -288,7 +288,7 @@ mod tests {
     fn a_zip_payload_extracts_with_its_bytes_intact() {
         let entries = [StubEntry::data("payload.txt", b"stub bytes".as_slice())];
         let bytes = PayloadFormat::Zip.pack(&entries);
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
 
         extract_zip(&bytes, dir.path());
 
@@ -303,7 +303,7 @@ mod tests {
     fn a_tar_gz_payload_extracts_with_its_bytes_intact() {
         let entries = [StubEntry::data("payload.txt", b"stub bytes".as_slice())];
         let bytes = PayloadFormat::TarGz.pack(&entries);
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
 
         extract_tar_gz(&bytes, dir.path());
 
@@ -319,7 +319,7 @@ mod tests {
     fn a_tar_xz_payload_extracts_with_its_bytes_intact() {
         let entries = [StubEntry::data("payload.txt", b"stub bytes".as_slice())];
         let bytes = PayloadFormat::TarXz.pack(&entries);
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
 
         extract_tar_xz(&bytes, dir.path());
 
@@ -341,7 +341,7 @@ mod tests {
             .expect("the stub binary is readable to build a payload from");
         let entries = [StubEntry::executable(&name, body)];
         let bytes = PayloadFormat::Zip.pack(&entries);
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
 
         extract_zip(&bytes, dir.path());
         let stub = dir.path().join(&name);

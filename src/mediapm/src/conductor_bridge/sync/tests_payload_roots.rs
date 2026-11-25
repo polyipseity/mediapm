@@ -59,7 +59,7 @@ fn document_with_tool(
 /// a carrier needs it.
 #[test]
 fn regression_stamp_payload_roots_names_the_provisioned_directory() {
-    let root = mediapm_utils::temp::artifact_dir().expect("workspace root");
+    let root = mediapm_utils::temp::output_dir().expect("workspace root");
     let paths = paths_under(root.path());
     let conductor_tool_id = "scripted@blake3:abc";
     let payload_dir = provisioned_payload_dir(&paths.tools_dir, conductor_tool_id);
@@ -101,7 +101,7 @@ fn regression_stamp_payload_roots_names_the_provisioned_directory() {
 /// when nothing pretended the directory was there.
 #[test]
 fn a_tool_without_a_provisioned_directory_keeps_its_declared_strategy() {
-    let root = mediapm_utils::temp::artifact_dir().expect("workspace root");
+    let root = mediapm_utils::temp::output_dir().expect("workspace root");
     let paths = paths_under(root.path());
     let conductor_tool_id = "scripted@blake3:def";
 
@@ -141,7 +141,7 @@ fn a_tool_without_a_provisioned_directory_keeps_its_declared_strategy() {
 /// enter, and no test here observes a retain pass racing a live step.
 #[tokio::test]
 async fn regression_a_payload_survives_a_retain_pass_while_the_run_holds_it() {
-    let root = mediapm_utils::temp::artifact_dir().expect("workspace root");
+    let root = mediapm_utils::temp::output_dir().expect("workspace root");
     let paths = paths_under(root.path());
     std::fs::create_dir_all(&paths.tools_dir).expect("tools directory");
     let cas = open_workspace_cas_store(&paths).await.expect("open the workspace CAS");
@@ -183,7 +183,7 @@ async fn regression_a_payload_survives_a_retain_pass_while_the_run_holds_it() {
 /// one would make the executor read a directory for a tool that needs none.
 #[test]
 fn a_tool_without_a_content_map_is_not_stamped() {
-    let root = mediapm_utils::temp::artifact_dir().expect("workspace root");
+    let root = mediapm_utils::temp::output_dir().expect("workspace root");
     let paths = paths_under(root.path());
     let conductor_tool_id = "import@v1";
     let payload_dir = provisioned_payload_dir(&paths.tools_dir, conductor_tool_id);
@@ -281,7 +281,7 @@ fn staged_document(
 /// strategy for the whole library.
 #[test]
 fn regression_a_hard_link_request_survives_a_sync() {
-    let root = mediapm_utils::temp::artifact_dir().expect("workspace root");
+    let root = mediapm_utils::temp::output_dir().expect("workspace root");
     let paths = paths_under(root.path());
     let conductor_tool_id = "scripted@blake3:hard";
     let payload_dir = provisioned_payload_dir(&paths.tools_dir, conductor_tool_id);
@@ -333,7 +333,7 @@ fn regression_a_hard_link_request_survives_a_sync() {
 /// and the choice happen to agree in every other test.
 #[test]
 fn regression_an_override_is_written_once_in_the_emitted_document() {
-    let root = mediapm_utils::temp::artifact_dir().expect("workspace root");
+    let root = mediapm_utils::temp::output_dir().expect("workspace root");
     let paths = paths_under(root.path());
     let overriding = "chosen@blake3:aa";
     let inheriting = "inheriting@blake3:bb";

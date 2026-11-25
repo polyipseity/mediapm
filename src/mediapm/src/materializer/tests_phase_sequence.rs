@@ -29,7 +29,7 @@ use super::*;
 /// `a_zip_folder_variant_opens_a_sub_bar_under_its_parent_row`.
 #[tokio::test]
 async fn a_folder_row_and_a_playlist_row_advance_and_terminate() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
 
@@ -123,7 +123,7 @@ fn add_bar_seeds(ops: &[ProgressOp]) -> Vec<(u64, String)> {
 /// having been opened over an archive that was never read.
 #[tokio::test]
 async fn a_zip_folder_variant_opens_a_sub_bar_under_its_parent_row() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let members = [("cover.jpg", &b"jpeg-bytes"[..]), ("notes/liner.txt", &b"liner"[..])];
@@ -255,7 +255,7 @@ fn row_ops(recorded: &[RecordedProgressOp], bar: BarId) -> Vec<ProgressOp> {
 /// successful finish that did not land.
 #[tokio::test]
 async fn a_written_media_entry_row_advances_and_finishes() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let payload = b"phase-sequence-bytes";
@@ -312,7 +312,7 @@ async fn a_written_media_entry_row_advances_and_finishes() {
 /// where the arm failed.
 #[tokio::test]
 async fn a_failed_playlist_row_carries_the_failure_marker() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
 

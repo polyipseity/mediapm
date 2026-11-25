@@ -13,8 +13,8 @@ use mediapm_conductor::provision::{link_to_sandbox, link_to_sandbox_filtered};
 fn platform_payload(
     oses: &[&str],
 ) -> (mediapm_utils::temp::ManagedTempDir, mediapm_utils::temp::ManagedTempDir) {
-    let payload = mediapm_utils::temp::artifact_dir().expect("artifact dir for payload");
-    let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir for sandbox");
+    let payload = mediapm_utils::temp::output_dir().expect("artifact dir for payload");
+    let sandbox = mediapm_utils::temp::output_dir().expect("artifact dir for sandbox");
     for os in oses {
         let dir = payload.path().join(os);
         std::fs::create_dir_all(&dir).expect("create platform dir");

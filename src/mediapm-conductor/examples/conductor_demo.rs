@@ -57,7 +57,7 @@ fn build_document() -> NickelDocument {
 /// Shuts the conductor down before returning: `Conductor::shutdown` awaits the
 /// background pass that would otherwise write into the caller's removed directory.
 async fn run_demo() -> ExampleResult<()> {
-    let run_dir = mediapm_utils::temp::artifact_dir()
+    let run_dir = mediapm_utils::temp::output_dir()
         .map_err(|source| -> Box<dyn std::error::Error> { Box::new(source) })?;
     let root = run_dir.path();
     let cas_root = root.join("cas-store");

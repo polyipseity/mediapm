@@ -102,9 +102,9 @@ pub fn env_registry() -> &'static [EnvVarEntry] {
             group: EnvVarGroup::TestOnly,
         },
         EnvVarEntry {
-            name: "MEDIAPM_EXAMPLE_ARTIFACT_ROOT",
+            name: "MEDIAPM_EXAMPLE_OUTPUT_ROOT",
             default: "",
-            doc: "test-only: isolated artifact root for examples-as-tests.",
+            doc: "test-only: isolated output root for examples-as-tests.",
             group: EnvVarGroup::TestOnly,
         },
         EnvVarEntry {
@@ -158,7 +158,7 @@ mod tests {
             "ACOUSTID_API_KEY",
             "MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN",
             "MEDIAPM_UPDATE_FIXTURES",
-            "MEDIAPM_EXAMPLE_ARTIFACT_ROOT",
+            "MEDIAPM_EXAMPLE_OUTPUT_ROOT",
             "MEDIAPM_EXAMPLE_CACHE_ROOT",
         ] {
             assert!(

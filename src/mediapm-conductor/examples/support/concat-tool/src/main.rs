@@ -88,7 +88,7 @@ mod tests {
     /// Guarantees that stdin-backed rendering prepends the fixed resource file.
     #[test]
     fn render_concatenates_fixed_resource_and_stdin() -> Result<(), Box<dyn Error>> {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir for concat-tool test");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir for concat-tool test");
         std::fs::write(dir.path().join("resource.txt"), "fixed\n")?;
 
         let mut stdin = Cursor::new("input\n");
@@ -101,7 +101,7 @@ mod tests {
     /// Guarantees that a missing fixed resource produces a surfaced I/O error.
     #[test]
     fn render_fails_when_fixed_resource_is_missing() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir for concat-tool test");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir for concat-tool test");
 
         let mut stdin = Cursor::new("input");
         render_from_reader(dir.path(), &mut stdin)
@@ -112,7 +112,7 @@ mod tests {
     /// from the same isolated working directory.
     #[test]
     fn render_from_file_concatenates_fixed_and_file_payload() -> Result<(), Box<dyn Error>> {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir for concat-tool test");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir for concat-tool test");
         std::fs::write(dir.path().join("resource.txt"), "fixed\n")?;
         let payload_path = dir.path().join("payload.txt");
         std::fs::write(&payload_path, "input\n")?;

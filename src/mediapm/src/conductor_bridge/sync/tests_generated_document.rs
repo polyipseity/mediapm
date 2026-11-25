@@ -352,7 +352,7 @@ fn generated_document_states_only_overridden_policies() {
     // `evaluate_nickel_source_to_json` takes a path, and the format is chosen
     // from the extension, so the document is staged as a `.ncl` file in a
     // managed temp dir that outlives the evaluation.
-    let dir = mediapm_utils::temp::artifact_dir().expect("create a managed temp dir");
+    let dir = mediapm_utils::temp::output_dir().expect("create a managed temp dir");
     let path = dir.path().join("generated.ncl");
     std::fs::write(&path, &encoded).expect("stage the encoded document");
     let json = crate::config::nickel_io::evaluate_nickel_source_to_json(&path)

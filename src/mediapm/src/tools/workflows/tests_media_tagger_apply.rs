@@ -206,7 +206,7 @@ fn metadata_producer_step(id: &str, metadata_hash: Hash) -> WorkflowStepSpec {
 /// capture that stopped matching all fail here.
 #[tokio::test]
 async fn the_synthesized_apply_step_consumes_the_metadata_document() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let workspace = mediapm_utils::temp::output_dir().expect("artifact dir");
     let conductor =
         Conductor::new(RuntimeStoragePaths::new(workspace.path()), mediapm_cas::InMemoryCas::new());
 

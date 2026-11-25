@@ -38,7 +38,7 @@ const SYNC_COMPLETE_MARKER: &str = "sync complete";
 /// The returned `ManagedTempDir` owns the tree; keep it bound for the whole test so
 /// the workspace is removed on drop.
 fn isolated_workspace() -> mediapm_utils::temp::ManagedTempDir {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let workspace = mediapm_utils::temp::output_dir().expect("artifact dir");
     std::fs::write(workspace.path().join("mediapm.ncl"), MINIMAL_CONFIG)
         .expect("write minimal mediapm.ncl");
     workspace

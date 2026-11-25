@@ -67,7 +67,7 @@ async fn run_sync_result(
 /// leave behind.
 #[tokio::test]
 async fn a_missing_store_object_for_a_resolved_variant_is_an_error() {
-    let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let root = mediapm_utils::temp::output_dir().expect("artifact dir");
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let absent = absent_hash();

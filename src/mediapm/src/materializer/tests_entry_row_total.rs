@@ -29,7 +29,7 @@ use super::*;
 /// the same log and advance it after the entry, which would put a second
 /// advance behind the last bar on the screen.
 async fn entry_row_total_and_advances(build: impl FnOnce(String) -> MediaPmDocument) -> (u64, u64) {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::from_static(b"entry-row-total-bytes")).await.unwrap();

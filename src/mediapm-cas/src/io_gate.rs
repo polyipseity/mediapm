@@ -14,7 +14,7 @@
 //! directory *after* the caller's `TempDir` removed the tree, recreating
 //! `<cas>/blobs/v1/blake3/ab/cd/` and leaving exactly one object (or one
 //! `metadata-v1.json`, or one `checkpoint`) behind in an otherwise empty
-//! `$TMPDIR/mediapm-artifact-*` directory.
+//! `$TMPDIR/mediapm-output-*` directory.
 //!
 //! # The contract
 //!
@@ -254,7 +254,7 @@ mod tests {
     #[tokio::test]
     async fn close_waits_for_an_in_flight_lease() {
         let gate = Arc::new(CasIoGate::new());
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
 
         let mut tasks = Vec::new();
         for index in 0..4 {

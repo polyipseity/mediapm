@@ -95,7 +95,7 @@ pub(crate) async fn service_with_cache(
     ),
     mediapm::MediaPmError,
 > {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
     runtime.cache_root_override = Some(cache_root.path().to_path_buf());
     let service =
@@ -111,7 +111,7 @@ pub(crate) async fn service_in_tempdir() -> Result<
     (MediaPmService<mediapm_cas::FileSystemCas>, mediapm_utils::temp::ManagedTempDir),
     mediapm::MediaPmError,
 > {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let service = MediaPmService::new_fs_at(root.path()).await?;
     Ok((service, root))
 }

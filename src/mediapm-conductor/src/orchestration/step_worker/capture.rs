@@ -430,7 +430,7 @@ mod tests {
     #[tokio::test]
     async fn captures_stdout() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let execution =
             ExecutionResult { stdout: b"hello".to_vec(), stderr: Vec::new(), exit_code: 0 };
         let mut output_specs = BTreeMap::new();
@@ -452,7 +452,7 @@ mod tests {
     #[tokio::test]
     async fn captures_stderr() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let execution =
             ExecutionResult { stdout: Vec::new(), stderr: b"error output".to_vec(), exit_code: 1 };
         let mut output_specs = BTreeMap::new();
@@ -474,7 +474,7 @@ mod tests {
     #[tokio::test]
     async fn captures_process_code() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 42 };
         let mut output_specs = BTreeMap::new();
         output_specs.insert(
@@ -495,7 +495,7 @@ mod tests {
     #[tokio::test]
     async fn captures_file() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let file_path = tmp.path().join("test.txt");
         tokio::fs::write(&file_path, b"file content").await.unwrap();
         let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
@@ -519,7 +519,7 @@ mod tests {
     #[tokio::test]
     async fn captures_file_regex() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let file_path = tmp.path().join("result.log");
         tokio::fs::write(&file_path, b"regex match").await.unwrap();
         let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
@@ -543,7 +543,7 @@ mod tests {
     #[tokio::test]
     async fn captures_file_regex_against_sandbox_relative_paths() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let downloads = tmp.path().join("downloads");
         tokio::fs::create_dir(&downloads).await.unwrap();
         tokio::fs::write(
@@ -575,7 +575,7 @@ mod tests {
     #[tokio::test]
     async fn captures_folder_regex() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let downloads = tmp.path().join("downloads");
         tokio::fs::create_dir(&downloads).await.unwrap();
         tokio::fs::write(downloads.join("video.en.vtt"), b"WEBVTT").await.unwrap();
@@ -608,7 +608,7 @@ mod tests {
     #[tokio::test]
     async fn folder_regex_empty_capture_errors_when_not_allowed() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
         let mut output_specs = BTreeMap::new();
         output_specs.insert(
@@ -637,7 +637,7 @@ mod tests {
     #[tokio::test]
     async fn captures_folder() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let subdir = tmp.path().join("subdir");
         tokio::fs::create_dir(&subdir).await.unwrap();
         tokio::fs::write(subdir.join("a.txt"), b"content_a").await.unwrap();
@@ -670,7 +670,7 @@ mod tests {
     #[tokio::test]
     async fn implicit_outputs() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let execution =
             ExecutionResult { stdout: b"hello".to_vec(), stderr: b"error".to_vec(), exit_code: 1 };
         let output_specs = BTreeMap::new();
@@ -696,7 +696,7 @@ mod tests {
     #[tokio::test]
     async fn a_recorded_output_carries_the_spec_that_produced_it() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         tokio::fs::write(tmp.path().join("out.mkv"), b"video").await.unwrap();
         let downloads = tmp.path().join("downloads");
         tokio::fs::create_dir(&downloads).await.unwrap();
@@ -735,7 +735,7 @@ mod tests {
     #[tokio::test]
     async fn an_implicitly_captured_stream_records_the_spec_that_produced_it() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let execution =
             ExecutionResult { stdout: b"hello".to_vec(), stderr: b"oops".to_vec(), exit_code: 3 };
 
@@ -759,7 +759,7 @@ mod tests {
     #[tokio::test]
     async fn a_declared_stdout_overrides_the_implicit_stream() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         tokio::fs::write(tmp.path().join("out.txt"), b"from-file").await.unwrap();
         let execution =
             ExecutionResult { stdout: b"from-stream".to_vec(), stderr: Vec::new(), exit_code: 0 };
@@ -798,7 +798,7 @@ mod tests {
     #[tokio::test]
     async fn folder_capture_honors_included_and_flat_layouts() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let subdir = tmp.path().join("subdir");
         tokio::fs::create_dir(&subdir).await.unwrap();
         tokio::fs::write(subdir.join("a.txt"), b"content_a").await.unwrap();
@@ -849,7 +849,7 @@ mod tests {
     #[tokio::test]
     async fn folder_regex_capture_honors_included_and_flat_layouts() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let downloads = tmp.path().join("downloads");
         tokio::fs::create_dir(&downloads).await.unwrap();
         tokio::fs::write(downloads.join("video.en.vtt"), b"WEBVTT").await.unwrap();
@@ -902,7 +902,7 @@ mod tests {
     #[tokio::test]
     async fn strict_file_regex_with_no_match_returns_error() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
         let output_specs = BTreeMap::from([(
             "missing_log".to_string(),
@@ -927,7 +927,7 @@ mod tests {
     #[tokio::test]
     async fn strict_file_capture_with_missing_file_returns_error() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
         let output_specs = BTreeMap::from([(
             "missing_file".to_string(),
@@ -952,7 +952,7 @@ mod tests {
     #[tokio::test]
     async fn strict_folder_capture_with_no_match_returns_error() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         tokio::fs::create_dir(tmp.path().join("empty")).await.unwrap();
         let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
         let output_specs = BTreeMap::from([(
@@ -978,7 +978,7 @@ mod tests {
     #[tokio::test]
     async fn tolerant_folder_capture_with_no_match_records_null() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         tokio::fs::create_dir(tmp.path().join("empty")).await.unwrap();
         let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
         let output_specs = BTreeMap::from([(
@@ -1003,7 +1003,7 @@ mod tests {
     /// stores nothing in CAS.
     #[tokio::test]
     async fn allowed_empty_missing_file_records_null_and_stores_nothing() {
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let cas_root = tmp.path().join("store");
         let cas = mediapm_cas::FileSystemCas::open(&cas_root).await.expect("open filesystem CAS");
         let execution =
@@ -1039,7 +1039,7 @@ mod tests {
     #[tokio::test]
     async fn allowed_empty_unreadable_file_fails() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         tokio::fs::create_dir(tmp.path().join("not_a_file")).await.unwrap();
         let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
         let output_specs = BTreeMap::from([(
@@ -1072,7 +1072,7 @@ mod tests {
     #[tokio::test]
     async fn strict_unreadable_file_fails_naming_the_path() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         tokio::fs::create_dir(tmp.path().join("not_a_file")).await.unwrap();
         let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
         let output_specs = BTreeMap::from([(
@@ -1103,7 +1103,7 @@ mod tests {
     /// An allowed-empty `file_regex` capture that matches nothing records a null hash and stores nothing in CAS.
     #[tokio::test]
     async fn allowed_empty_file_regex_records_null_and_stores_nothing() {
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let cas_root = tmp.path().join("store");
         let cas = mediapm_cas::FileSystemCas::open(&cas_root).await.expect("open filesystem CAS");
         // Non-empty streams so their legitimate stored bytes do not collide with
@@ -1144,7 +1144,7 @@ mod tests {
     #[tokio::test]
     async fn allowed_empty_folder_records_null_and_stores_nothing() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         tokio::fs::create_dir(tmp.path().join("empty")).await.unwrap();
         let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
         let output_specs = BTreeMap::from([(
@@ -1176,7 +1176,7 @@ mod tests {
     #[tokio::test]
     async fn allowed_empty_folder_regex_records_null_and_stores_nothing() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
         let output_specs = BTreeMap::from([(
             "subs".to_string(),

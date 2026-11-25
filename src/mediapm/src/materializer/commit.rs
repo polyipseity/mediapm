@@ -586,7 +586,7 @@ mod tests {
 
     #[test]
     fn readonly_file() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let file_path = dir.path().join("test.txt");
         std::fs::write(&file_path, b"data").unwrap();
 
@@ -597,7 +597,7 @@ mod tests {
 
     #[test]
     fn readonly_directory() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let sub = dir.path().join("subdir");
         std::fs::create_dir(&sub).unwrap();
         let child = sub.join("child.txt");
@@ -619,7 +619,7 @@ mod tests {
 
     #[test]
     fn remove_file() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let file_path = dir.path().join("toremove.txt");
         std::fs::write(&file_path, b"data").unwrap();
 
@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn remove_dir() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let sub = dir.path().join("subdir");
         std::fs::create_dir(&sub).unwrap();
         std::fs::write(sub.join("a.txt"), b"a").unwrap();
@@ -658,7 +658,7 @@ mod tests {
     fn remove_live_and_dangling_symlinks() {
         use std::os::unix::fs::symlink;
 
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
 
         // Live link: the target carries the readonly bit and the clear reaches
         // it through the link.
@@ -715,7 +715,7 @@ mod tests {
     fn remove_hardlinked_output_leaves_the_blob_read_only() {
         use std::os::unix::fs::MetadataExt;
 
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let blob_path = dir.path().join("blob.bin");
         std::fs::write(&blob_path, b"payload").unwrap();
         ensure_managed_path_readonly(&blob_path).unwrap();
@@ -753,7 +753,7 @@ mod tests {
     /// removal that follows goes through.
     #[test]
     fn clear_readonly_entries_still_clears_the_readonly_bit() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let readonly_dir = dir.path().join("subdir");
         std::fs::create_dir(&readonly_dir).unwrap();
         let readonly_child = readonly_dir.join("child.txt");
@@ -786,7 +786,7 @@ mod tests {
     /// after it pins the entry really going.
     #[test]
     fn remove_readonly_file() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let file_path = dir.path().join("readonly_remove.txt");
         std::fs::write(&file_path, b"data").unwrap();
 
@@ -817,7 +817,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_dangling_symlink_output_is_replaced_by_the_next_run() {
-        let root = mediapm_utils::temp::artifact_dir().unwrap();
+        let root = mediapm_utils::temp::output_dir().unwrap();
         let paths = MediaPmPaths::from_root(root.path());
         let cas = open_hierarchy_cas(&paths).await;
         let hash = cas.put(bytes::Bytes::from_static(SYNC_ENTRY_PAYLOAD)).await.unwrap();

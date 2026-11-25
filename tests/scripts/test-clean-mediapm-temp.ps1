@@ -34,7 +34,7 @@ $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ("mediapm-test-" + [Syste
 New-Item -ItemType Directory -Path $sandbox | Out-Null
 
 try {
-    New-Item -ItemType Directory -Path (Join-Path $sandbox 'mediapm-artifact-fake1') | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $sandbox 'mediapm-output-fake1') | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $sandbox 'mediapm-cache-fake2') | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $sandbox 'mediapm-runtime-abcdef1234567890') | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $sandbox 'cli-add-hierarchy-123-456') | Out-Null
@@ -44,7 +44,7 @@ try {
     $dryOut = @(& $janitor --dry-run --root $sandbox 2>&1)
     $dryCount = @($dryOut | Where-Object { $_ -like 'would remove:*' }).Count
     if ($dryCount -ne 3) { Fail "dry-run reported $dryCount removals, expected 3" }
-    foreach ($name in @('mediapm-artifact-fake1', 'mediapm-cache-fake2', 'mediapm-runtime-abcdef1234567890')) {
+    foreach ($name in @('mediapm-output-fake1', 'mediapm-cache-fake2', 'mediapm-runtime-abcdef1234567890')) {
         $path = Join-Path $sandbox $name
         if (-not ($dryOut -contains "would remove: $path")) { Fail "dry-run missing $name" }
     }
@@ -57,7 +57,7 @@ try {
     $realOut = @(& $janitor --root $sandbox 2>&1)
     $realCount = @($realOut | Where-Object { $_ -like 'removed:*' }).Count
     if ($realCount -ne 3) { Fail "real run reported $realCount removals, expected 3" }
-    foreach ($name in @('mediapm-artifact-fake1', 'mediapm-cache-fake2', 'mediapm-runtime-abcdef1234567890')) {
+    foreach ($name in @('mediapm-output-fake1', 'mediapm-cache-fake2', 'mediapm-runtime-abcdef1234567890')) {
         if (Test-Path -LiteralPath (Join-Path $sandbox $name)) { Fail "$name not removed" }
     }
     foreach ($name in @('cli-add-hierarchy-123-456', 'unrelated-dir')) {
@@ -187,7 +187,7 @@ try {
 # created must fail the janitor before any removal is reported, and leave every
 # seeded path where it was.
 $refuseRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("mediapm-clean-mediapm-temp-refuse-" + [System.Guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path (Join-Path $refuseRoot 'mediapm-artifact-refuse1') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $refuseRoot 'mediapm-output-refuse1') -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $refuseRoot 'mediapm-cache-refuse2') -Force | Out-Null
 try {
     $refusal = Invoke-JanitorAtRootWithShim -Root $refuseRoot -Marker ''
@@ -196,7 +196,7 @@ try {
     if (-not $refusal.Output.Contains("cannot remove directories under $refuseRoot")) {
         Fail "refusal did not name ${refuseRoot}: $($refusal.Output)"
     }
-    foreach ($name in @('mediapm-artifact-refuse1', 'mediapm-cache-refuse2')) {
+    foreach ($name in @('mediapm-output-refuse1', 'mediapm-cache-refuse2')) {
         if (-not (Test-Path -LiteralPath (Join-Path $refuseRoot $name))) { Fail "a refused sweep removed $name" }
     }
 } finally {
@@ -207,12 +207,12 @@ try {
 # removed. It must be named on stderr, must still fail the run, and must not stop
 # the sweep from removing the rest.
 $failRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("mediapm-clean-mediapm-temp-fail-" + [System.Guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path (Join-Path $failRoot 'mediapm-artifact-sealed') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $failRoot 'mediapm-output-sealed') -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $failRoot 'mediapm-cache-ok') -Force | Out-Null
 try {
-    $sealedPath = Join-Path $failRoot 'mediapm-artifact-sealed'
+    $sealedPath = Join-Path $failRoot 'mediapm-output-sealed'
     $okPath = Join-Path $failRoot 'mediapm-cache-ok'
-    $partial = Invoke-JanitorAtRootWithShim -Root $failRoot -Marker 'mediapm-artifact-sealed'
+    $partial = Invoke-JanitorAtRootWithShim -Root $failRoot -Marker 'mediapm-output-sealed'
     if ($partial.ExitCode -eq 0) { Fail "janitor exited 0 for a directory it cannot remove ($sealedPath)" }
     if (-not $partial.Output.Contains("failed to remove: $sealedPath")) {
         Fail "per-path failure did not name the sealed dir: $($partial.Output)"

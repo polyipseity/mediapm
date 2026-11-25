@@ -50,7 +50,7 @@ const VARIANT: &str = "primary";
 async fn the_service_hands_its_metadata_cache_to_the_materializer() -> Result<(), MediaPmError> {
     let hash = mediapm_cas::Hash::from_content(PROBE_UNANSWERABLE);
 
-    let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let root = mediapm_utils::temp::output_dir().expect("artifact dir");
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
 
     let seed_dir = MediaPmPaths::from_root(root.path()).workspace_mediapm_cache_dir();

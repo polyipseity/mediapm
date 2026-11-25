@@ -490,9 +490,9 @@ mod tests {
     /// Returns the `TempDir` alongside the store: the store lazily
     /// `create_dir_all`s its tree on first write, so dropping the guard
     /// before the store does would recreate the tree without RAII
-    /// ownership and leak `$TMPDIR/mediapm-artifact-*` dirs.
+    /// ownership and leak `$TMPDIR/mediapm-output-*` dirs.
     async fn test_blob_store() -> (FileSystemBlobStore, mediapm_utils::temp::ManagedTempDir) {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let blob = test_blob_store_at(dir.path().join("blobs")).await;
         (blob, dir)
     }
@@ -951,7 +951,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_syncing_constraint_install_writes_the_snapshot_once() {
-        let root = mediapm_utils::temp::artifact_dir().unwrap();
+        let root = mediapm_utils::temp::output_dir().unwrap();
         let blob = test_blob_store_at(root.path().to_path_buf()).await;
         let index = FileSystemMetadataStore::new(blob.clone()).expect("the metadata store");
         let target = Hash::from_content(b"syncing-target");

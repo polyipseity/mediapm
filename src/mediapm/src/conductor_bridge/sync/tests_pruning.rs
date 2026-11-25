@@ -15,7 +15,7 @@ use super::*;
 /// mediapm-id set would prune every provisioned directory.
 #[tokio::test]
 async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     // Pre-seed the tools dir with a conductor-keyed active dir and a
@@ -112,7 +112,7 @@ async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
 
 #[tokio::test]
 async fn reconcile_prunes_old_tool_version_clears_content_map() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     // Pre-populate generated doc with an old version key that has a bogus
@@ -268,7 +268,7 @@ async fn reconcile_media_tagger_latest(
 /// `(1, 0)` for the bare one.
 #[tokio::test]
 async fn reconcile_counts_identity_not_generated_doc_presence() {
-    let seeded_tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let seeded_tmp = mediapm_utils::temp::output_dir().unwrap();
     let seeded_cache = mediapm_utils::temp::cache_dir().unwrap();
     let seeded_paths = MediaPmPaths::from_root(seeded_tmp.path());
     let mut stale_content_map = BTreeMap::new();
@@ -295,7 +295,7 @@ async fn reconcile_counts_identity_not_generated_doc_presence() {
         reconcile_media_tagger_latest(&seeded_paths, &MediaPmState::default(), seeded_cache.path())
             .await;
 
-    let bare_tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let bare_tmp = mediapm_utils::temp::output_dir().unwrap();
     let bare_cache = mediapm_utils::temp::cache_dir().unwrap();
     let bare_paths = MediaPmPaths::from_root(bare_tmp.path());
     let bare =
@@ -332,7 +332,7 @@ async fn reconcile_counts_identity_not_generated_doc_presence() {
 /// on the reprovision path.
 #[tokio::test]
 async fn stale_seed_drives_name_match_reprovision_and_prune_in_one_pass() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
 
@@ -441,7 +441,7 @@ async fn stale_seed_drives_name_match_reprovision_and_prune_in_one_pass() {
 
 #[tokio::test]
 async fn reconcile_drops_manual_entries_from_generated_doc() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     // Pre-populate generated doc with a manual entry whose bare tool_id
@@ -512,7 +512,7 @@ async fn reconcile_drops_manual_entries_from_generated_doc() {
 /// the regression pin for that retention set.
 #[tokio::test]
 async fn regression_a_seeded_entry_no_sync_produces_is_pruned() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
 
@@ -581,7 +581,7 @@ async fn regression_a_seeded_entry_no_sync_produces_is_pruned() {
 /// mechanism, and the prune count is the evidence of which one ran.
 #[tokio::test]
 async fn regression_a_generated_document_naming_an_unregistered_builtin_is_pruned() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
 
@@ -642,7 +642,7 @@ async fn regression_a_generated_document_naming_an_unregistered_builtin_is_prune
 /// command would be dispatched as a program instead.
 #[tokio::test]
 async fn a_sync_writes_the_host_builtin_entry_with_no_payload() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
 
@@ -679,7 +679,7 @@ async fn a_sync_writes_the_host_builtin_entry_with_no_payload() {
 /// that wrote it, and the workflow row naming the tool would stop resolving.
 #[tokio::test]
 async fn a_second_sync_keeps_the_host_builtin_entry() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
 

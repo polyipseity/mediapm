@@ -60,7 +60,7 @@ fn write_probe(dir: &Path, name: &str, contents: &str) {
 /// Returns the temp-directory **owner**, not its path. Returning the
 /// path would drop the owner at the end of this statement, deleting the
 /// directory, and the caller would recreate it with `create_dir_all` and leave
-/// it with no cleanup owner — a `mediapm-artifact-*` tree orphaned in `$TMPDIR`
+/// it with no cleanup owner — a `mediapm-output-*` tree orphaned in `$TMPDIR`
 /// on every run, which the `test-runner` crate's temp-dir janitor gate
 /// fails the suite for (`cargo run --package test-runner -- test`).
 ///
@@ -70,7 +70,7 @@ fn write_probe(dir: &Path, name: &str, contents: &str) {
 /// failure rather than a test failure. A synthetic directory exercises the same
 /// shared scanner with the guard out of the way.
 fn probe_dir() -> mediapm_utils::temp::ManagedTempDir {
-    mediapm_utils::temp::artifact_dir().expect("probe artifact dir")
+    mediapm_utils::temp::output_dir().expect("probe artifact dir")
 }
 
 /// The scanner must detect both forbidden patterns, name the file and line, and

@@ -80,7 +80,7 @@ Registered every run via `RunWorkflowOptions.host_builtins`; tagging dispatches 
 ## Testing and validation
 
 - Fast loop: `cargo test-pkg mediapm`, `cargo build-pkg mediapm`, or selective tests. Full/parity gates: `rust-workflow.instructions.md`.
-- Hermetic tests/examples: `IsolatedExampleRoots`, `mediapm_utils::temp::artifact_dir()/cache_dir()`, cache overrides; never real OS user cache in tests.
+- Hermetic tests/examples: `IsolatedExampleRoots`, `mediapm_utils::temp::output_dir()/cache_dir()`, cache overrides; never real OS user cache in tests.
 - Demo checks: `mediapm_demo` and `mediapm_demo_online` (default offline/hermetic, `--online` real/manual). Demo behavior changes require updating demos and embedded tests.
 - Features: default `cli,media-tagger`; `cli` adds clap/completions; `media-tagger` enables native tagger deps; `proptest` enables property tests.
 

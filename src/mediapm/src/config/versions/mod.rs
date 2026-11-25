@@ -376,7 +376,7 @@ fn apply_version_contract(
     contract_name: &str,
     source: &str,
 ) -> Result<Value, MediaPmError> {
-    let dir = mediapm_utils::temp::artifact_dir().map_err(|err| MediaPmError::Io {
+    let dir = mediapm_utils::temp::output_dir().map_err(|err| MediaPmError::Io {
         operation: "create mediapm schema validation temp dir".to_string(),
         path: std::env::temp_dir(),
         source: err,
@@ -566,7 +566,7 @@ pub fn validate_v5_document(source: &str) -> Result<Value, MediaPmError> {
 /// Returns [`MediaPmError`] when the temp workspace cannot be written or the
 /// wrapper cannot be evaluated.
 pub fn evaluate_mod_ncl_expression(expr: &str) -> Result<Value, MediaPmError> {
-    let dir = mediapm_utils::temp::artifact_dir().map_err(|err| MediaPmError::Io {
+    let dir = mediapm_utils::temp::output_dir().map_err(|err| MediaPmError::Io {
         operation: "create mediapm registry validation temp dir".to_string(),
         path: std::env::temp_dir(),
         source: err,

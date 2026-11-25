@@ -2041,7 +2041,7 @@ mod tests {
         let data = b"hello file content";
         let hash = cas.put(bytes::Bytes::from_static(data)).await.unwrap();
 
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let step_outputs = BTreeMap::new();
         let env_vars = BTreeMap::new();
         let tokens = BTreeMap::new();
@@ -2066,7 +2066,7 @@ mod tests {
         let data = b"cross-step payload bytes";
         let hash = cas.put(bytes::Bytes::from_static(data)).await.unwrap();
 
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let step_outputs = BTreeMap::new();
         let env_vars = BTreeMap::new();
         let tokens = BTreeMap::new();
@@ -2286,7 +2286,7 @@ mod tests {
         let data = b"video-bytes";
         let hash = cas.put(bytes::Bytes::from_static(data)).await.unwrap();
 
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let step_outputs = BTreeMap::new();
         let env_vars = BTreeMap::new();
         let tokens = BTreeMap::new();
@@ -2342,7 +2342,7 @@ mod tests {
         let data = b"source-bytes";
         let hash = cas.put(bytes::Bytes::from_static(data)).await.unwrap();
 
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let step_outputs = BTreeMap::new();
         let env_vars = BTreeMap::new();
         let tokens = BTreeMap::new();
@@ -2384,7 +2384,7 @@ mod tests {
         let archive = make_zip(&[("pack/a.txt", b"a"), ("pack/b.txt", b"b")]);
         let hash = cas.put(bytes::Bytes::from(archive)).await.unwrap();
 
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let step_outputs = BTreeMap::new();
         let env_vars = BTreeMap::new();
         let tokens = BTreeMap::new();
@@ -2585,7 +2585,7 @@ mod tests {
             ("C:drive", "must not contain a drive or UNC prefix"),
             ("back\\slash", "must not contain a backslash separator"),
         ];
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let step_outputs = BTreeMap::new();
         let env_vars = BTreeMap::new();
         let tokens = BTreeMap::new();
@@ -2620,7 +2620,7 @@ mod tests {
             ("C:drive", "must not contain a drive or UNC prefix"),
             ("back\\slash", "must not contain a backslash separator"),
         ];
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let step_outputs = BTreeMap::new();
         let env_vars = BTreeMap::new();
         let tokens = BTreeMap::new();
@@ -2647,7 +2647,7 @@ mod tests {
 
     #[tokio::test]
     async fn file_and_folder_selectors_accept_nested_relative_paths() {
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let step_outputs = BTreeMap::new();
         let env_vars = BTreeMap::new();
         let tokens = BTreeMap::new();

@@ -142,7 +142,7 @@ struct AutomaticGc {
 /// the declared bytes fails: a fixture that half-built would make every
 /// assertion in a scenario vacuous.
 async fn complicated(background_interval_secs: u64) -> AutomaticGc {
-    let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
     let declared_bytes: &'static [u8] = b"external bytes every scenario in this module must keep";
     let declared = Hash::from_content(declared_bytes);
     let mut document = doc_with_workflows(

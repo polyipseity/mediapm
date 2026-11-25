@@ -1389,7 +1389,7 @@ mod tests {
             .iter()
             .find(|workflow| workflow.name == "mediapm.media.demo.local.dQw4w9WgXcQ")
             .expect("demo workflow");
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         for instance in state.tool_call_instances.values() {
             for output in instance.outputs.values() {
@@ -1441,7 +1441,7 @@ mod tests {
             .iter()
             .find(|workflow| workflow.name == "mediapm.media.demo.local.dQw4w9WgXcQ")
             .expect("demo workflow");
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         for instance in state.tool_call_instances.values() {
             for output in instance.outputs.values() {
@@ -1665,7 +1665,7 @@ mod tests {
     /// says so before the wrong instance's bytes reach a library path.
     #[tokio::test]
     async fn steps_keyed_the_way_the_worker_keys_them_bind_their_own_outputs() {
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let (generated, workflow, state) = state_recorded_by_the_worker(&cas).await;
         let recorded = state
@@ -1723,7 +1723,7 @@ mod tests {
             .iter()
             .find(|workflow| workflow.name == "mediapm.media.demo.local.dQw4w9WgXcQ")
             .expect("demo workflow");
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         for instance in state.tool_call_instances.values() {
             for output in instance.outputs.values() {
@@ -1778,7 +1778,7 @@ mod tests {
             .expect("demo workflow");
         let ffmpeg_step =
             workflow.steps.iter().find(|step| step.id == "step-1-ffmpeg").expect("ffmpeg step");
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
 
         let import_step = workflow
@@ -2565,7 +2565,7 @@ mod tests {
         let generated = load_generated_doc();
         let state = load_conductor_state();
         let workflow = load_demo_workflow(&generated);
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
 
         let paired = oracle_derive_demo_instance_keys(&cas, &generated, &state, &workflow)
@@ -2617,7 +2617,7 @@ mod tests {
         let state = state_with_import_instance_claimed_by_duplicate(&load_conductor_state());
         let workflow =
             demo_workflow_with_duplicated_import_step(&load_demo_workflow(&generated), None);
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
 
         let paired = oracle_derive_demo_instance_keys(&cas, &generated, &state, &workflow)
@@ -2656,7 +2656,7 @@ mod tests {
             .iter()
             .find(|workflow| workflow.name == "mediapm.media.demo.local.dQw4w9WgXcQ")
             .expect("demo workflow");
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
 
         let import_key = state
@@ -2693,7 +2693,7 @@ mod tests {
         let generated = load_generated_doc();
         let mut state = load_conductor_state();
         let workflow = load_demo_workflow(&generated);
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
 
         let import_key = import_instance_key(&state);
@@ -2942,7 +2942,7 @@ mod tests {
             .iter()
             .find(|workflow| workflow.name == "mediapm.media.demo.local.dQw4w9WgXcQ")
             .expect("demo workflow");
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let rewrites = plan_demo_instance_key_rewrites(&cas, &generated, &state, workflow)
             .await
@@ -2989,7 +2989,7 @@ mod tests {
             &load_demo_workflow(&generated),
             Some("blake3:9d3cf1c1a5eb8f1a0ce42fbd6a1a8f13a52a2f9f1a3fbf0a2e6b7c8d9e0f1a2b"),
         );
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
 
         let error = plan_demo_instance_key_rewrites(&cas, &generated, &state, &workflow)
@@ -3019,7 +3019,7 @@ mod tests {
         let state = state_with_import_instance_claimed_by_duplicate(&load_conductor_state());
         let workflow =
             demo_workflow_with_duplicated_import_step(&load_demo_workflow(&generated), None);
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
 
         let rewrites = plan_demo_instance_key_rewrites(&cas, &generated, &state, &workflow)
@@ -3063,7 +3063,7 @@ mod tests {
         let generated = load_generated_doc();
         let mut state = load_conductor_state();
         let workflow = load_demo_workflow(&generated);
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
 
         let import_key = import_instance_key(&state);
@@ -3097,7 +3097,7 @@ mod tests {
         let generated = load_generated_doc();
         let mut state = load_conductor_state();
         let workflow = load_demo_workflow(&generated);
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
 
         let import_key = import_instance_key(&state);
@@ -3221,7 +3221,7 @@ mod tests {
         // production step-output resolver — which matches instances by key —
         // finds nothing at all; the plan below pairs through recorded provenance
         // and reconstructs the recorded run's step outputs from that instead.
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let rewrites = plan_demo_instance_key_rewrites(&cas, &generated, &state, &workflow)
             .await
@@ -3544,7 +3544,7 @@ mod tests {
     /// document.
     #[tokio::test]
     async fn relaxed_resolution_refuses_instances_that_disagree_about_a_required_output() {
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let primary_hash =
             cas.put(bytes::Bytes::from_static(b"primary-infojson")).await.expect("put primary");
@@ -3621,7 +3621,7 @@ mod tests {
     /// settled. Refusing here would fail a state that holds no ambiguity.
     #[tokio::test]
     async fn relaxed_resolution_accepts_instances_that_agree_on_every_required_output() {
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let hash = cas.put(bytes::Bytes::from_static(b"shared-infojson")).await.expect("put info");
 
@@ -3785,7 +3785,7 @@ mod tests {
     /// An allowed-empty capture with no hash materializes as empty bytes.
     #[tokio::test]
     async fn allow_empty_workflow_output_materializes_as_empty_bytes() {
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
 
         let media_id = "local.empty";
@@ -3822,7 +3822,7 @@ mod tests {
     /// the step can answer for it.
     #[tokio::test]
     async fn relaxed_resolution_ignores_a_record_that_never_served_the_step() {
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let named_hash =
             cas.put(bytes::Bytes::from_static(b"named-infojson")).await.expect("put named");
@@ -3869,7 +3869,7 @@ mod tests {
     /// the relaxed pass, the step is a miss, and the next run executes it.
     #[tokio::test]
     async fn relaxed_resolution_ignores_a_ref_that_names_no_workflow() {
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let hash = cas.put(bytes::Bytes::from_static(b"legacy-infojson")).await.expect("put info");
 
@@ -3908,7 +3908,7 @@ mod tests {
     /// input.
     #[tokio::test]
     async fn relaxed_resolution_names_the_input_the_strict_pass_could_not_resolve() {
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let primary_hash =
             cas.put(bytes::Bytes::from_static(b"primary-infojson")).await.expect("put primary");
@@ -4068,7 +4068,7 @@ mod tests {
     /// run.
     #[tokio::test]
     async fn a_member_whose_archive_is_gone_while_building_key_bytes_is_a_miss() {
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let never_stored = Hash::from_content(b"an archive that vanished");
 
@@ -4157,7 +4157,7 @@ mod tests {
     /// and cannot read.
     #[tokio::test]
     async fn an_archive_input_names_whether_the_object_or_the_member_is_missing() {
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let not_an_archive =
             put_payload(&cas, b"these bytes are not a zip archive", "not an archive").await;
@@ -4246,7 +4246,7 @@ mod tests {
     /// a reader looking for a missing file beside the one that is there.
     #[tokio::test]
     async fn an_object_the_store_holds_and_cannot_read_is_not_reported_as_absent() {
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open_with_strategies(
             cas_root.path(),
             vec![mediapm_cas::VerifyTriggerStrategy::Always],
@@ -4309,7 +4309,7 @@ mod tests {
     /// a message of its own.
     #[tokio::test]
     async fn a_member_name_cannot_split_the_line_that_reports_it() {
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let not_an_archive =
             put_payload(&cas, b"these bytes are not a zip archive", "not an archive").await;
@@ -4383,7 +4383,7 @@ mod tests {
     /// the store still holds every byte the step names.
     #[tokio::test]
     async fn a_binding_that_does_not_resolve_is_not_recorded_as_a_lost_object() {
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let bindings = BTreeMap::from([("url".to_string(), "${inputs.missing}".to_string())]);
 
@@ -4428,7 +4428,7 @@ mod tests {
     /// request for a workflow it never served is a miss rather than a refusal.
     #[tokio::test]
     async fn relaxed_resolution_answers_for_a_record_that_served_two_workflows() {
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let hash = cas.put(bytes::Bytes::from_static(b"shared-work-infojson")).await.expect("put");
 
@@ -4491,7 +4491,7 @@ mod tests {
     /// step that never ran or turn a miss into a refusal.
     #[tokio::test]
     async fn relaxed_resolution_ignores_a_record_from_another_workflow() {
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let other_hash =
             cas.put(bytes::Bytes::from_static(b"other-workflow-infojson")).await.expect("put");
@@ -4531,7 +4531,7 @@ mod tests {
         use mediapm_conductor::{CapturedOutput, OutputCaptureSpec, SaveMode, ToolCallInstance};
         use mediapm_utils::Timestamp;
 
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let shared_hash =
             cas.put(bytes::Bytes::from_static(b"shared-infojson")).await.expect("put shared");
@@ -4638,7 +4638,7 @@ mod tests {
         use crate::materializer::metadata::MaterializationLookupContext;
         use crate::tools::workflows::{managed_workflow_name, resolve_ffmpeg_slot_limits};
 
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         // Never stored: the record names bytes the store does not hold.
         let lost_hash = Hash::from_content(b"infojson-the-store-lost");
@@ -4731,7 +4731,7 @@ mod tests {
         use crate::materializer::metadata::MaterializationLookupContext;
         use crate::tools::workflows::{managed_workflow_name, resolve_ffmpeg_slot_limits};
 
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open_with_strategies(
             cas_root.path(),
             vec![mediapm_cas::VerifyTriggerStrategy::Always],
@@ -4865,7 +4865,7 @@ mod tests {
             ..NickelDocument::default()
         };
 
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let infojson_hash = cas
             .put(bytes::Bytes::from_static(br#"{"title":"Never Gonna Give You Up"}"#))
@@ -5127,7 +5127,7 @@ mod tests {
     #[tokio::test]
     async fn relaxed_resolution_finds_infojson_on_primary_yt_dlp_download_instance() {
         let generated = primary_download_generated_doc();
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let primary_video_hash =
             cas.put(bytes::Bytes::from_static(b"primary-video-bytes")).await.expect("put primary");
@@ -5197,7 +5197,7 @@ mod tests {
             ..NickelDocument::default()
         };
 
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let infojson_hash = cas
             .put(bytes::Bytes::from_static(br#"{"title":"Never Gonna Give You Up"}"#))
@@ -5374,7 +5374,7 @@ mod tests {
     async fn a_directly_called_zip_member_extraction_failure_is_reported_rather_than_answered_with_the_pack()
      {
         let generated = load_generated_doc();
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         // The arm reads the bound step's bytes out of the store by the hash the
         // state records, so the state has to record the pack. A store is
@@ -5509,7 +5509,7 @@ mod tests {
     /// finds them. The match must re-derive at the record's own key version.
     #[tokio::test]
     async fn a_v8_keyed_instance_is_resolved_by_content_key_match() {
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let hash = put_payload(&cas, b"v8-infojson", "v8 infojson").await;
 
@@ -5569,7 +5569,7 @@ mod tests {
     /// instance the run produced, so it must win over agreement between records.
     #[tokio::test]
     async fn the_step_instance_pointer_selects_the_current_record() {
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas_root = mediapm_utils::temp::output_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let old_hash = put_payload(&cas, b"old-infojson", "old infojson").await;
         let new_hash = put_payload(&cas, b"new-infojson", "new infojson").await;

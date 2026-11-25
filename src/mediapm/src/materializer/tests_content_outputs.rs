@@ -198,7 +198,7 @@ async fn a_deleted_record_cache_costs_a_reread_and_nothing_else() {
 /// wrong reason.
 #[tokio::test]
 async fn replacing_an_output_with_different_content_moves_the_stamp() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::from_static(ORIGINAL)).await.unwrap();
@@ -286,7 +286,7 @@ async fn a_record_naming_another_hash_is_not_trusted() {
 /// document asked for and report a clean run over it.
 #[tokio::test]
 async fn a_record_whose_file_is_gone_is_ignored() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::from_static(ORIGINAL)).await.unwrap();
@@ -381,7 +381,7 @@ async fn an_empty_or_corrupt_record_cache_is_handled() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_linked_output_is_skipped_though_its_record_names_another_hash() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::from_static(ORIGINAL)).await.unwrap();
@@ -470,7 +470,7 @@ async fn an_unchanged_second_run_keeps_the_records_in_the_cache_file() {
 /// asked to spare.
 #[tokio::test]
 async fn a_mixed_run_keeps_the_records_of_the_paths_it_stood_still_for() {
-    let workspace = mediapm_utils::temp::artifact_dir().unwrap();
+    let workspace = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(workspace.path());
     let cas = open_hierarchy_cas(&paths).await;
     let archive = cas.put(bytes::Bytes::from(zip_payload(&ARCHIVE_MEMBERS))).await.unwrap();
@@ -545,7 +545,7 @@ async fn a_mixed_run_keeps_the_records_of_the_paths_it_stood_still_for() {
 /// because the document no longer asks for it.
 #[tokio::test]
 async fn a_dropped_entry_record_disappears_after_a_confirming_run() {
-    let workspace = mediapm_utils::temp::artifact_dir().unwrap();
+    let workspace = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(workspace.path());
     let cas = open_hierarchy_cas(&paths).await;
 

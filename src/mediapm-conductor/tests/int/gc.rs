@@ -336,7 +336,7 @@ async fn the_seed_reaches_the_file_and_a_pass_classifies_with_it() {
 /// evicts it, so a pass that read the default instead would fail here.
 #[tokio::test]
 async fn an_unreferenced_instance_is_recoverable_until_its_ttl_passes() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
     write_conductor_config(
         dir.path(),
         doc_with_workflows(

@@ -14,7 +14,7 @@ use super::*;
 // that drives it, after the overall bar.
 #[tokio::test]
 async fn reconcile_desired_tools_registers_prune_bar_on_the_caller_screen() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     // Seed a generated doc holding one entry the rewrite must prune, so the
@@ -100,7 +100,7 @@ async fn reconcile_desired_tools_registers_prune_bar_on_the_caller_screen() {
 // `reconcile_desired_tools_records_progress_ops`, which runs that path.
 #[tokio::test]
 async fn prune_bar_reaches_the_display() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     // Seed a generated doc holding one entry the rewrite must prune: it is
@@ -255,7 +255,7 @@ impl ProgressScreenApi for RecordingDisabledScreen {
 // disabled screen that began allocating would report the candidate count.
 #[tokio::test]
 async fn prune_bar_is_inert_on_a_disabled_screen() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     let mut content_map = BTreeMap::new();

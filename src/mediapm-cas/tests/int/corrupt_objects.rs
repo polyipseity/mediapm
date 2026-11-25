@@ -66,7 +66,7 @@ async fn a_repaired_form_clears_the_corruption_record() {
 /// corrupt after the process that found it exits.
 #[tokio::test]
 async fn the_corruption_record_survives_a_restart() {
-    let dir = common::artifact_dir();
+    let dir = common::output_dir();
     let target = {
         let cas = common::open_file_cas_verifying_at(dir.path()).await;
         let base = cas.put(Bytes::from(common::similar(b'H', b"CHANGED"))).await.unwrap();

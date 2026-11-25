@@ -130,7 +130,7 @@ fn assert_overall_position_reaches_total(
 )]
 async fn sync_multi_tool_per_tool_bars_are_order_independent() {
     let _env = lock_process_env();
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root_tmp = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     let tracker = RecordingProgressTracker::new();
@@ -276,7 +276,7 @@ async fn sync_multi_tool_per_tool_bars_are_order_independent() {
 )]
 async fn per_tool_phase_bars_carry_the_version_between_the_tool_and_the_phase() {
     let _env = lock_process_env();
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root_tmp = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     let tracker = RecordingProgressTracker::new();
@@ -393,8 +393,8 @@ async fn per_tool_phase_bars_carry_the_version_between_the_tool_and_the_phase() 
 )]
 async fn sync_parallel_fetch_is_deterministic() {
     let _env = lock_process_env();
-    let tmp1 = mediapm_utils::temp::artifact_dir().unwrap();
-    let tmp2 = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp1 = mediapm_utils::temp::output_dir().unwrap();
+    let tmp2 = mediapm_utils::temp::output_dir().unwrap();
     let cache1 = mediapm_utils::temp::cache_dir().unwrap();
     let cache2 = mediapm_utils::temp::cache_dir().unwrap();
 

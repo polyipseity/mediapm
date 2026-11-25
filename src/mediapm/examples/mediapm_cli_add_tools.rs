@@ -19,7 +19,7 @@ use mediapm_conductor::{
     config::ExternalDataEntry, decode_document, encode_document,
 };
 
-const EXAMPLE_ARTIFACT_FOLDER: &str = "cli-add-tools";
+const EXAMPLE_OUTPUT_FOLDER: &str = "cli-add-tools";
 const TOOL_NAMES: [&str; 6] = ["yt-dlp", "ffmpeg", "deno", "rsgain", "sd", "media-tagger"];
 
 /// Runtime storage for example runs; the user-level tool cache resolves to a
@@ -52,16 +52,14 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn artifact_root() -> PathBuf {
-    match std::env::var_os(example_isolation::ARTIFACT_ROOT_ENV) {
+fn output_root() -> PathBuf {
+    match std::env::var_os(example_isolation::OUTPUT_ROOT_ENV) {
         Some(root) => PathBuf::from(root),
-        None => {
-            workspace_root().join("src/mediapm/examples/artifacts").join(EXAMPLE_ARTIFACT_FOLDER)
-        }
+        None => workspace_root().join("src/mediapm/examples/outputs").join(EXAMPLE_OUTPUT_FOLDER),
     }
 }
 
-fn reset_artifact_root(root: &Path) -> ExampleResult<()> {
+fn reset_output_root(root: &Path) -> ExampleResult<()> {
     if root.exists() {
         example_isolation::remove_dir_all_with_retry(root)?;
     }
@@ -112,8 +110,8 @@ fn tool_requirement_for(logical_tool_name: &str) -> ToolRequirement {
 /// `Conductor::shutdown` awaits the background pass that would otherwise write
 /// into the caller's removed directory.
 async fn run_add_tools_example() -> ExampleResult<()> {
-    let root = artifact_root();
-    reset_artifact_root(&root)?;
+    let root = output_root();
+    reset_output_root(&root)?;
 
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(&root, example_runtime_storage())
@@ -189,7 +187,7 @@ async fn run_add_tools_example() -> ExampleResult<()> {
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
     run_add_tools_example().await?;
-    let root = artifact_root();
+    let root = output_root();
     let tool_ids = TOOL_NAMES.iter().map(|name| tool_id_for(name)).collect::<Vec<_>>();
 
     println!("mediapm config: {}", root.join("mediapm.ncl").display());
@@ -212,7 +210,7 @@ mod tests {
     async fn add_tools_writes_expected_config_documents() {
         let isolated = IsolatedExampleRoots::with_cache();
         run_add_tools_example().await.expect("run add-tools example");
-        let root = super::artifact_root();
+        let root = super::output_root();
 
         assert!(
             !root.join("manifest.json").exists(),

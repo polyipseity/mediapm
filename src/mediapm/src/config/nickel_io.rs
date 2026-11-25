@@ -277,7 +277,7 @@ mod tests {
     fn state_file_with(
         contents: &[u8],
     ) -> (mediapm_utils::temp::ManagedTempDir, std::path::PathBuf) {
-        let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let root = mediapm_utils::temp::output_dir().expect("artifact dir");
         let path = root.path().join("state.json");
         std::fs::write(&path, contents).expect("write state document");
         (root, path)
@@ -546,7 +546,7 @@ mod tests {
     /// a rejection to a document that was valid when it was written.
     #[test]
     fn regression_v4_recheck_seconds_zero_loads_as_always() {
-        let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let root = mediapm_utils::temp::output_dir().expect("artifact dir");
         let path = root.path().join("mediapm.ncl");
         std::fs::write(
             &path,

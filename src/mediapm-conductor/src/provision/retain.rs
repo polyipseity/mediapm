@@ -374,7 +374,7 @@ pub(crate) fn prune_expired_entries(
 
 #[cfg(test)]
 mod tests {
-    use mediapm_utils::temp::artifact_dir;
+    use mediapm_utils::temp::output_dir;
 
     use super::*;
 
@@ -397,7 +397,7 @@ mod tests {
     /// it by hand, and the sweep that should have reclaimed it reports success.
     #[tokio::test]
     async fn regression_a_legacy_lock_directory_is_reclaimed() {
-        let tools_dir = artifact_dir().expect("tools dir");
+        let tools_dir = output_dir().expect("tools dir");
         seed_entry(tools_dir.path(), "legacy", LEGACY_LOCK_FILE_NAME, 0);
         seed_entry(tools_dir.path(), "current", LOCK_FILE_NAME, 0);
 
@@ -426,7 +426,7 @@ mod tests {
     /// that is in use by the build that wrote it.
     #[test]
     fn a_legacy_lock_directory_is_reclaimed_only_after_its_ttl() {
-        let tools_dir = artifact_dir().expect("tools dir");
+        let tools_dir = output_dir().expect("tools dir");
         seed_entry(tools_dir.path(), "expired", LEGACY_LOCK_FILE_NAME, 0);
         seed_entry(tools_dir.path(), "fresh", LEGACY_LOCK_FILE_NAME, 1_000 + TTL_SECONDS);
 
@@ -446,7 +446,7 @@ mod tests {
     /// that the check reads the lock, not that a directory is forever exempt.
     #[tokio::test]
     async fn regression_a_legacy_lock_directory_in_use_is_kept() {
-        let tools_dir = artifact_dir().expect("tools dir");
+        let tools_dir = output_dir().expect("tools dir");
         seed_entry(tools_dir.path(), "legacy-in-use", LEGACY_LOCK_FILE_NAME, 0);
 
         let legacy_lock_path = tools_dir.path().join("legacy-in-use").join(LEGACY_LOCK_FILE_NAME);
@@ -492,7 +492,7 @@ mod tests {
     /// removed underneath a configured tool.
     #[tokio::test]
     async fn an_active_legacy_lock_directory_is_kept() {
-        let tools_dir = artifact_dir().expect("tools dir");
+        let tools_dir = output_dir().expect("tools dir");
         seed_entry(tools_dir.path(), "active", LEGACY_LOCK_FILE_NAME, 0);
 
         retain_only_tool_dirs(
@@ -520,7 +520,7 @@ mod tests {
     /// exclude a second holder, the held probe would guard nothing.
     #[test]
     fn strict_a_held_legacy_lock_still_blocks_a_second_probe() {
-        let tools_dir = artifact_dir().expect("tools dir");
+        let tools_dir = output_dir().expect("tools dir");
         seed_entry(tools_dir.path(), "legacy", LEGACY_LOCK_FILE_NAME, 0);
         let legacy_lock_path = tools_dir.path().join("legacy").join(LEGACY_LOCK_FILE_NAME);
 
@@ -554,7 +554,7 @@ mod tests {
     /// directories.
     #[test]
     fn regression_an_unopenable_lock_is_reported_not_skipped() {
-        let tools_dir = artifact_dir().expect("tools dir");
+        let tools_dir = output_dir().expect("tools dir");
         seed_entry(tools_dir.path(), "unopenable", LOCK_FILE_NAME, 0);
         let entry = tools_dir.path().join("unopenable");
         // A directory where the lock file belongs cannot be opened for writing,
@@ -587,7 +587,7 @@ mod tests {
     /// the store while every sweep reports success.
     #[test]
     fn regression_an_entry_with_unparseable_metadata_is_reported_not_skipped() {
-        let tools_dir = artifact_dir().expect("tools dir");
+        let tools_dir = output_dir().expect("tools dir");
         seed_entry(tools_dir.path(), "unreadable", LOCK_FILE_NAME, 0);
         seed_entry(tools_dir.path(), "unparseable", LOCK_FILE_NAME, 0);
         let unreadable = tools_dir.path().join("unreadable");
@@ -630,7 +630,7 @@ mod tests {
     /// changed to end.
     #[test]
     fn regression_an_entry_from_another_metadata_version_is_reported_not_skipped() {
-        let tools_dir = artifact_dir().expect("tools dir");
+        let tools_dir = output_dir().expect("tools dir");
         seed_entry(tools_dir.path(), "newer", LOCK_FILE_NAME, 0);
         let newer = tools_dir.path().join("newer");
         // An expired age under a version this build does not write: the entry is
@@ -726,7 +726,7 @@ mod tests {
     /// other stale entry behind because of one directory that would not go.
     #[tokio::test]
     async fn regression_a_failed_tool_dir_removal_is_reported() {
-        let tools_dir = artifact_dir().expect("tools dir");
+        let tools_dir = output_dir().expect("tools dir");
         seed_entry(tools_dir.path(), "blocked", LOCK_FILE_NAME, 0);
         seed_entry(tools_dir.path(), "removable", LOCK_FILE_NAME, 0);
         seed_entry(tools_dir.path(), "kept", LOCK_FILE_NAME, 0);
@@ -792,7 +792,7 @@ mod tests {
     #[tokio::test]
     async fn a_prune_never_removes_a_payload_in_use() {
         let _serialized = crate::provision::SWEEP_STATE_LOCK.lock().await;
-        let tools_dir = mediapm_utils::temp::artifact_dir().expect("tools dir");
+        let tools_dir = mediapm_utils::temp::output_dir().expect("tools dir");
         let cas = mediapm_cas::InMemoryCas::new();
         let hash = mediapm_cas::CasApi::put(&cas, bytes::Bytes::from_static(b"payload bytes"))
             .await

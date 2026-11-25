@@ -9,7 +9,7 @@ use super::*;
 
 #[tokio::test]
 async fn reconcile_desired_tools_records_progress_ops() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     let tracker = RecordingProgressTracker::new();
@@ -78,7 +78,7 @@ async fn reconcile_desired_tools_records_progress_ops() {
 // or written. This reverses the old Phase 2 warn-continue contract.
 #[tokio::test]
 async fn reconcile_desired_tools_resolve_failure_fails_fast() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     let tracker = RecordingProgressTracker::new();
@@ -133,7 +133,7 @@ async fn reconcile_desired_tools_resolve_failure_fails_fast() {
 /// bar — a bar the renderer draws from state nobody ever updates.
 #[tokio::test]
 async fn reconcile_desired_tools_drives_the_callers_overall_bar() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     let state = MediaPmState::default();
@@ -277,7 +277,7 @@ fn finish_overall_bar_ends_success_without_warnings() {
 /// `reconcile_desired_tools_finish_prune_bar_red_when_tail_fails`.
 #[tokio::test]
 async fn reconcile_desired_tools_finish_overall_bar_red_when_tail_fails() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     let tracker = RecordingProgressTracker::new();
@@ -337,7 +337,7 @@ async fn reconcile_desired_tools_finish_overall_bar_red_when_tail_fails() {
 /// the prune bar's `finish_error` from the tail's error arm fails this test.
 #[tokio::test]
 async fn reconcile_desired_tools_finish_prune_bar_red_when_tail_fails() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     let tracker = RecordingProgressTracker::new();

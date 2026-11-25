@@ -25,7 +25,7 @@ use mediapm_conductor::provision::ProvisionCache;
 #[tokio::test]
 async fn download_cache_and_provision_cache_use_different_roots() {
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
-    let tools_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let tools_dir = mediapm_utils::temp::output_dir().expect("artifact dir");
 
     // Store a payload in the download cache.
     let download = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
@@ -59,7 +59,7 @@ async fn download_cache_and_provision_cache_use_different_roots() {
 /// directories, not CAS payload objects in the download cache store.
 #[tokio::test]
 async fn provision_cache_prune_does_not_affect_download_cache() {
-    let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let root = mediapm_utils::temp::output_dir().expect("artifact dir");
 
     // Open download cache — it creates its own FileSystemCas in store/.
     let download = UserLevelCache::open(root.path(), "tools.json", ENTRY_TTL_SECONDS)

@@ -597,7 +597,7 @@ mod tests {
         step_outputs: BTreeMap<String, OutputCaptureSpec>,
         required: BTreeSet<String>,
     ) -> StepExecutionBundle {
-        let tmp = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("temp dir");
         let tool_id = "echo@v1";
         let tool = UnifiedToolSpec {
             name: "echo".to_string(),
@@ -1387,7 +1387,7 @@ mod tests {
         cas: &mediapm_cas::InMemoryCas,
         step_outputs: BTreeMap<String, OutputCaptureSpec>,
     ) -> Result<StepExecutionBundle, crate::error::ConductorError> {
-        let tmp = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("temp dir");
         let tool_id = "writer@v1";
         let tool_defaults = BTreeMap::from([
             (

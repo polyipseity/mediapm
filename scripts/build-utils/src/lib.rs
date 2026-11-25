@@ -124,7 +124,7 @@ mod tests {
     use super::{SHELLS, reject_empty, render, write_all};
     use clap::Command;
     use clap_complete::Shell;
-    use mediapm_utils::temp::artifact_dir;
+    use mediapm_utils::temp::output_dir;
 
     /// Every shell the completion scripts are shipped for, written out here
     /// rather than read from [`SHELLS`]. Deriving the expectation from the
@@ -150,7 +150,7 @@ mod tests {
     /// for some shells and silently does nothing for others.
     #[test]
     fn writes_one_non_empty_script_per_shell() {
-        let dir = artifact_dir().expect("artifact dir");
+        let dir = output_dir().expect("artifact dir");
         write_all(&mut sample_command(), "sample", dir.path()).expect("write completions");
 
         assert_eq!(SHELLS.len(), EXPECTED_SHELLS.len(), "the shell list changed size");
@@ -165,7 +165,7 @@ mod tests {
     /// when the command's name differs, which it does for `mediapm-conductor`.
     #[test]
     fn script_is_named_for_the_command_not_the_file() {
-        let dir = artifact_dir().expect("artifact dir");
+        let dir = output_dir().expect("artifact dir");
         write_all(
             &mut Command::new("actual").subcommand(Command::new("alpha")),
             "file-name-differs",
@@ -213,7 +213,7 @@ mod tests {
     /// losing its coverage quietly.
     #[test]
     fn an_empty_rendering_fails_the_generation_path() {
-        let dir = artifact_dir().expect("artifact dir");
+        let dir = output_dir().expect("artifact dir");
         let mut command = Command::new("bare").disable_help_flag(true);
         let error = write_all(&mut command, "bare", dir.path())
             .expect_err("a command with nothing to complete must not report success");

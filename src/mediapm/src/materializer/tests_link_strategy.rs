@@ -172,7 +172,7 @@ async fn strict_the_configured_order_is_the_order_attempted() {
         ([MaterializationMethod::Copy, MaterializationMethod::Hardlink], false),
         ([MaterializationMethod::Hardlink, MaterializationMethod::Copy], true),
     ] {
-        let workspace = mediapm_utils::temp::artifact_dir().expect("an artifact dir");
+        let workspace = mediapm_utils::temp::output_dir().expect("an artifact dir");
         let paths = MediaPmPaths::from_root(workspace.path());
         let cas = open_hierarchy_cas(&paths).await;
         let hash = cas
@@ -221,7 +221,7 @@ async fn strict_the_configured_order_is_the_order_attempted() {
 /// always works, so a notice here would mean the run invented one.
 #[tokio::test]
 async fn no_notice_when_the_preferred_method_succeeds() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("an artifact dir");
+    let workspace = mediapm_utils::temp::output_dir().expect("an artifact dir");
     let paths = MediaPmPaths::from_root(workspace.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas
@@ -257,7 +257,7 @@ async fn no_notice_when_the_preferred_method_succeeds() {
 #[cfg(not(windows))]
 #[tokio::test]
 async fn a_fallback_is_reported_with_the_path_and_the_method() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("an artifact dir");
+    let workspace = mediapm_utils::temp::output_dir().expect("an artifact dir");
     let paths = MediaPmPaths::from_root(workspace.path());
     let cas = open_hierarchy_cas(&paths).await;
     let payload = b"fallback payload";
@@ -330,7 +330,7 @@ async fn a_fallback_is_reported_with_the_path_and_the_method() {
 /// library starts with.
 #[tokio::test]
 async fn strict_a_materialized_hardlink_shares_the_cas_inode() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("an artifact dir");
+    let workspace = mediapm_utils::temp::output_dir().expect("an artifact dir");
     let paths = MediaPmPaths::from_root(workspace.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas
@@ -366,7 +366,7 @@ async fn strict_a_materialized_hardlink_shares_the_cas_inode() {
 /// it from the member rather than leaving the edit standing.
 #[tokio::test]
 async fn strict_a_zip_member_entry_replaces_its_target() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("an artifact dir");
+    let workspace = mediapm_utils::temp::output_dir().expect("an artifact dir");
     let paths = MediaPmPaths::from_root(workspace.path());
     let cas = open_hierarchy_cas(&paths).await;
     let member = b"WEBVTT\n\n00:00.000 --> 00:01.000\nmember cue\n";

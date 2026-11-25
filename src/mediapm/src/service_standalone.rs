@@ -106,7 +106,7 @@ mod tests {
     /// Ensures `resolve_effective_paths_for_root` works with overrides.
     #[test]
     fn resolve_effective_paths_for_root_applies_overrides() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
         let overrides = MediaRuntimeStorage {
             paths: RuntimePathsConfig {
                 mediapm_dir: ".custom-mediapm".into(),

@@ -93,7 +93,7 @@ async fn sync_with_zip_members(
     (Result<mediapm::SyncSummary, mediapm::MediaPmError>, mediapm_utils::temp::ManagedTempDir),
     mediapm::MediaPmError,
 > {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let mut service = service_at(root.path(), None).await?;
     let zip_bytes = make_zip(entries);
     let hash = seed_cas(&service, Bytes::from(zip_bytes), "archive variant").await?;

@@ -180,7 +180,7 @@ fn parse_ffmetadata(text: &str) -> BTreeMap<String, String> {
 /// than silently falling back to the hardcoded musicbrainz.org.
 #[tokio::test]
 async fn a_recording_mbid_fetches_metadata_through_the_configured_endpoint() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let workspace = mediapm_utils::temp::output_dir().expect("workspace");
     let musicbrainz = wiremock::MockServer::start().await;
     mount_musicbrainz(&musicbrainz).await;
 
@@ -235,7 +235,7 @@ async fn a_recording_mbid_fetches_metadata_through_the_configured_endpoint() {
 /// honors a server-controlled stall instead of surfacing the failure.
 #[tokio::test]
 async fn a_musicbrainz_server_error_fails_the_step_and_names_the_endpoint() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let workspace = mediapm_utils::temp::output_dir().expect("workspace");
     let musicbrainz = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("GET"))
         .and(wiremock::matchers::path_regex("^/ws/2/"))
@@ -290,7 +290,7 @@ async fn a_musicbrainz_server_error_fails_the_step_and_names_the_endpoint() {
 /// reaches the recording mock and the release is then fetched once.
 #[tokio::test]
 async fn a_musicbrainz_502_is_retried() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let workspace = mediapm_utils::temp::output_dir().expect("workspace");
     let musicbrainz = wiremock::MockServer::start().await;
     mount_musicbrainz(&musicbrainz).await;
     wiremock::Mock::given(wiremock::matchers::method("GET"))
@@ -328,7 +328,7 @@ async fn a_musicbrainz_502_is_retried() {
 /// deterministic.
 #[tokio::test]
 async fn a_persistent_musicbrainz_502_is_surfaced() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let workspace = mediapm_utils::temp::output_dir().expect("workspace");
     let musicbrainz = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("GET"))
         .and(wiremock::matchers::path_regex("^/ws/2/"))
@@ -365,7 +365,7 @@ async fn a_persistent_musicbrainz_502_is_surfaced() {
 #[tokio::test]
 async fn cover_art_is_discovered_and_downloaded_through_the_configured_archive_endpoint() {
     let image_bytes = b"fake-jpeg-bytes";
-    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let workspace = mediapm_utils::temp::output_dir().expect("workspace");
     let musicbrainz = wiremock::MockServer::start().await;
     mount_musicbrainz(&musicbrainz).await;
     let archive = wiremock::MockServer::start().await;
@@ -435,7 +435,7 @@ async fn cover_art_is_discovered_and_downloaded_through_the_configured_archive_e
 /// is never fetched and the failure surfaces quickly.
 #[tokio::test]
 async fn a_musicbrainz_4xx_fails_fast_without_exhausting_attempts() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let workspace = mediapm_utils::temp::output_dir().expect("workspace");
     let musicbrainz = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("GET"))
         .and(wiremock::matchers::path_regex("^/ws/2/"))
@@ -484,7 +484,7 @@ async fn a_musicbrainz_4xx_fails_fast_without_exhausting_attempts() {
 /// step, it is not downgraded to a warning or an empty result.
 #[tokio::test]
 async fn a_cover_art_archive_error_fails_the_step_and_names_the_endpoint() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let workspace = mediapm_utils::temp::output_dir().expect("workspace");
     let musicbrainz = wiremock::MockServer::start().await;
     mount_musicbrainz(&musicbrainz).await;
     let archive = wiremock::MockServer::start().await;
@@ -547,7 +547,7 @@ fn create_tagged_media(path: &Path, tags: &[(&str, &str)]) {
 /// fallback output.
 #[tokio::test]
 async fn disabling_tag_saving_preserves_existing_global_tags_when_requested() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let workspace = mediapm_utils::temp::output_dir().expect("workspace");
     let input = workspace.path().join("input.mka");
     create_tagged_media(&input, &[("album", "Existing Album"), ("artist", "Existing Artist")]);
     let output = workspace.path().join("out.ffmetadata");
@@ -592,7 +592,7 @@ async fn disabling_tag_saving_preserves_existing_global_tags_when_requested() {
 /// dropped from the fallback output.
 #[tokio::test]
 async fn disabling_tag_saving_drops_existing_global_tags_when_not_preserved() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let workspace = mediapm_utils::temp::output_dir().expect("workspace");
     let input = workspace.path().join("input.mka");
     create_tagged_media(&input, &[("album", "Existing Album")]);
     let output = workspace.path().join("out.ffmetadata");
@@ -639,7 +639,7 @@ async fn disabling_tag_saving_drops_existing_global_tags_when_not_preserved() {
 /// tagger's values win on collision.
 #[tokio::test]
 async fn a_successful_tag_run_merges_existing_global_tags_with_tagger_values_winning() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let workspace = mediapm_utils::temp::output_dir().expect("workspace");
     let input = workspace.path().join("input.mka");
     create_tagged_media(&input, &[("artist", "Existing Artist"), ("comment", "Keep Me")]);
     let musicbrainz = wiremock::MockServer::start().await;
@@ -674,7 +674,7 @@ async fn a_successful_tag_run_merges_existing_global_tags_with_tagger_values_win
 /// carried into the output even when they do not collide.
 #[tokio::test]
 async fn a_successful_tag_run_drops_existing_global_tags_when_not_preserved() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let workspace = mediapm_utils::temp::output_dir().expect("workspace");
     let input = workspace.path().join("input.mka");
     create_tagged_media(&input, &[("artist", "Existing Artist"), ("comment", "Drop Me")]);
     let musicbrainz = wiremock::MockServer::start().await;

@@ -15,7 +15,7 @@ use mediapm::{
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-const EXAMPLE_ARTIFACT_FOLDER: &str = "cli-add-hierarchy";
+const EXAMPLE_OUTPUT_FOLDER: &str = "cli-add-hierarchy";
 const DUMMY_LOCAL_SOURCE_FILE: &str = "dummy-local-video.mp4";
 const DUMMY_YOUTUBE_URL: &str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 
@@ -58,19 +58,17 @@ fn example_cache_root() -> PathBuf {
 }
 
 /// Canonical example artifact root, honoring
-/// [`example_isolation::ARTIFACT_ROOT_ENV`] and otherwise a stable
-/// `examples/artifacts/<example>` folder (no per-run stamp), so repeated runs
+/// [`example_isolation::OUTPUT_ROOT_ENV`] and otherwise a stable
+/// `examples/outputs/<example>` folder (no per-run stamp), so repeated runs
 /// reuse the same workspace instead of accumulating `{pid}-{nanos}` orphans.
-fn artifact_root() -> PathBuf {
-    match std::env::var_os(example_isolation::ARTIFACT_ROOT_ENV) {
+fn output_root() -> PathBuf {
+    match std::env::var_os(example_isolation::OUTPUT_ROOT_ENV) {
         Some(root) => PathBuf::from(root),
-        None => {
-            workspace_root().join("src/mediapm/examples/artifacts").join(EXAMPLE_ARTIFACT_FOLDER)
-        }
+        None => workspace_root().join("src/mediapm/examples/outputs").join(EXAMPLE_OUTPUT_FOLDER),
     }
 }
 
-fn reset_artifact_root(root: &Path) -> ExampleResult<()> {
+fn reset_output_root(root: &Path) -> ExampleResult<()> {
     if root.exists() {
         example_isolation::remove_dir_all_with_retry(root)?;
     }
@@ -91,8 +89,8 @@ fn write_dummy_local_source(root: &Path) -> ExampleResult<PathBuf> {
 /// `Conductor::shutdown` awaits the background pass that would otherwise write
 /// into the caller's removed directory.
 async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
-    let root = artifact_root();
-    reset_artifact_root(&root)?;
+    let root = output_root();
+    reset_output_root(&root)?;
 
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(&root, example_runtime_storage())
@@ -127,7 +125,7 @@ async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
     let manifest = run_add_hierarchy_example().await?;
-    let root = artifact_root();
+    let root = output_root();
 
     println!("manifest: {}", root.join("manifest.json").display());
     println!("hierarchy node count: {}", manifest.hierarchy_node_count);
@@ -142,13 +140,13 @@ mod tests {
         load_mediapm_document,
     };
 
-    use super::{EXAMPLE_ARTIFACT_FOLDER, run_add_hierarchy_example};
+    use super::{EXAMPLE_OUTPUT_FOLDER, run_add_hierarchy_example};
 
     #[tokio::test]
     async fn add_hierarchy_writes_expected_hierarchy_nodes() {
         let _isolated = IsolatedExampleRoots::with_cache();
         let manifest = run_add_hierarchy_example().await.expect("run add-hierarchy example");
-        let mediapm_ncl = super::artifact_root().join("mediapm.ncl");
+        let mediapm_ncl = super::output_root().join("mediapm.ncl");
 
         assert!(mediapm_ncl.exists(), "mediapm config should exist");
 
@@ -241,31 +239,31 @@ mod tests {
     }
 
     /// Ensures the artifact root is canonical (no per-run `{pid}-{nanos}` stamp)
-    /// so repeated runs do not accumulate stamped folders under `examples/artifacts/`.
+    /// so repeated runs do not accumulate stamped folders under `examples/outputs/`.
     #[test]
-    fn artifact_root_is_stable() {
+    fn output_root_is_stable() {
         let _env_lock = example_isolation::lock_process_env();
-        let previous_artifact_root = std::env::var_os(example_isolation::ARTIFACT_ROOT_ENV);
+        let previous_output_root = std::env::var_os(example_isolation::OUTPUT_ROOT_ENV);
         // SAFETY: test clears one process env key in a controlled scope and
         // restores the previous value before exit.
         unsafe {
-            std::env::remove_var(example_isolation::ARTIFACT_ROOT_ENV);
+            std::env::remove_var(example_isolation::OUTPUT_ROOT_ENV);
         }
 
-        let first = super::artifact_root();
-        let second = super::artifact_root();
+        let first = super::output_root();
+        let second = super::output_root();
         assert_eq!(first, second, "artifact root must be stable across runs");
         let name = first.file_name().and_then(|n| n.to_str()).expect("file name");
         assert_eq!(
-            name, EXAMPLE_ARTIFACT_FOLDER,
+            name, EXAMPLE_OUTPUT_FOLDER,
             "no per-run stamped suffix allowed in the artifact folder name"
         );
 
         // SAFETY: restore previous env var value for test isolation.
         unsafe {
-            match &previous_artifact_root {
-                Some(value) => std::env::set_var(example_isolation::ARTIFACT_ROOT_ENV, value),
-                None => std::env::remove_var(example_isolation::ARTIFACT_ROOT_ENV),
+            match &previous_output_root {
+                Some(value) => std::env::set_var(example_isolation::OUTPUT_ROOT_ENV, value),
+                None => std::env::remove_var(example_isolation::OUTPUT_ROOT_ENV),
             }
         }
     }

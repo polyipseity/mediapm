@@ -316,7 +316,7 @@ mod tests {
     /// because ffmpeg reads that key as the Title element rather than as a tag.
     #[test]
     fn a_written_document_carries_matroska_tag_names() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let path = dir.path().join("output.ffmetadata");
         let map = std::collections::BTreeMap::from([
             ("title".to_string(), "A Title".to_string()),

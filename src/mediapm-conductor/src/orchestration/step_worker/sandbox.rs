@@ -509,7 +509,7 @@ mod tests {
         let mut cmap = BTreeMap::new();
         cmap.insert("linux/".to_string(), hash.to_hex());
 
-        let sandbox_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let sandbox_dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         materialize_content_map(&cas, &cmap, sandbox_dir.path()).await.unwrap();
 
         let unpacked = sandbox_dir.path().join("linux/foo.txt");
@@ -526,7 +526,7 @@ mod tests {
         let mut cmap = BTreeMap::new();
         cmap.insert("linux/sd".to_string(), hash.to_hex());
 
-        let sandbox_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let sandbox_dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         materialize_content_map(&cas, &cmap, sandbox_dir.path()).await.unwrap();
 
         let file_path = sandbox_dir.path().join("linux/sd");
@@ -550,7 +550,7 @@ mod tests {
         cmap.insert("linux/".to_string(), zip_hash.to_hex());
         cmap.insert("./cfg".to_string(), file_hash.to_hex());
 
-        let sandbox_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let sandbox_dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         materialize_content_map(&cas, &cmap, sandbox_dir.path()).await.unwrap();
 
         // ZIP-unpacked file
@@ -570,7 +570,7 @@ mod tests {
         let mut cmap = BTreeMap::new();
         cmap.insert("linux/".to_string(), "not-a-hash".to_string());
 
-        let sandbox_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let sandbox_dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         materialize_content_map(&cas, &cmap, sandbox_dir.path()).await.unwrap();
 
         // No file should be created (the invalid hash is skipped).
@@ -587,7 +587,7 @@ mod tests {
         let mut cmap = BTreeMap::new();
         cmap.insert("linux/".to_string(), hash.to_hex());
 
-        let sandbox_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let sandbox_dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         materialize_content_map(&cas, &cmap, sandbox_dir.path()).await.unwrap();
 
         // The directory entry was created (empty).
@@ -607,7 +607,7 @@ mod tests {
         let mut cmap = BTreeMap::new();
         cmap.insert("../escape".to_string(), hash.to_hex());
 
-        let sandbox_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let sandbox_dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let err = materialize_content_map(&cas, &cmap, sandbox_dir.path())
             .await
             .expect_err("escaping content map key must be refused");

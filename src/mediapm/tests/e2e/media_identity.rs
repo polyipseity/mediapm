@@ -103,7 +103,7 @@ async fn sync_media_id(
     (Result<mediapm::SyncSummary, mediapm::MediaPmError>, mediapm_utils::temp::ManagedTempDir),
     mediapm::MediaPmError,
 > {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let mut service = service_at(root.path(), None).await?;
     let hash = seed_cas(&service, Bytes::from_static(PAYLOAD), "media identity variant").await?;
     let cas = service.conductor().cas().clone();
@@ -227,7 +227,7 @@ async fn sync_unreferenced_media_id(
     (Result<mediapm::SyncSummary, mediapm::MediaPmError>, mediapm_utils::temp::ManagedTempDir),
     mediapm::MediaPmError,
 > {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let mut service = service_at(root.path(), None).await?;
     let hash = seed_cas(&service, Bytes::from_static(PAYLOAD), "media identity variant").await?;
     let cas = service.conductor().cas().clone();

@@ -181,7 +181,7 @@ async fn seed_payload(workspace: &Path, payload: Bytes) -> String {
 
 /// Creates a workspace whose library holds the blob its document names.
 async fn workspace_holding_payload() -> mediapm_utils::temp::ManagedTempDir {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let workspace = mediapm_utils::temp::output_dir().expect("artifact dir");
     let hash = seed_payload(workspace.path(), Bytes::from_static(PAYLOAD)).await;
     save_mediapm_document(&workspace.path().join("mediapm.ncl"), &document_naming_one_hash(&hash))
         .expect("the document is written into the workspace");
@@ -193,7 +193,7 @@ async fn workspace_holding_payload() -> mediapm_utils::temp::ManagedTempDir {
 /// Nothing is seeded, so the two workspaces differ only in whether the named
 /// blob is readable out of the CAS.
 fn workspace_missing_content() -> mediapm_utils::temp::ManagedTempDir {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let workspace = mediapm_utils::temp::output_dir().expect("artifact dir");
     save_mediapm_document(
         &workspace.path().join("mediapm.ncl"),
         &document_naming_one_hash(UNRESOLVABLE_HASH),
@@ -209,7 +209,7 @@ fn workspace_missing_content() -> mediapm_utils::temp::ManagedTempDir {
 /// workflow has written, which the run reports as a miss rather than as a
 /// failure.
 fn workspace_without_content() -> mediapm_utils::temp::ManagedTempDir {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let workspace = mediapm_utils::temp::output_dir().expect("artifact dir");
     save_mediapm_document(&workspace.path().join("mediapm.ncl"), &document_naming_no_variant())
         .expect("the document is written into the workspace");
     workspace
@@ -498,7 +498,7 @@ fn sync_exits_four_when_no_variant_has_a_producer() {
 /// synced and found the library short.
 #[test]
 fn sync_exits_one_when_the_workspace_never_reached_a_sync() {
-    let workspace = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let workspace = mediapm_utils::temp::output_dir().expect("artifact dir");
     std::fs::write(workspace.path().join("mediapm.ncl"), "this is not a Nickel document")
         .expect("the unreadable document is written");
     let cache_home = mediapm_utils::temp::cache_dir().expect("cache dir");

@@ -26,8 +26,8 @@ pub const MEDIAPM_TEMP_PREFIX: &str = "mediapm-";
 /// background maintenance, whose last write can outlive the owner's drop, so a
 /// cache root is removed through [`remove_dir_all_with_retry`]: it clears
 /// readonly bits and retries a tree a lingering handle is still holding. An
-/// artifact root reaches the same helper for its own two reasons, named on
-/// [`artifact_dir`].
+/// output root reaches the same helper for its own two reasons, named on
+/// [`output_dir`].
 ///
 /// Everything else about the directory is the wrapped [`tempfile::TempDir`],
 /// reached through [`Deref`](std::ops::Deref), so `path()` and the coercions a
@@ -81,22 +81,22 @@ impl Drop for ManagedTempDir {
     }
 }
 
-/// Creates a unique artifact workspace directory under `$TMPDIR`.
+/// Creates a unique output workspace directory under `$TMPDIR`.
 ///
 /// Returns a [`ManagedTempDir`] for two reasons that a cache root's own
-/// contract does not cover. An artifact root usually holds a CAS store, whose
+/// contract does not cover. An output root usually holds a CAS store, whose
 /// blobs are committed read-only, and Windows refuses to unlink a read-only
 /// file, so a single `remove_dir_all` leaves the whole tree behind; the retrying
-/// removal clears those attributes first. And an artifact root can have a late
+/// removal clears those attributes first. And an output root can have a late
 /// writer of its own, a background task whose last write lands after the owner
 /// dropped it, which is the case every retrying removal exists for.
 ///
 /// # Errors
 ///
 /// Returns [`io::Error`] when the directory cannot be created.
-pub fn artifact_dir() -> io::Result<ManagedTempDir> {
+pub fn output_dir() -> io::Result<ManagedTempDir> {
     let dir =
-        tempfile::Builder::new().prefix(&format!("{MEDIAPM_TEMP_PREFIX}artifact-")).tempdir()?;
+        tempfile::Builder::new().prefix(&format!("{MEDIAPM_TEMP_PREFIX}output-")).tempdir()?;
     Ok(ManagedTempDir::new(dir))
 }
 
@@ -195,7 +195,7 @@ fn is_retryable_os_error(error: &io::Error) -> bool {
 
 #[expect(
     clippy::permissions_set_readonly_false,
-    reason = "cleanup retries must clear readonly flags on artifacts so repeated demo runs can remove prior trees"
+    reason = "cleanup retries must clear readonly flags on output trees so repeated demo runs can remove prior trees"
 )]
 fn clear_readonly_bits_recursively(path: &Path) {
     if !path.exists() {
@@ -229,10 +229,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn artifact_dir_uses_role_prefix() {
-        let dir = artifact_dir().expect("artifact dir");
+    fn output_dir_uses_role_prefix() {
+        let dir = output_dir().expect("output dir");
         let name = dir.path().file_name().and_then(|n| n.to_str()).expect("file name");
-        assert!(name.starts_with(MEDIAPM_TEMP_PREFIX));
+        assert!(name.starts_with(&format!("{MEDIAPM_TEMP_PREFIX}output-")));
         assert!(is_managed_path(dir.path()));
     }
 
@@ -265,15 +265,15 @@ mod tests {
         assert!(!path.exists(), "a managed cache dir must remove its whole tree on drop");
     }
 
-    /// An artifact root leaves nothing behind, readonly contents included.
+    /// An output root leaves nothing behind, readonly contents included.
     ///
-    /// The tree an artifact root owns usually holds a CAS store, whose blobs
-    /// are committed read-only, so the readonly clearing [`artifact_dir`] names
+    /// The tree an output root owns usually holds a CAS store, whose blobs
+    /// are committed read-only, so the readonly clearing [`output_dir`] names
     /// as its first reason has to be what removes them: one `remove_dir_all`
     /// attempt leaves the tree on Windows.
     #[test]
-    fn artifact_dir_removes_readonly_contents_on_drop() {
-        let dir = artifact_dir().expect("artifact dir");
+    fn output_dir_removes_readonly_contents_on_drop() {
+        let dir = output_dir().expect("output dir");
         let path = dir.path().to_path_buf();
         let nested = path.join("store").join("blobs");
         fs::create_dir_all(&nested).expect("nested store");
@@ -285,7 +285,7 @@ mod tests {
 
         drop(dir);
 
-        assert!(!path.exists(), "a managed artifact dir must remove its whole tree on drop");
+        assert!(!path.exists(), "a managed output dir must remove its whole tree on drop");
     }
 
     #[test]

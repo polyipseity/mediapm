@@ -846,7 +846,7 @@ mod tests {
     use mediapm_utils::temp::ManagedTempDir;
 
     async fn create_test_journal() -> (FileWal, ManagedTempDir) {
-        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let tmp = mediapm_utils::temp::output_dir().unwrap();
         let journal =
             FileWal::create_with_max_size(tmp.path().to_path_buf(), 1024 * 1024).await.unwrap();
         (journal, tmp)
@@ -1024,7 +1024,7 @@ mod tests {
 
     #[tokio::test]
     async fn segment_boundaries_and_replay_range_with_sealed_segments() {
-        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let tmp = mediapm_utils::temp::output_dir().unwrap();
         // Tiny max_segment_size so each append triggers a seal of the
         // previous segment after the first entry.
         let journal = FileWal::create_with_max_size(tmp.path().to_path_buf(), 0).await.unwrap();
@@ -1066,7 +1066,7 @@ mod tests {
 
     #[tokio::test]
     async fn checkpoint_persists_across_reopen() {
-        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let tmp = mediapm_utils::temp::output_dir().unwrap();
         let cas_dir = tmp.path().to_path_buf();
 
         // Create journal, append, trim (which writes checkpoint).
@@ -1091,7 +1091,7 @@ mod tests {
 
     #[tokio::test]
     async fn segment_sealing_and_replay() {
-        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let tmp = mediapm_utils::temp::output_dir().unwrap();
         // Very small max segment size to force sealing.
         let journal = FileWal::create_with_max_size(tmp.path().to_path_buf(), 128).await.unwrap();
 
@@ -1164,7 +1164,7 @@ mod tests {
 
     #[tokio::test]
     async fn dedup_removes_overlapping_segment() {
-        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let tmp = mediapm_utils::temp::output_dir().unwrap();
         let cas_dir = tmp.path().to_path_buf();
         let journal_dir = cas_dir.join("journal");
         tokio::fs::create_dir_all(&journal_dir).await.unwrap();
@@ -1183,7 +1183,7 @@ mod tests {
 
     #[tokio::test]
     async fn dedup_non_overlapping_segments_untouched() {
-        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let tmp = mediapm_utils::temp::output_dir().unwrap();
         let cas_dir = tmp.path().to_path_buf();
         let journal_dir = cas_dir.join("journal");
         tokio::fs::create_dir_all(&journal_dir).await.unwrap();
@@ -1207,7 +1207,7 @@ mod tests {
     /// produces the same pending state as the original append sequence.
     #[tokio::test]
     async fn create_replays_streaming_matches_append_sequence() {
-        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let tmp = mediapm_utils::temp::output_dir().unwrap();
         let cas_dir = tmp.path().to_path_buf();
 
         // Tiny max segment size forces sealing after a few entries.

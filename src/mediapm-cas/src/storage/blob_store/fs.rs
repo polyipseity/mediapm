@@ -971,7 +971,7 @@ mod tests {
 
     #[tokio::test]
     async fn filesystem_write_read_roundtrip() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -998,7 +998,7 @@ mod tests {
 
     #[tokio::test]
     async fn filesystem_read_missing_returns_not_found() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -1013,7 +1013,7 @@ mod tests {
 
     #[tokio::test]
     async fn filesystem_delete_removes_blob() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -1047,7 +1047,7 @@ mod tests {
 
     #[tokio::test]
     async fn filesystem_delta_path_works() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -1072,7 +1072,7 @@ mod tests {
 
     #[tokio::test]
     async fn legacy_delta_rewrite_records_fresh_mtime() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Modified],
@@ -1114,7 +1114,7 @@ mod tests {
     /// return the rewritten bytes.
     #[tokio::test]
     async fn legacy_delta_envelope_is_rewritten_in_place() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -1153,7 +1153,7 @@ mod tests {
 
     #[tokio::test]
     async fn filesystem_delete_removes_both_paths() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -1184,7 +1184,7 @@ mod tests {
 
     #[tokio::test]
     async fn filesystem_delete_encoding_removes_specific_encoding() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -1220,7 +1220,7 @@ mod tests {
 
     #[tokio::test]
     async fn filesystem_delete_encoding_missing_is_noop() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -1245,7 +1245,7 @@ mod tests {
 
     #[tokio::test]
     async fn modified_skips_second_read_on_unchanged_mtime() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Modified],
@@ -1268,7 +1268,7 @@ mod tests {
 
     #[tokio::test]
     async fn modified_catches_tampered_blob() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Modified],
@@ -1297,7 +1297,7 @@ mod tests {
 
     #[tokio::test]
     async fn sample_triggers_at_denominator_interval() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Sample { denominator: 3 }],
@@ -1322,7 +1322,7 @@ mod tests {
     #[tokio::test]
     async fn stale_retriggers_after_timeout_expiry() {
         // Use a zero-length timeout so the first read records, second triggers.
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Stale { timeout: std::time::Duration::ZERO }],
@@ -1369,7 +1369,7 @@ mod tests {
     }
 
     /// Regression test for the intermittent
-    /// `generate_demo_artifacts_writes_manifest_and_import_metadata` failure
+    /// `generate_demo_outputs_writes_manifest_and_import_metadata` failure
     /// ("materialized output is not hardlinked to CAS object"). Re-writing a
     /// full-encoding object that already exists used to commit through
     /// write-tmp-then-rename, which installs a new inode and silently detaches
@@ -1378,7 +1378,7 @@ mod tests {
     /// materializer has already materialized.
     #[tokio::test]
     async fn rewriting_an_existing_full_object_preserves_hardlink_identity() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -1410,7 +1410,7 @@ mod tests {
     /// them, so skipping the rewrite would freeze a stale encoding on disk.
     #[tokio::test]
     async fn rewriting_an_existing_delta_object_replaces_it() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -1436,7 +1436,7 @@ mod tests {
     /// to is read-only too, and so is a delta envelope and an auxiliary file.
     #[tokio::test]
     async fn strict_a_stored_blob_is_read_only() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -1478,7 +1478,7 @@ mod tests {
     /// every hardlinked output depends on.
     #[tokio::test]
     async fn regression_an_existing_blob_is_made_read_only() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -1513,7 +1513,7 @@ mod tests {
     /// for the store's delete paths on both platforms.
     #[tokio::test]
     async fn regression_a_read_only_blob_can_be_removed() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -1561,7 +1561,7 @@ mod tests {
     /// carries the same read-only mode.
     #[tokio::test]
     async fn strict_a_rewritten_delta_envelope_is_read_only() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -1594,7 +1594,7 @@ mod tests {
     /// The two streaming commit paths take the same mode as the buffered one.
     #[tokio::test]
     async fn strict_a_streamed_blob_is_read_only() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let store = FileSystemBlobStore::create(
             dir.path().to_path_buf(),
             vec![VerifyTriggerStrategy::Always],
@@ -1634,7 +1634,7 @@ mod tests {
     /// first, so the name stays reusable.
     #[tokio::test]
     async fn regression_a_read_only_staging_file_does_not_block_the_next_write() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let store = FileSystemBlobStore::create(dir.path().to_path_buf(), Vec::new())
             .await
             .expect("blob store");
@@ -1708,7 +1708,7 @@ mod tests {
     /// the ordinary path rather than a stress case.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_commits_of_one_object_do_not_collide() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let store = Arc::new(
             FileSystemBlobStore::create(dir.path().to_path_buf(), Vec::new())
                 .await
@@ -1739,7 +1739,7 @@ mod tests {
     /// hash mismatch for content that is correct.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_streaming_commits_of_one_object_do_not_collide() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let store = Arc::new(
             FileSystemBlobStore::create(dir.path().to_path_buf(), Vec::new())
                 .await
@@ -1781,7 +1781,7 @@ mod tests {
     /// directory lock, which refuses a second opener of one directory.
     #[tokio::test]
     async fn aux_dir_lock_is_shared_by_clones() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let store = FileSystemBlobStore::create(dir.path().to_path_buf(), Vec::new())
             .await
             .expect("blob store");
@@ -1953,7 +1953,7 @@ mod tests {
     #[cfg(not(windows))]
     #[tokio::test]
     async fn regression_a_deleted_object_leaves_the_hardlinked_copy_read_only() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let store = FileSystemBlobStore::create(dir.path().to_path_buf(), Vec::new())
             .await
             .expect("blob store");

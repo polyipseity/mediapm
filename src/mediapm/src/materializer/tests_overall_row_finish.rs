@@ -35,7 +35,7 @@ use super::*;
 #[tokio::test]
 async fn the_overall_row_finishes_error_on_a_failed_entry_and_on_a_missing_one() {
     let failed = {
-        let root = mediapm_utils::temp::artifact_dir().unwrap();
+        let root = mediapm_utils::temp::output_dir().unwrap();
         let paths = MediaPmPaths::from_root(root.path());
         let cas = open_hierarchy_cas(&paths).await;
         let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
@@ -73,7 +73,7 @@ async fn the_overall_row_finishes_error_on_a_failed_entry_and_on_a_missing_one()
     );
 
     let missing = {
-        let root = mediapm_utils::temp::artifact_dir().unwrap();
+        let root = mediapm_utils::temp::output_dir().unwrap();
         let paths = MediaPmPaths::from_root(root.path());
         let cas = open_hierarchy_cas(&paths).await;
         let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
@@ -144,7 +144,7 @@ async fn the_overall_row_finishes_error_on_a_failed_entry_and_on_a_missing_one()
 /// over this fixture writes exactly the one file the conflict blocks.
 #[tokio::test]
 async fn the_overall_row_finishes_error_when_a_folder_variant_path_is_a_directory() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::from_static(b"blocked-folder-variant")).await.unwrap();
@@ -215,7 +215,7 @@ async fn the_overall_row_finishes_error_when_a_folder_variant_path_is_a_director
 /// [`MediaPmError`].
 #[tokio::test]
 async fn the_run_fails_when_a_folder_variant_names_bytes_the_store_lost() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let absent = Hash::from_content(b"never-stored-in-this-cas");
@@ -277,7 +277,7 @@ async fn the_run_fails_when_a_folder_variant_names_bytes_the_store_lost() {
 /// never opened at all.
 #[tokio::test]
 async fn the_overall_row_finishes_error_when_a_zip_folder_variant_holds_no_members() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::from(zip_payload(&[]))).await.unwrap();
@@ -355,7 +355,7 @@ async fn the_overall_row_finishes_error_when_a_zip_folder_variant_holds_no_membe
 /// not a config can reach it.
 #[tokio::test]
 async fn the_overall_row_finishes_error_when_a_folder_resolves_to_no_variants() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
 
@@ -425,7 +425,7 @@ async fn the_overall_row_finishes_error_when_a_folder_resolves_to_no_variants() 
 /// moving it to `materialized_paths` on the strength of the file beside it.
 #[tokio::test]
 async fn the_overall_row_finishes_error_when_a_folder_mixes_a_blocked_and_a_good_variant() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::from_static(b"good-folder-variant")).await.unwrap();
@@ -496,7 +496,7 @@ async fn the_overall_row_finishes_error_when_a_folder_mixes_a_blocked_and_a_good
 /// it.
 #[tokio::test]
 async fn the_overall_row_finishes_success_when_every_entry_is_written() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let payload = b"every-entry-written";

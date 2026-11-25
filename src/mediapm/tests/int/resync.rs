@@ -543,7 +543,7 @@ async fn resync_after_an_external_write_rewrites_the_entry() -> Result<(), media
 /// otherwise let a rewriting implementation pass a test written to rule it out.
 #[test]
 fn the_write_witness_moves_when_a_file_is_relinked_with_identical_bytes() {
-    let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let root = mediapm_utils::temp::output_dir().expect("artifact dir");
     let source = root.path().join("source.bin");
     let target = root.path().join("target.bin");
     std::fs::write(&source, PAYLOAD).expect("the source is written");

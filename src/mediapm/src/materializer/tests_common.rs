@@ -491,7 +491,7 @@ impl WrittenEntry {
 /// Asserts that both members landed, so a caller whose archive did not produce
 /// two files finds out here rather than in an assertion about drift.
 pub(super) async fn write_folder_over_archive(members: &[(&str, &[u8])]) -> WrittenEntry {
-    let workspace = mediapm_utils::temp::artifact_dir().unwrap();
+    let workspace = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(workspace.path());
     let cas = open_hierarchy_cas(&paths).await;
     let archive = cas.put(bytes::Bytes::from(zip_payload(members))).await.unwrap();
@@ -524,7 +524,7 @@ pub(super) async fn write_folder_over_archive(members: &[(&str, &[u8])]) -> Writ
 /// failed to reference anything finds out here rather than in an assertion
 /// about drift.
 pub(super) async fn write_playlist() -> WrittenEntry {
-    let workspace = mediapm_utils::temp::artifact_dir().unwrap();
+    let workspace = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(workspace.path());
     let cas = open_hierarchy_cas(&paths).await;
     let payload = b"playlist media payload";

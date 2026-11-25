@@ -7,7 +7,7 @@
 //! `spawn_blocking` — work that an abort does not cancel. Without the store's
 //! mutation gate, a `create_dir_all` dispatched by the consumer lands *after*
 //! the test removed its temp directory and leaves an orphaned
-//! `$TMPDIR/mediapm-artifact-*` tree holding exactly one object.
+//! `$TMPDIR/mediapm-output-*` tree holding exactly one object.
 
 use std::time::Duration;
 
@@ -16,7 +16,7 @@ use bytes::Bytes;
 use mediapm_cas::FileSystemCas;
 use mediapm_cas::api::CasApi;
 
-use crate::common::artifact_dir;
+use crate::common::output_dir;
 
 /// Entries under `root` after a teardown, as a sorted list of relative paths.
 ///
@@ -62,7 +62,7 @@ fn surviving_entries(root: &std::path::Path) -> Vec<String> {
 /// is closed synchronously, so there is no later write left to wait for.
 #[tokio::test]
 async fn dropping_the_last_handle_leaves_the_store_directory_inert() {
-    let dir = artifact_dir();
+    let dir = output_dir();
     let cas = FileSystemCas::open_with_strategies_and_interval(
         dir.path(),
         vec![],
@@ -98,7 +98,7 @@ async fn dropping_the_last_handle_leaves_the_store_directory_inert() {
 /// later write would fail with `BrokenPipe`.
 #[tokio::test]
 async fn dropping_a_clone_keeps_the_store_writable() {
-    let dir = artifact_dir();
+    let dir = output_dir();
     let cas = FileSystemCas::open(dir.path()).await.expect("open");
     let clone = FileSystemCas::clone(&cas);
 
@@ -116,7 +116,7 @@ async fn dropping_a_clone_keeps_the_store_writable() {
 /// a plain abort request would leave the task free to run one more cycle.
 #[tokio::test]
 async fn close_awaits_the_background_consumer() {
-    let dir = artifact_dir();
+    let dir = output_dir();
     let cas = FileSystemCas::open_with_strategies_and_interval(
         dir.path(),
         vec![],

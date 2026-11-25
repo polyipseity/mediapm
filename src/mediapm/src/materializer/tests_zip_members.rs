@@ -61,7 +61,7 @@ async fn run_zip_member_sync_with_pack(
 /// this test load-bearing rather than a restatement of the code.
 #[tokio::test]
 async fn a_nested_zip_member_target_has_its_parent_directory_created() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let input_hash = cas.put(bytes::Bytes::from_static(b"zip-member-input")).await.unwrap();
@@ -110,7 +110,7 @@ async fn a_nested_zip_member_target_has_its_parent_directory_created() {
 /// cannot pass as this coverage.
 #[tokio::test]
 async fn a_pack_that_is_not_a_zip_archive_fails_the_run_with_a_workflow_error() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let input_hash = cas.put(bytes::Bytes::from_static(b"zip-member-input")).await.unwrap();
@@ -152,7 +152,7 @@ async fn a_pack_that_is_not_a_zip_archive_fails_the_run_with_a_workflow_error() 
 /// the skip reachable at all.
 #[tokio::test]
 async fn a_zip_member_variant_that_is_unchanged_is_skipped_on_the_next_sync() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let input_hash = cas.put(bytes::Bytes::from_static(b"zip-member-input")).await.unwrap();
@@ -232,7 +232,7 @@ async fn a_zip_member_variant_that_is_unchanged_is_skipped_on_the_next_sync() {
 /// fails — which is the same replacement the CAS-object path performs.
 #[tokio::test]
 async fn a_zip_member_variant_whose_pack_changed_is_written_again() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let input_hash = cas.put(bytes::Bytes::from_static(b"zip-member-input")).await.unwrap();
@@ -287,7 +287,7 @@ async fn a_zip_member_variant_whose_pack_changed_is_written_again() {
 /// comparing nothing at all would skip the case above.
 #[tokio::test]
 async fn a_zip_member_variant_is_skipped_when_only_the_rest_of_the_pack_changed() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let input_hash = cas.put(bytes::Bytes::from_static(b"zip-member-input")).await.unwrap();

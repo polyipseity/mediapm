@@ -20,7 +20,7 @@ use std::process::Command;
 /// values, because "printed nothing" and "failed" are different diagnoses and a
 /// test that folded them together could not say which it had found.
 fn run_conductor(args: &[&str]) -> (std::process::ExitStatus, String, String) {
-    let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let root = mediapm_utils::temp::output_dir().expect("artifact dir");
     let output = Command::new(env!("CARGO_BIN_EXE_mediapm"))
         .arg("--root")
         .arg(root.path())

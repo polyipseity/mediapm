@@ -1789,7 +1789,7 @@ mod tests {
     #[cfg(feature = "media-tagger")]
     #[tokio::test]
     async fn payload_free_builtin_needs_no_sync_but_fetched_tool_without_payload_does() {
-        let root = mediapm_utils::temp::artifact_dir().expect("workspace tempdir");
+        let root = mediapm_utils::temp::output_dir().expect("workspace tempdir");
         let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
         seed_yt_dlp_latest_metadata(cache_root.path()).await;
 

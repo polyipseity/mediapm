@@ -299,8 +299,8 @@ mod tests {
     fn contract_lines_are_recognised() {
         for line in [
             "no mediapm temp directories found",
-            "would remove: /tmp/mediapm-artifact-abc",
-            "removed: /tmp/mediapm-artifact-abc",
+            "would remove: /tmp/mediapm-output-abc",
+            "removed: /tmp/mediapm-output-abc",
             "would remove 3 mediapm temp director(ies)",
             "removed 3 mediapm temp director(ies)",
             "would remove 0 mediapm temp director(ies)",
@@ -357,10 +357,7 @@ mod tests {
         let root = scratch("leftover");
         write_stub(
             &root,
-            &[
-                "would remove: /tmp/mediapm-artifact-abc",
-                "would remove 1 mediapm temp director(ies)",
-            ],
+            &["would remove: /tmp/mediapm-output-abc", "would remove 1 mediapm temp director(ies)"],
             0,
         );
         let err = enforce(&root).expect_err("a leftover must fail the gate");
@@ -370,7 +367,7 @@ mod tests {
             "unexpected message: {text}"
         );
         assert!(
-            text.contains("/tmp/mediapm-artifact-abc"),
+            text.contains("/tmp/mediapm-output-abc"),
             "the verdict must name the leftover directory; got: {text}"
         );
         assert!(

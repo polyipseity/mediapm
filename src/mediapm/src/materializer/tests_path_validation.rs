@@ -47,7 +47,7 @@ fn single_media_document_with_metadata(
 /// written outside the hierarchy root.
 #[tokio::test]
 async fn regression_sync_hierarchy_rejects_parent_traversal_component() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
 
@@ -111,7 +111,7 @@ async fn regression_sync_hierarchy_rejects_parent_traversal_component() {
 /// than a spelling the materializer may fix.
 #[tokio::test]
 async fn regression_sync_hierarchy_sanitizes_interpolated_path_component() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
 

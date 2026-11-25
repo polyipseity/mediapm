@@ -177,7 +177,7 @@ struct TestConductor {
 
 impl TestConductor {
     fn new() -> Self {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let conductor = Conductor::new(RuntimeStoragePaths::new(dir.path()), InMemoryCas::new());
         Self { dir, conductor }
     }
@@ -190,7 +190,7 @@ impl TestConductor {
     /// a `conductor.ncl` above the tempdir would otherwise silently redirect
     /// the run. mediapm wires its documents the same way.
     fn with_pinned_config() -> Self {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(dir.path());
         let state_file_path = paths.state_file_path.clone();
         let paths =
@@ -204,7 +204,7 @@ impl TestConductor {
     /// mediapm app layer wiring in `paths.rs`), returning the runtime tmp
     /// root path for lifecycle assertions.
     fn with_runtime_tmp() -> (Self, std::path::PathBuf) {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let runtime_tmp = mediapm_utils::temp::runtime_dir_for_workspace(dir.path());
         let mut paths = RuntimeStoragePaths::new(dir.path());
         paths.conductor_tmp_dir.clone_from(&runtime_tmp);

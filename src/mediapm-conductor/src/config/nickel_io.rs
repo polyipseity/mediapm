@@ -7,7 +7,7 @@
 //! avoid re-evaluating unchanged documents across repeated decode calls.
 //!
 //! Each evaluation allocates its own scratch workspace via
-//! `scratch_workspace_dir()` (a `mediapm_utils::temp::artifact_dir()` by
+//! `scratch_workspace_dir()` (a `mediapm_utils::temp::output_dir()` by
 //! default); the `ManagedTempDir` guard removes it on both success and error paths,
 //! so failed decodes never leak scratch files.
 //!
@@ -129,7 +129,7 @@ fn scratch_workspace_dir() -> std::io::Result<mediapm_utils::temp::ManagedTempDi
                 .map(mediapm_utils::temp::ManagedTempDir::new);
         }
     }
-    mediapm_utils::temp::artifact_dir()
+    mediapm_utils::temp::output_dir()
 }
 
 /// Evaluates one document source through the embedded Nickel migration wrapper
@@ -241,7 +241,7 @@ mod tests {
 
     impl WorkspaceRootOverride {
         fn new() -> Self {
-            let root = mediapm_utils::temp::artifact_dir().expect("isolated workspace root");
+            let root = mediapm_utils::temp::output_dir().expect("isolated workspace root");
             WORKSPACE_ROOT_OVERRIDE
                 .with(|slot| *slot.borrow_mut() = Some(root.path().to_path_buf()));
             Self(root)
@@ -382,7 +382,7 @@ mod tests {
     /// test-owned directory, asserting no workspace directory remains
     /// afterwards. Only the decode under test can create directories under
     /// the root, so the count is deterministic under every runner.
-    fn assert_no_artifact_dir_leak(body: impl FnOnce()) {
+    fn assert_no_output_dir_leak(body: impl FnOnce()) {
         let root = WorkspaceRootOverride::new();
         assert_eq!(child_dir_count(&root.0), 0, "fresh isolated root must start empty");
         body();
@@ -394,8 +394,8 @@ mod tests {
     }
 
     #[test]
-    fn decode_success_leaves_no_artifact_dir() {
-        assert_no_artifact_dir_leak(|| {
+    fn decode_success_leaves_no_output_dir() {
+        assert_no_output_dir_leak(|| {
             let decoded = migrate_document_source_to_version::<Value>(
                 MINIMAL_V2_DOC,
                 2,
@@ -406,8 +406,8 @@ mod tests {
     }
 
     #[test]
-    fn decode_error_leaves_no_artifact_dir() {
-        assert_no_artifact_dir_leak(|| {
+    fn decode_error_leaves_no_output_dir() {
+        assert_no_output_dir_leak(|| {
             let decoded = migrate_document_source_to_version::<Value>(
                 BROKEN_DOC,
                 2,

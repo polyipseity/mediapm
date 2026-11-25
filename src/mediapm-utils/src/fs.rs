@@ -366,7 +366,7 @@ mod tests {
     /// The root must outlive the test body: dropping it removes the document the
     /// assertions read back.
     fn document_with(contents: &[u8]) -> (crate::temp::ManagedTempDir, std::path::PathBuf) {
-        let root = crate::temp::artifact_dir().expect("artifact dir");
+        let root = crate::temp::output_dir().expect("artifact dir");
         let path = root.path().join("state.json");
         std::fs::write(&path, contents).expect("write the initial document");
         (root, path)
@@ -484,7 +484,7 @@ mod tests {
     /// can be clean rather than a documented hazard.
     #[test]
     fn a_target_without_a_file_name_is_refused() {
-        let root = crate::temp::artifact_dir().expect("artifact dir");
+        let root = crate::temp::output_dir().expect("artifact dir");
         let path = root.path().join("gone").join("..");
 
         let error = write_bytes_atomically(&path, b"{}").expect_err("the write must be refused");
@@ -691,7 +691,7 @@ mod tests {
     /// that created the parent would resurrect a root a teardown had removed.
     #[test]
     fn a_write_into_a_missing_directory_is_refused() {
-        let root = crate::temp::artifact_dir().expect("artifact dir");
+        let root = crate::temp::output_dir().expect("artifact dir");
         let path = root.path().join("gone").join("state.json");
 
         let error = write_bytes_atomically(&path, b"{}").expect_err("the write must fail");

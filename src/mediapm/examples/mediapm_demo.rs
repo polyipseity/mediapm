@@ -19,7 +19,7 @@
 //!
 //! # Expected post-sync hierarchy
 //!
-//! Paths below are relative to `<artifact_root>/media/` (`runtime.hierarchy_root_dir = "media"`).
+//! Paths below are relative to `<output_root>/media/` (`runtime.hierarchy_root_dir = "media"`).
 //! Canonical machine checks: `tests/fixtures/demo_hierarchy_golden.json` (`offline`) and
 //! [`mediapm::demo_hierarchy_spec`]. Online demo tree: see `mediapm_demo_online`.
 //!
@@ -178,17 +178,17 @@ fn example_cache_root() -> PathBuf {
 
 #[derive(Debug, Clone)]
 struct DemoRunPaths {
-    artifact_root: PathBuf,
+    output_root: PathBuf,
     workspace_root: PathBuf,
     manifest_path: PathBuf,
     library_root: PathBuf,
 }
 
-fn artifact_root() -> PathBuf {
-    if let Some(root) = std::env::var_os(example_isolation::ARTIFACT_ROOT_ENV) {
+fn output_root() -> PathBuf {
+    if let Some(root) = std::env::var_os(example_isolation::OUTPUT_ROOT_ENV) {
         return PathBuf::from(root);
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples").join("artifacts").join("demo")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples").join("outputs").join("demo")
 }
 
 fn unix_timestamp_seconds() -> u64 {
@@ -199,13 +199,13 @@ fn display_path(path: &Path) -> String {
     path.display().to_string().replace('\\', "/")
 }
 
-fn reset_artifact_root() -> ExampleResult<(PathBuf, Option<mediapm_utils::temp::ManagedTempDir>)> {
-    let root = artifact_root();
+fn reset_output_root() -> ExampleResult<(PathBuf, Option<mediapm_utils::temp::ManagedTempDir>)> {
+    let root = output_root();
     if root.exists()
         && let Err(error) = example_isolation::remove_dir_all_with_retry(&root)
     {
         if is_share_violation_remove_error(&error) {
-            let (fallback_dir, fallback_path) = example_isolation::isolated_artifact_dir()?;
+            let (fallback_dir, fallback_path) = example_isolation::isolated_output_dir()?;
             eprintln!(
                 "[demo] canonical artifact root '{}' is locked; using fallback root '{}'",
                 root.display(),
@@ -864,8 +864,8 @@ fn clear_machine_workflows(machine_path: &Path) -> ExampleResult<()> {
     clippy::too_many_lines,
     reason = "this demo keeps end-to-end orchestration and manifest wiring in one place for maintainability"
 )]
-async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> {
-    let (root, _fallback_artifact) = reset_artifact_root()?;
+async fn generate_demo_outputs(run_sync: bool) -> ExampleResult<DemoRunPaths> {
+    let (root, _fallback_output) = reset_output_root()?;
     let workspace_root = root.clone();
 
     let source_path = workspace_root.join("input").join("sample-av.mp4");
@@ -1014,7 +1014,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     service.conductor().shutdown().await?;
 
     Ok(DemoRunPaths {
-        artifact_root: root,
+        output_root: root,
         workspace_root,
         manifest_path,
         library_root: service.paths().hierarchy_root_dir.clone(),
@@ -1023,8 +1023,8 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
 
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
-    let paths = generate_demo_artifacts(true).await?;
-    println!("generated artifacts root: {}", paths.artifact_root.display());
+    let paths = generate_demo_outputs(true).await?;
+    println!("generated outputs root: {}", paths.output_root.display());
     println!("generated workspace root: {}", paths.workspace_root.display());
     println!("generated library root: {}", paths.library_root.display());
     println!("manifest: {}", paths.manifest_path.display());
@@ -1057,13 +1057,13 @@ mod tests {
     #[tokio::test]
     async fn offline_manifest_keeps_summary_and_one_anchor() {
         let _isolated = IsolatedExampleRoots::with_cache();
-        let run = super::generate_demo_artifacts(true).await.expect("demo artifact generation");
+        let run = super::generate_demo_outputs(true).await.expect("demo output generation");
         let manifest_text = std::fs::read_to_string(&run.manifest_path).expect("read manifest");
         let manifest: serde_json::Value =
             serde_json::from_str(&manifest_text).expect("manifest JSON");
 
         for absent in [
-            "artifact_root",
+            "output_root",
             "workspace_root",
             "source_file_path",
             "mediapm_ncl_path",
@@ -1109,7 +1109,7 @@ mod tests {
     #[tokio::test]
     async fn mediapm_ncl_records_inherited_env_vars_for_all_platforms() {
         let _isolated = IsolatedExampleRoots::with_cache();
-        let run = super::generate_demo_artifacts(false).await.expect("configure demo artifacts");
+        let run = super::generate_demo_outputs(false).await.expect("configure demo outputs");
         let doc = mediapm::load_mediapm_document(&run.workspace_root.join("mediapm.ncl"))
             .expect("load mediapm.ncl");
         let envs = doc.runtime.environment.inherited_env_vars.as_ref().expect("inherited env vars");
@@ -1134,15 +1134,15 @@ mod tests {
         }
     }
 
-    /// Verifies demo artifact generation writes one complete import workflow manifest in full-sync mode.
+    /// Verifies demo output generation writes one complete import workflow manifest in full-sync mode.
     #[tokio::test]
-    async fn generate_demo_artifacts_writes_manifest_and_import_metadata() {
+    async fn generate_demo_outputs_writes_manifest_and_import_metadata() {
         let _isolated = IsolatedExampleRoots::with_cache();
         let _tracing = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::ERROR)
             .with_test_writer()
             .try_init();
-        let run = super::generate_demo_artifacts(true).await.expect("demo artifact generation");
+        let run = super::generate_demo_outputs(true).await.expect("demo output generation");
 
         assert!(run.manifest_path.exists(), "manifest should be written");
         assert!(run.workspace_root.exists(), "workspace root should exist");
@@ -1255,8 +1255,8 @@ mod tests {
     #[test]
     fn the_offline_demo_saves_what_the_hierarchy_materializes() {
         let _isolated = IsolatedExampleRoots::with_cache();
-        let workspace_root = super::artifact_root();
-        std::fs::create_dir_all(&workspace_root).expect("create demo artifact root");
+        let workspace_root = super::output_root();
+        std::fs::create_dir_all(&workspace_root).expect("create demo output root");
         super::save_mediapm_document(
             &workspace_root.join("mediapm.ncl"),
             &mediapm::MediaPmDocument::default(),
@@ -1307,7 +1307,7 @@ mod tests {
             .with_test_writer()
             .try_init();
 
-        let run = super::generate_demo_artifacts(true).await.expect("first demo sync");
+        let run = super::generate_demo_outputs(true).await.expect("first demo sync");
 
         let manifest_text = std::fs::read_to_string(&run.manifest_path).expect("read manifest");
         let manifest_json: serde_json::Value =
@@ -1324,7 +1324,7 @@ mod tests {
         assert!(first_materialized > 0, "first sync must materialize paths");
 
         // Reopen the same workspace the first sync left behind; the service's
-        // CAS lock is released when `generate_demo_artifacts` returns, so the
+        // CAS lock is released when `generate_demo_outputs` returns, so the
         // second open does not hit store-lock contention.
         let mut second_service = mediapm::MediaPmService::new_fs_at_with_runtime_storage_overrides(
             &run.workspace_root,
@@ -1452,7 +1452,7 @@ mod tests {
 
     /// Pins the demo's own hardlink verification against the single
     /// interleaving that makes
-    /// `generate_demo_artifacts_writes_manifest_and_import_metadata`
+    /// `generate_demo_outputs_writes_manifest_and_import_metadata`
     /// intermittent.
     ///
     /// [`super::assert_materialized_output_hardlinked_to_cas`] can only fail when
@@ -1472,7 +1472,7 @@ mod tests {
     #[tokio::test]
     async fn demo_hardlink_check_survives_a_later_wal_drain_of_the_same_blob() {
         let _env_lock = example_isolation::lock_process_env();
-        let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let root = mediapm_utils::temp::output_dir().expect("artifact dir");
         let cas = FileSystemCas::open(&root.path().join("store")).await.expect("open demo cas");
 
         let hash = cas.put(Bytes::from_static(SAMPLE_AV_MP4_BYTES)).await.expect("put fixture");
@@ -1530,32 +1530,32 @@ mod tests {
 
     /// Ensures artifact root stays stable for docs and scripts.
     #[test]
-    fn artifact_root_is_stable() {
+    fn output_root_is_stable() {
         let _env_lock = example_isolation::lock_process_env();
-        let previous_artifact_root = std::env::var_os(example_isolation::ARTIFACT_ROOT_ENV);
+        let previous_output_root = std::env::var_os(example_isolation::OUTPUT_ROOT_ENV);
         // SAFETY: test clears one process env key in a controlled scope and
         // restores the previous value before exit.
         unsafe {
-            std::env::remove_var(example_isolation::ARTIFACT_ROOT_ENV);
+            std::env::remove_var(example_isolation::OUTPUT_ROOT_ENV);
         }
 
-        let text = super::display_path(&super::artifact_root());
-        assert!(text.ends_with("src/mediapm/examples/artifacts/demo"));
+        let text = super::display_path(&super::output_root());
+        assert!(text.ends_with("src/mediapm/examples/outputs/demo"));
 
         // SAFETY: restore previous env var value for test isolation.
         unsafe {
-            match &previous_artifact_root {
-                Some(value) => std::env::set_var(example_isolation::ARTIFACT_ROOT_ENV, value),
-                None => std::env::remove_var(example_isolation::ARTIFACT_ROOT_ENV),
+            match &previous_output_root {
+                Some(value) => std::env::set_var(example_isolation::OUTPUT_ROOT_ENV, value),
+                None => std::env::remove_var(example_isolation::OUTPUT_ROOT_ENV),
             }
         }
     }
 
-    /// Ensures cleanup retries can remove readonly-marked demo artifact trees
+    /// Ensures cleanup retries can remove readonly-marked demo output trees
     /// created by prior sync runs on Windows hosts.
     #[test]
     fn remove_dir_all_with_retry_handles_readonly_tree() {
-        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
+        let temp = mediapm_utils::temp::output_dir().expect("tempdir");
         let tree_root = temp.path().join("readonly-tree");
         std::fs::create_dir_all(&tree_root).expect("create tree root");
 

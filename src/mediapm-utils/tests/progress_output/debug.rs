@@ -115,7 +115,7 @@ fn progress_debug_without_bars_marks_every_slot_unbound() {
 /// file-backed sink, so an ordinary run can be logged without code changes.
 #[test]
 fn progress_debug_env_var_enables_a_file_sink() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
     let debug_path = dir.path().join("debug-env.jsonl");
     let debug_path_str = debug_path.to_str().expect("utf-8 temp path").to_string();
 
@@ -141,7 +141,7 @@ fn progress_debug_env_var_enables_a_file_sink() {
 /// the first screen's frames are lost.
 #[test]
 fn progress_debug_appends_across_screens() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
     let debug_path = dir.path().join("debug-append.jsonl");
     let debug_path_str = debug_path.to_str().expect("utf-8 temp path").to_string();
 

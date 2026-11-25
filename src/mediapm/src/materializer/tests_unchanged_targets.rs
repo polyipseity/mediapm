@@ -45,7 +45,7 @@ fn the_fixture_entry_is_the_one_these_tests_re_sync() {
 /// to read any skip as a failure, so a clean re-sync would have ended red.
 #[tokio::test]
 async fn an_unchanged_entry_is_skipped_and_the_run_stays_clean() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::from_static(b"unchanged-entry")).await.unwrap();
@@ -94,7 +94,7 @@ async fn an_unchanged_entry_is_skipped_and_the_run_stays_clean() {
 /// re-sync missing the one entry it already had.
 #[tokio::test]
 async fn a_skipped_entry_keeps_its_record_so_the_stale_scan_leaves_it_alone() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::from_static(b"kept-record")).await.unwrap();
@@ -132,7 +132,7 @@ async fn a_skipped_entry_keeps_its_record_so_the_stale_scan_leaves_it_alone() {
 /// content changed and leave the old bytes under the new document's name.
 #[tokio::test]
 async fn an_entry_whose_hash_changed_is_written_again() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let first_hash = cas.put(bytes::Bytes::from_static(b"first-content")).await.unwrap();
@@ -179,7 +179,7 @@ async fn an_entry_whose_hash_changed_is_written_again() {
 /// recorded hash alone would skip the one path that needed writing.
 #[tokio::test]
 async fn an_entry_whose_file_was_deleted_is_written_again() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::from_static(b"deleted-then-restored")).await.unwrap();
@@ -238,7 +238,7 @@ async fn sync_edit_over_the_entry(
     payload: &[u8],
     replacement: &[u8],
 ) -> (mediapm_utils::temp::ManagedTempDir, MaterializeReport, PathBuf) {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::copy_from_slice(payload)).await.unwrap();
@@ -306,7 +306,7 @@ async fn an_external_write_that_changes_the_length_is_written_again() {
 /// which the store is where it belongs rather than here.
 #[tokio::test]
 async fn a_hardlinked_output_is_recognised_while_the_object_behind_it_is_edited() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::from_static(SAME_LENGTH_PAYLOAD)).await.unwrap();
@@ -398,7 +398,7 @@ fn make_symlink(original: &Path, link: &Path) {
 /// writes through hardlink and never produces one itself.
 #[tokio::test]
 async fn a_symlink_naming_the_right_object_skips() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::from_static(SAME_LENGTH_PAYLOAD)).await.unwrap();
@@ -443,7 +443,7 @@ async fn a_symlink_naming_the_wrong_object_is_written_again() {
     // the test would pass against a build that never read a symlink at all.
     const DECOY_PAYLOAD: &[u8] = b"SAME-NUMBER-OF-BYTES";
 
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::from_static(SAME_LENGTH_PAYLOAD)).await.unwrap();
@@ -498,7 +498,7 @@ async fn decoy_hash_len(cas: &FileSystemCas, hash: mediapm_cas::Hash) -> u64 {
 /// object.
 #[tokio::test]
 async fn an_untouched_output_skips_whatever_method_produced_it() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::from_static(SAME_LENGTH_PAYLOAD)).await.unwrap();

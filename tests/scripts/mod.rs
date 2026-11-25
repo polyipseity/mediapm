@@ -50,7 +50,7 @@ const TEST_SCRIPTS: [&str; 2] = ["test-clean-mediapm-temp.sh", "test-clean-media
 
 /// Fake managed-prefix dirs the janitor must remove.
 const FAKE_MEDIAPM_DIRS: [&str; 3] =
-    ["mediapm-artifact-fake", "mediapm-cache-fake", "mediapm-runtime-fake"];
+    ["mediapm-output-fake", "mediapm-cache-fake", "mediapm-runtime-fake"];
 
 /// Non-mediapm dirs the janitor must never touch.
 const CONTROL_DIRS: [&str; 2] = ["cli-add-hierarchy-123-456", "unrelated-dir"];
@@ -425,7 +425,7 @@ fn printed_paths_compare_in_one_shell_spelling() {
     assert_ne!(shell_printed("Users/me/x"), canonical);
     assert_eq!(shell_printed("Users/me/x"), "Users/me/x");
     assert_eq!(shell_printed("/xy/Users/me"), "/xy/Users/me");
-    assert_eq!(shell_printed("/tmp/mediapm-artifact-x"), "/tmp/mediapm-artifact-x");
+    assert_eq!(shell_printed("/tmp/mediapm-output-x"), "/tmp/mediapm-output-x");
 }
 
 /// A `PATH` value whose first `rm` runs `body` as a `/bin/sh` script.
@@ -855,7 +855,7 @@ const PWSH_UNIX_DEEP_CHAIN_LEVELS: usize = 50;
 /// `1`, so it builds 39 directories rather than 40. The deepest path at that
 /// depth is the temp base (`C:\Users\<user>\AppData\Local\Temp`, 39
 /// characters on the CI runner) plus the sandbox name (at most 17, for
-/// `mediapm-<pid>-<seq>`), `\scope` (6), `\mediapm-artifact-fake` (22), two
+/// `mediapm-<pid>-<seq>`), `\scope` (6), `\mediapm-output-fake` (22), two
 /// bytes per level (78) and `\leaf` (5): 167 characters, 92 inside the limit.
 const WINDOWS_DEEP_CHAIN_LEVELS: usize = 40;
 

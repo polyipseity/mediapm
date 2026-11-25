@@ -116,7 +116,7 @@ struct Fixture {
 impl Fixture {
     /// Builds a fixture whose payload root already holds `linux/tool.sh`.
     async fn with_script() -> Self {
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let runtime_root = tmp.path().join("runtime");
         let payload_root = tmp.path().join("payload");
         let cas = InMemoryCas::new();
@@ -419,7 +419,7 @@ async fn a_hard_linked_payload_shares_the_payload_inode() {
 /// file.
 #[tokio::test]
 async fn an_archive_payload_is_unpacked_once() {
-    let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
     let runtime_root = tmp.path().join("runtime");
     let payload_root = tmp.path().join("payload");
     let cas = InMemoryCas::new();
@@ -646,7 +646,7 @@ fn recorded_arguments(sandbox: &Path) -> Vec<String> {
 /// names a path inside an unpacked archive is the case a key-by-key comparison
 /// would miss.
 async fn fixture_with_companions() -> (Fixture, BTreeMap<String, String>) {
-    let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
     let runtime_root = tmp.path().join("runtime");
     let payload_root = tmp.path().join("payload");
     let cas = InMemoryCas::new();

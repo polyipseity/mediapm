@@ -91,7 +91,7 @@ fn expect_rejected_v4(contract: &str, source: &str) {
 /// evaluates a Nickel source file; the helper keeps the temp dir alive until the
 /// decode finishes.
 fn decode_document(source: impl AsRef<[u8]>) -> Result<MediaPmDocument, mediapm::MediaPmError> {
-    let dir = mediapm_utils::temp::artifact_dir().expect("create temp dir for decode helper");
+    let dir = mediapm_utils::temp::output_dir().expect("create temp dir for decode helper");
     let path = dir.path().join("mediapm.ncl");
     std::fs::write(&path, source.as_ref()).expect("write temp mediapm.ncl");
     mediapm::load_mediapm_document(&path)
@@ -1085,7 +1085,7 @@ fn regression_runtime_open_record_no_longer_accepted() {
 /// rules, because the export's only job is to publish these exact bytes.
 #[test]
 fn strict_exported_contracts_are_the_sources_the_runtime_evaluates() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("create temp dir");
+    let dir = mediapm_utils::temp::output_dir().expect("create temp dir");
     let export_dir = dir.path().join("mediapm");
     let conductor_dir = dir.path().join("conductor");
     mediapm::export_config_contracts(Some(&export_dir), &conductor_dir).expect("export contracts");
@@ -1140,7 +1140,7 @@ fn strict_exported_contracts_are_the_sources_the_runtime_evaluates() {
 /// same document survives beside them.
 #[test]
 fn regression_no_json_schema_is_exported() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("create temp dir");
+    let dir = mediapm_utils::temp::output_dir().expect("create temp dir");
     let export_dir = dir.path().join("mediapm");
     let conductor_dir = dir.path().join("conductor");
     mediapm::export_config_contracts(Some(&export_dir), &conductor_dir).expect("export contracts");
@@ -1373,7 +1373,7 @@ fn strict_verify_strategy_accepts_known_names() {
 /// with the one a later read derives.
 #[test]
 fn regression_a_loaded_document_arrives_trimmed() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("create temp dir");
+    let dir = mediapm_utils::temp::output_dir().expect("create temp dir");
     let paths = mediapm::MediaPmPaths::from_root(dir.path());
     let document = MediaPmDocument {
         media: std::collections::BTreeMap::from([(

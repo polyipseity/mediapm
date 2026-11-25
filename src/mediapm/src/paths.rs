@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn default_paths_use_dot_mediapm_root() {
-        let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+        let root = mediapm_utils::temp::output_dir().expect("tempdir");
         let paths = MediaPmPaths::from_root(root.path());
         let expected_tmp_dir = runtime_dir_for_workspace(root.path());
 
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn overrides_resolve_with_split_roots() {
-        let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+        let root = mediapm_utils::temp::output_dir().expect("tempdir");
         let base = MediaPmPaths::from_root(root.path());
         let overrides = MediaPmPathOverrides {
             mediapm_dir: Some(PathBuf::from(".mediapm-runtime")),

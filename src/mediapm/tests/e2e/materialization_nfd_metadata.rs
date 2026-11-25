@@ -80,7 +80,7 @@ fn document_with_nfc_metadata(variant_hash: &str) -> MediaPmDocument {
 #[tokio::test]
 async fn sync_hierarchy_normalizes_nfc_metadata_to_nfd_materialized_path()
 -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let mut service = service_at(root.path(), None).await?;
     let hash = seed_cas(&service, Bytes::from_static(PAYLOAD), "default variant").await?;
     service.conductor().cas().ensure_blob_materialized(hash).await.map_err(|source| {

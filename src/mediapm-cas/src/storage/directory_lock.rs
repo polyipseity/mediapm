@@ -117,7 +117,7 @@ mod tests {
     /// the store a person is likely to delete by hand.
     #[tokio::test]
     async fn a_store_lock_names_itself() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let guard = DirectoryLockGuard::lock(dir.path()).await.unwrap();
         // Read after releasing the lock: Windows mandatory exclusive locks deny
         // reads from other handles, including a same-process read_to_string
@@ -135,7 +135,7 @@ mod tests {
     /// This validates RAII drop semantics (both layers released).
     #[tokio::test]
     async fn directory_lock_new_releases_on_drop() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let guard = DirectoryLockGuard::lock(dir.path()).await.unwrap();
         drop(guard);
         // Must succeed after drop.
@@ -147,7 +147,7 @@ mod tests {
     /// acquiring again must succeed.
     #[tokio::test]
     async fn directory_lock_same_process_contention() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let guard = DirectoryLockGuard::lock(dir.path()).await.unwrap();
 
         // Second acquire must fail with LockContention (Layer 1).
@@ -171,7 +171,7 @@ mod tests {
     /// residue until the store is opened again.
     #[tokio::test]
     async fn a_contended_open_leaves_the_header_alone() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("store dir");
+        let dir = mediapm_utils::temp::output_dir().expect("store dir");
         drop(DirectoryLockGuard::lock(dir.path()).await.expect("the first open writes the header"));
 
         let lock_path = dir.path().join("lock");
@@ -214,7 +214,7 @@ mod tests {
     /// lock and retry — must succeed.
     #[tokio::test]
     async fn directory_lock_cross_process_contention() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let lock_path = dir.path().join("lock");
 
         // Manually acquire the flock on the lock file.
@@ -245,7 +245,7 @@ mod tests {
     /// return `LockContention` immediately, not block or timeout.
     #[tokio::test]
     async fn directory_lock_fail_fast_no_blocking() {
-        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let dir = mediapm_utils::temp::output_dir().unwrap();
         let _guard = DirectoryLockGuard::lock(dir.path()).await.unwrap();
 
         // Spawn a second task that tries to acquire the same lock.

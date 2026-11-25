@@ -228,7 +228,7 @@ async fn a_file_the_document_never_asked_for_does_not_stop_the_folder_being_skip
 /// of what it resolved to.
 #[tokio::test]
 async fn a_folder_whose_variant_path_is_a_directory_stays_missing() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::from_static(b"blocked-folder-variant")).await.unwrap();
@@ -313,7 +313,7 @@ const RESIDENT_PAYLOAD: &[u8] = b"put there by something other than this run";
 /// `materialized_paths == 1` apart from a run that counted the folder wrongly.
 #[tokio::test]
 async fn a_folder_member_whose_path_is_a_directory_is_counted_as_missing() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let archive = cas
@@ -418,7 +418,7 @@ const DOWNLOADS_PREFIXED_FILE_MEMBER: &str = "downloads/cover";
 /// is what lets the counters be read, for the reason the test above gives.
 #[tokio::test]
 async fn a_folder_whose_file_member_lands_first_is_counted_as_missing() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let archive = cas
@@ -493,7 +493,7 @@ async fn a_folder_whose_file_member_lands_first_is_counted_as_missing() {
 /// one collision, so the two refusals cannot drift apart again.
 #[tokio::test]
 async fn a_folder_whose_nested_member_lands_first_is_counted_as_missing() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let archive = cas
@@ -580,7 +580,7 @@ async fn a_folder_whose_member_directory_cannot_be_made_fails_the_run() {
     const BLOCKED_MEMBER: &str = "read-only/sub/member.bin";
     const BLOCKED_PAYLOAD: &[u8] = b"member payload that never lands";
 
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let archive = cas
@@ -651,7 +651,7 @@ async fn a_folder_whose_member_directory_cannot_be_made_fails_the_run() {
 /// carries no claim about the call site reaching that exit.
 #[tokio::test]
 async fn the_walk_runs_out_of_ancestors_only_for_a_relative_path_no_call_site_passes() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
 
     let blocker = root.path().join("blocker.bin");
     std::fs::write(&blocker, b"a file standing where a directory belongs").unwrap();
@@ -696,7 +696,7 @@ async fn the_walk_runs_out_of_ancestors_only_for_a_relative_path_no_call_site_pa
 /// blocked member.
 #[tokio::test]
 async fn a_folder_with_one_blocked_variant_stays_missing_though_its_good_one_is_correct() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let payload = b"blocked-and-good-folder-variant";

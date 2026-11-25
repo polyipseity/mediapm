@@ -39,7 +39,7 @@ const FFPROBE_NOT_INSTALLED: &str = "ffprobe-not-installed-in-this-test";
 /// and the bytes that hash resolves to.
 #[tokio::test]
 async fn a_local_source_is_staged_before_its_hash_is_written() {
-    let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let root = mediapm_utils::temp::output_dir().expect("artifact dir");
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
     let payload = root.path().join("local.mkv");
     std::fs::write(&payload, LOCAL_SOURCE_BYTES).expect("write payload");
@@ -137,7 +137,7 @@ fn seed_ffprobe_cache(root: &Path, payload: &Path) {
 /// asserted here.
 #[tokio::test]
 async fn a_reopened_workspace_resolves_the_staged_hash() {
-    let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let root = mediapm_utils::temp::output_dir().expect("artifact dir");
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
     let payload = root.path().join("local.mkv");
     std::fs::write(&payload, LOCAL_SOURCE_BYTES).expect("write payload");

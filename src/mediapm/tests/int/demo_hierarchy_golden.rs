@@ -50,7 +50,7 @@ fn golden_fixture_link_paths_match_helpers() {
 
 #[test]
 fn assert_tree_under_accepts_synthetic_offline_layout() {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let golden = load_demo_hierarchy_golden_document();
     let hierarchy_root = root.path();
 
@@ -61,7 +61,7 @@ fn assert_tree_under_accepts_synthetic_offline_layout() {
 
 #[test]
 fn assert_tree_under_accepts_synthetic_online_layout() {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let golden = load_demo_hierarchy_golden_document();
     let hierarchy_root = root.path();
     let media_folder = hierarchy_root.join(&golden.online.media_folder);
@@ -86,7 +86,7 @@ fn assert_tree_under_accepts_synthetic_online_layout() {
 
 #[test]
 fn assert_tree_under_rejects_missing_online_sidecar_gate() {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let golden = load_demo_hierarchy_golden_document();
     let hierarchy_root = root.path();
     let media_folder = hierarchy_root.join(&golden.online.media_folder);

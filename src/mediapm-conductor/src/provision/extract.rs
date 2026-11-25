@@ -327,7 +327,7 @@ mod tests {
     /// planted there survives only if nothing re-extracted.
     #[test]
     fn a_second_extraction_of_a_completed_entry_is_a_hit() {
-        let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let root = mediapm_utils::temp::output_dir().expect("artifact dir");
         let entry_dir = root.path().join("entry");
         let paths = ExtractPaths {
             entry_dir: entry_dir.clone(),

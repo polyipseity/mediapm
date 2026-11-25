@@ -52,7 +52,7 @@ chmod +x "$real_rm_bin/rm"
 PATH="$real_rm_bin:$PATH"
 export PATH
 
-mkdir -p "$tmpdir/mediapm-artifact-fake1"
+mkdir -p "$tmpdir/mediapm-output-fake1"
 mkdir -p "$tmpdir/mediapm-cache-fake2"
 mkdir -p "$tmpdir/mediapm-runtime-abcdef1234567890"
 mkdir -p "$tmpdir/cli-add-hierarchy-123-456"
@@ -64,7 +64,7 @@ dry_count="$(printf '%s\n' "$dry_out" | grep -c 'would remove:')" || true # chec
 if [ "$dry_count" -ne 3 ]; then
     fail "dry-run reported $dry_count removals, expected 3"
 fi
-for name in mediapm-artifact-fake1 mediapm-cache-fake2 mediapm-runtime-abcdef1234567890; do
+for name in mediapm-output-fake1 mediapm-cache-fake2 mediapm-runtime-abcdef1234567890; do
     case "$dry_out" in
         *"would remove: $tmpdir/$name"*) ;;
         *) fail "dry-run missing $name" ;;
@@ -81,7 +81,7 @@ real_count="$(printf '%s\n' "$real_out" | grep -c 'removed:')" || true # check-s
 if [ "$real_count" -ne 3 ]; then
     fail "real run reported $real_count removals, expected 3"
 fi
-test ! -e "$tmpdir/mediapm-artifact-fake1" || fail "artifact dir not removed"
+test ! -e "$tmpdir/mediapm-output-fake1" || fail "artifact dir not removed"
 test ! -e "$tmpdir/mediapm-cache-fake2" || fail "cache dir not removed"
 test ! -e "$tmpdir/mediapm-runtime-abcdef1234567890" || fail "runtime dir not removed"
 test -d "$tmpdir/cli-add-hierarchy-123-456" || fail "control cli-add-hierarchy-* dir removed"
@@ -118,7 +118,7 @@ mkdir -p "$stub_bin" "$stub_find"
 cat >"$stub_find/find" <<'STUB'
 #!/bin/sh
 # stand in for a find that listed the root and then died
-printf '%s\0' "$1/mediapm-artifact-one" "$1/mediapm-artifact-two"
+printf '%s\0' "$1/mediapm-output-one" "$1/mediapm-output-two"
 exit 1
 STUB
 chmod +x "$stub_find/find"
@@ -138,7 +138,7 @@ STUB
 chmod +x "$stub_bin/mktemp"
 
 scan_root="$tmpdir/scan-root"
-mkdir -p "$scan_root/mediapm-artifact-one" "$scan_root/mediapm-artifact-two"
+mkdir -p "$scan_root/mediapm-output-one" "$scan_root/mediapm-output-two"
 capture="$tmpdir/listing-path"
 
 if PATH="$stub_find:$stub_bin:$PATH" MEDIAPM_TEST_LISTING_CAPTURE="$capture" \
@@ -153,8 +153,8 @@ case "$(cat "$tmpdir/scan.out")" in
     'removed '*) fail "a failed scan swept entries and claimed success: $(cat "$tmpdir/scan.out")" ;;
     *) ;;
 esac
-test -d "$scan_root/mediapm-artifact-one" || fail "a failed scan removed mediapm-artifact-one"
-test -d "$scan_root/mediapm-artifact-two" || fail "a failed scan removed mediapm-artifact-two"
+test -d "$scan_root/mediapm-output-one" || fail "a failed scan removed mediapm-output-one"
+test -d "$scan_root/mediapm-output-two" || fail "a failed scan removed mediapm-output-two"
 
 # The listing must not outlive the run that created it, and this run exits
 # through the find-failure branch.
@@ -169,8 +169,8 @@ fi
 # unlink of the listing is what must not be affected.
 if [ "$(uname -s)" = "Darwin" ] && [ "$(id -u)" -ne 0 ] && command -v chflags >/dev/null 2>&1; then
     stuck_root="$tmpdir/stuck-root"
-    mkdir -p "$stuck_root/mediapm-artifact-stuck/inner"
-    chflags uchg "$stuck_root/mediapm-artifact-stuck/inner"
+    mkdir -p "$stuck_root/mediapm-output-stuck/inner"
+    chflags uchg "$stuck_root/mediapm-output-stuck/inner"
     rm -f "$capture"
     # Only the mktemp stub is on PATH here: the real find has to run for the
     # loop to reach the tree rm refuses.

@@ -537,7 +537,7 @@ mod tests {
         unsafe {
             std::env::remove_var("MEDIAPM_T2_BOOT_PROBE");
         }
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let conductor_dir = dir.path().join(".conductor");
         std::fs::create_dir_all(&conductor_dir).expect("create conductor dir");
         std::fs::write(conductor_dir.join(".env"), "MEDIAPM_T2_BOOT_PROBE=loaded-from-dotenv\n")
@@ -597,7 +597,7 @@ mod tests {
     fn conductor_in_scratch_dir(
         state: &ConductorState,
     ) -> (mediapm_utils::temp::ManagedTempDir, Conductor<InMemoryCas>) {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(dir.path());
         std::fs::create_dir_all(paths.state_file_path.parent().expect("state file parent"))
             .expect("create state dir");

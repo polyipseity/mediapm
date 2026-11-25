@@ -1168,7 +1168,7 @@ mod tests {
     /// order; missing explicit paths are skipped.
     #[test]
     fn discover_config_paths_uses_explicit_paths_in_order() {
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let conductor_dir = tmp.path().join("conductor_dir");
         let paths = RuntimeStoragePaths::new(&conductor_dir);
 
@@ -1186,7 +1186,7 @@ mod tests {
     /// Standalone discovery never picks up `mediapm.ncl` at the parent.
     #[test]
     fn discover_config_paths_does_not_discover_mediapm_ncl() {
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let conductor_dir = tmp.path().join("conductor_dir");
         std::fs::create_dir_all(&conductor_dir).expect("create conductor_dir");
 
@@ -1225,7 +1225,7 @@ mod tests {
     /// the nested directory the loaded document implies.
     #[test]
     fn outermost_config_dir_follows_the_loaded_document_list() {
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         std::fs::write(tmp.path().join("conductor.ncl"), "{}").expect("write root doc");
         let storage_paths = RuntimeStoragePaths::new(tmp.path());
 
@@ -1240,7 +1240,7 @@ mod tests {
     /// parent.
     #[test]
     fn find_first_config_drops_mediapm_ncl() {
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let conductor_dir = tmp.path().join("conductor_dir");
 
         let mediapm = tmp.path().join("mediapm.ncl");
@@ -1259,7 +1259,7 @@ mod tests {
     /// running past its owner's teardown fails instead of resurrecting the tree.
     #[test]
     fn state_file_roundtrip() {
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(&tmp.path().join("conductor_dir"));
         ensure_runtime_root(&paths).expect("create runtime root");
 
@@ -1272,7 +1272,7 @@ mod tests {
     /// A missing state file loads as `None`, not an error.
     #[test]
     fn state_file_missing_returns_none() {
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(&tmp.path().join("conductor_dir"));
         assert_eq!(load_state_file(&paths).expect("load missing state file"), None);
     }
@@ -1280,7 +1280,7 @@ mod tests {
     /// A corrupt state file surfaces as an error rather than a silent default.
     #[test]
     fn state_file_corrupt_errors() {
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(&tmp.path().join("conductor_dir"));
         std::fs::create_dir_all(&paths.conductor_dir).expect("create conductor dir");
         std::fs::write(&paths.state_file_path, b"not json").expect("write corrupt state");
@@ -1293,7 +1293,7 @@ mod tests {
     fn conductor_with_state(
         state: &ConductorState,
     ) -> (mediapm_utils::temp::ManagedTempDir, Conductor<mediapm_cas::InMemoryCas>) {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(dir.path());
         save_state_file(&paths, state).expect("seed state file");
         (dir, Conductor::new(paths, mediapm_cas::new_in_memory_cas()))
@@ -1520,7 +1520,7 @@ mod tests {
     /// reads, which makes the on-disk assertion the one that matters.
     #[tokio::test]
     async fn run_gc_leaves_its_evictions_in_the_state_file() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         write_single_workflow_config(dir.path(), "default");
         let paths = RuntimeStoragePaths::new(dir.path());
 
@@ -1568,7 +1568,7 @@ mod tests {
     /// favour of the built-in default.
     #[test]
     fn gc_settings_reach_the_loop_interval_and_the_pass_ttl() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let conductor =
             Conductor::new(RuntimeStoragePaths::new(dir.path()), mediapm_cas::new_in_memory_cas())
                 .with_gc_settings(1, 1);
@@ -1590,7 +1590,7 @@ mod tests {
     /// would be the file a later reader might pick up.
     #[test]
     fn a_saved_state_file_is_whole_and_leaves_no_temporary_file() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(dir.path());
         let (state, key) = state_with_step_instance(&step_ref("default", "step-0-echo"));
 
@@ -1628,7 +1628,7 @@ mod tests {
     /// and the next load would have failed on a document that never existed.
     #[test]
     fn an_interrupted_save_keeps_the_previous_file_and_cleans_up() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(dir.path());
         let (state, _key) = state_with_step_instance(&step_ref("default", "step-0-echo"));
         save_state_file(&paths, &state).expect("save the good state");
@@ -1659,7 +1659,7 @@ mod tests {
     /// holding one `state.json`. Failing instead is what lets the pass stop.
     #[test]
     fn a_state_save_into_a_removed_root_does_not_recreate_it() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(dir.path());
         let root = paths.state_file_path.parent().expect("state parent").to_path_buf();
         drop(dir);
@@ -1681,7 +1681,7 @@ mod tests {
     /// root removed whether the loop stops or not.
     #[tokio::test]
     async fn the_background_loop_stops_when_its_root_is_removed() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         write_single_workflow_config(dir.path(), "default");
         let paths = RuntimeStoragePaths::new(dir.path());
         let state = ConductorState::new_empty();
@@ -1721,7 +1721,7 @@ mod tests {
     /// the slot on its way out.
     #[tokio::test]
     async fn a_stopped_background_loop_can_be_started_again() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         write_single_workflow_config(dir.path(), "default");
         let paths = RuntimeStoragePaths::new(dir.path());
         let root = paths.state_file_path.parent().expect("state parent").to_path_buf();
@@ -1767,7 +1767,7 @@ mod tests {
     /// A removed root reads as gone, and an existing one does not.
     #[test]
     fn runtime_root_is_gone_tracks_the_state_directory() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(dir.path());
         std::fs::create_dir_all(paths.state_file_path.parent().expect("state parent"))
             .expect("create root");
@@ -1780,7 +1780,7 @@ mod tests {
     /// A foreground entry point creates the root it is about to write into.
     #[test]
     fn ensure_runtime_root_creates_the_state_directory() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(&dir.path().join("nested").join("runtime"));
 
         ensure_runtime_root(&paths).expect("create root");
@@ -1795,7 +1795,7 @@ mod tests {
     /// dropped the result would show the first and not the second.
     #[tokio::test]
     async fn the_background_loop_runs_a_pass_and_stops_on_shutdown() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         write_single_workflow_config(dir.path(), "default");
         let paths = RuntimeStoragePaths::new(dir.path());
         let live = Hash::from_content(b"live");
@@ -1838,7 +1838,7 @@ mod tests {
     /// maintenance in name only.
     #[tokio::test]
     async fn a_background_pass_keeps_declared_bytes_and_reclaims_orphans() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(dir.path());
         let live = Hash::from_content(b"live");
         let mut state = ConductorState::new_empty();
@@ -1890,7 +1890,7 @@ mod tests {
     /// written, because the writer is the same code the guard stopped.
     #[tokio::test]
     async fn dropping_the_facade_cancels_the_pass() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         write_single_workflow_config(dir.path(), "default");
         let paths = RuntimeStoragePaths::new(dir.path());
         let live = Hash::from_content(b"live");
@@ -1929,7 +1929,7 @@ mod tests {
     /// foreground entry point creates it before the save that needs it.
     #[test]
     fn state_file_path_is_configurable() {
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let custom = tmp.path().join("custom").join("state.json");
         let paths = RuntimeStoragePaths::new(&tmp.path().join("conductor_dir"))
             .with_config_paths(Vec::new(), custom.clone());
@@ -2086,7 +2086,7 @@ mod tests {
     #[tokio::test]
     async fn migrated_hit_keeps_step_instance_pointer_consistent_after_later_workflow_failure() {
         // Arrange: run once so step-a is recorded, then downgrade it to v7.
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let config_path = dir.path().join("conductor.ncl");
         std::fs::write(
             &config_path,

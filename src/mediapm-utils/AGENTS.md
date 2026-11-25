@@ -8,7 +8,7 @@ Crate: `mediapm-utils`
 | --- | --- | --- |
 | `types` | `StringMap`, `BinaryInputMap` type aliases | always |
 | `path` | `PathMode` enum, `parse_path_mode`, `resolve_path_for_root` | always |
-| `temp` | `artifact_dir`, `cache_dir`, `runtime_dir_for_workspace`, `is_managed_path`, `remove_dir_all_with_retry` | always |
+| `temp` | `output_dir`, `cache_dir`, `runtime_dir_for_workspace`, `is_managed_path`, `remove_dir_all_with_retry` | always |
 | `builtin` | `describe()`, `BuiltinMeta`, `validate_only_known_keys()`, `BuiltinCliArgs`, `parse_string_pairs` | `cli` feature for `BuiltinCliArgs`/`parse_string_pairs` |
 | `nickel` | `render_document_as_nickel`, `is_bare_nickel_identifier`, `render_field_name`, `render_nickel_value` | `nickel` feature |
 

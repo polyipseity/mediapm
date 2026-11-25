@@ -8,8 +8,7 @@ use bytes::Bytes;
 use mediapm_cas::api::CasApi;
 
 use crate::common::{
-    artifact_dir, open_file_cas, open_file_cas_with_background,
-    open_file_cas_with_quiesced_consumer,
+    open_file_cas, open_file_cas_with_background, open_file_cas_with_quiesced_consumer, output_dir,
 };
 
 // ---------------------------------------------------------------------------
@@ -144,7 +143,7 @@ async fn file_system_cas_wal_consumer_processes_batches() {
 /// session left off.
 #[tokio::test]
 async fn file_system_cas_reopen_and_consume_wal() {
-    let dir = artifact_dir();
+    let dir = output_dir();
 
     // First session: open, put data, close (drop cas).
     let hash;
@@ -218,7 +217,7 @@ async fn file_system_cas_background_task_materializes_blob() {
 /// entries from a previous session are consumed on re-open).
 #[tokio::test]
 async fn file_system_cas_background_task_survives_reopen() {
-    let dir = artifact_dir();
+    let dir = output_dir();
 
     // First session: put data and let background materialize it.
     let cas = mediapm_cas::FileSystemCas::open_with_strategies_and_interval(

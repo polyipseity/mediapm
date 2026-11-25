@@ -18,7 +18,7 @@ use crate::common::{read_state, service_with_cache, test_sync_progress_overrides
 /// `logical_tool_requires_sync` returns `true` for a tool absent from state.
 #[tokio::test]
 async fn sync_tool_requires_sync_when_missing() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let service = MediaPmService::new_fs_at(root.path()).await?;
     let state = MediaPmState::default();
     assert!(service.logical_tool_requires_sync("non-existent", &state).await?);
@@ -29,7 +29,7 @@ async fn sync_tool_requires_sync_when_missing() -> Result<(), mediapm::MediaPmEr
 /// in state with matching canonical version.
 #[tokio::test]
 async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
     // media-tagger is a known tool whose provider resolves without network.
     // The check resolves through `logical_tool_requires_sync`, which opens
@@ -74,7 +74,7 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
 #[tokio::test]
 async fn sync_requires_sync_when_the_cache_root_is_held_open() -> Result<(), mediapm::MediaPmError>
 {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
     let mut overrides = MediaRuntimeStorage {
         cache_root_override: Some(cache_root.path().to_path_buf()),
@@ -161,7 +161,7 @@ async fn sync_tool_registry_entry_version_matches_canonical() -> Result<(), medi
 /// desired.
 #[tokio::test]
 async fn sync_no_tools_need_sync_when_none_desired() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let service = MediaPmService::new_fs_at(root.path()).await?;
     let state = MediaPmState::default();
     let needing = service.collect_tools_requiring_sync(&state).await?;
@@ -173,7 +173,7 @@ async fn sync_no_tools_need_sync_when_none_desired() -> Result<(), mediapm::Medi
 /// state.
 #[tokio::test]
 async fn sync_collects_missing_tool() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let mut overrides = MediaRuntimeStorage::default();
     overrides.tools.insert(
         "media-tagger".to_string(),
@@ -228,7 +228,7 @@ async fn sync_no_pruning_for_configured_tools() -> Result<(), mediapm::MediaPmEr
 #[tokio::test]
 async fn state_v2_on_disk_bridges_to_current_version_on_load() -> Result<(), mediapm::MediaPmError>
 {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let state_path = root.path().join("state.json");
 
     std::fs::write(&state_path, serde_json::to_string_pretty(&v2_state_json(true)).unwrap())
@@ -285,7 +285,7 @@ async fn sync_upgrades_v2_state_to_current_format() -> Result<(), mediapm::Media
 /// path (no crash on missing file).
 #[tokio::test]
 async fn state_default_on_missing_file() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let missing_path = root.path().join("does-not-exist.json");
     let state = mediapm::load_mediapm_state_document(&missing_path)?;
     assert_eq!(state.version, 5, "default state should be the current version");

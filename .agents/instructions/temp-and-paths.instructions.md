@@ -14,11 +14,11 @@ All mediapm-owned temp roots use one prefix: `mediapm-{role}-{unique}`. `MEDIAPM
 
 | Role | Helper | Typical use |
 | --- | --- | --- |
-| artifact | `artifact_dir()` | Example/test workspace roots, test harness roots |
+| output | `output_dir()` | Example/test workspace roots, test harness roots |
 | cache | `cache_dir()` | Hermetic user-level download cache |
 | runtime | `runtime_dir_for_workspace(root)` | Conductor sandbox tmp root, stable 16-hex hash of workspace path |
 
-Artifact and cache roots are RAII `ManagedTempDir`; bind to a local for the full scope.
+Output and cache roots are RAII `ManagedTempDir`; bind to a local for the full scope.
 
 ### Runtime tmp lifecycle
 
@@ -33,7 +33,7 @@ Rules:
 
 ## Why a CAS temp root is safe to remove
 
-A `mediapm-artifact-*` root holding a `mediapm-cas` store may be removed as soon as the last `FileSystemCas` handle drops. `FileSystemCas::drop` cancels the background WAL consumer and closes the mutation gate (`mediapm_cas::io_gate`): close blocks until every already-dispatched file-system mutation has finished and refuses every later one, so no `create_dir_all` can resurrect a removed tree.
+A `mediapm-output-*` root holding a `mediapm-cas` store may be removed as soon as the last `FileSystemCas` handle drops. `FileSystemCas::drop` cancels the background WAL consumer and closes the mutation gate (`mediapm_cas::io_gate`): close blocks until every already-dispatched file-system mutation has finished and refuses every later one, so no `create_dir_all` can resurrect a removed tree.
 
 - Lease every operation that can create a directory entry (directory creation, file creation, write-plus-rename pairs) through `CasIoGate::run`. Writes through an already-open file handle and reads need no lease. Never hold a lease across `.await`; take and release it inside the blocking closure, or `close` can deadlock on a `current_thread` runtime.
 - The gate closes on the last handle only (an `Arc` token counted in `Drop`), so a dropped clone never closes the store out from under a sibling.
@@ -60,14 +60,14 @@ The test-runner `test` subcommand runs gates last: nextest, then the unprefixed-
 
 ## Env overrides and isolation
 
-`MEDIAPM_EXAMPLE_ARTIFACT_ROOT` and `MEDIAPM_EXAMPLE_CACHE_ROOT` are example-layer only. The real OS user cache is not managed temp and is never cleaned by the janitor.
+`MEDIAPM_EXAMPLE_OUTPUT_ROOT` and `MEDIAPM_EXAMPLE_CACHE_ROOT` are example-layer only. The real OS user cache is not managed temp and is never cleaned by the janitor.
 
 ### Parallelism constraints
 
-- Tests use `mediapm::example_isolation::IsolatedExampleRoots`. `with_cache()` or `artifact_only()` hold the process-wide env lock for the guard lifetime; never nest lock/guards (`parking_lot::Mutex` is non-reentrant).
+- Tests use `mediapm::example_isolation::IsolatedExampleRoots`. `with_cache()` or `output_only()` hold the process-wide env lock for the guard lifetime; never nest lock/guards (`parking_lot::Mutex` is non-reentrant).
 - Direct env mutation without a guard must hold `example_isolation::lock_process_env()` for the mutation scope. Tests that depend on the default environment must hold the lock too, whether reading a seam or assuming one is not installed.
-- Integration tests use `artifact_dir() + cache_dir() + cache_root_override`; never the real OS cache or canonical example artifact roots. Bind `ManagedTempDir` locals for the full scope and pass `cache_root_override` when sync/provisioning/version resolution runs.
-- Share-violation fallbacks use `isolated_artifact_dir()` and keep the returned `ManagedTempDir` alive until cleanup.
+- Integration tests use `output_dir() + cache_dir() + cache_root_override`; never the real OS cache or canonical example output roots. Bind `ManagedTempDir` locals for the full scope and pass `cache_root_override` when sync/provisioning/version resolution runs.
+- Share-violation fallbacks use `isolated_output_dir()` and keep the returned `ManagedTempDir` alive until cleanup.
 - Explicit `cargo run --example` resolves the real OS user-level cache via `example_isolation::user_level_cache_root()` when `MEDIAPM_EXAMPLE_CACHE_ROOT` is unset; embedded tests always isolate it.
 
 ## Paths layout

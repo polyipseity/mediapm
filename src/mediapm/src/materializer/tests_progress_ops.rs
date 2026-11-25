@@ -18,7 +18,7 @@ use super::*;
 /// before any per-entry progress bar work).
 #[tokio::test]
 async fn sync_hierarchy_with_empty_hierarchy_no_progress_ops() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
 
     // Create a CAS at the runtime store path (needed for the CAS parameter,
@@ -73,7 +73,7 @@ async fn sync_hierarchy_with_empty_hierarchy_no_progress_ops() {
 /// that it happens.
 #[tokio::test]
 async fn sync_hierarchy_with_single_media_produces_progress_ops() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
 
     let cas_root = paths.runtime_root.join("store");
@@ -187,7 +187,7 @@ async fn sync_hierarchy_with_single_media_produces_progress_ops() {
 /// row's identity, so it adds a fact to what the row already shows.
 #[tokio::test]
 async fn sync_hierarchy_marks_a_missing_entry_warning() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
 
@@ -238,7 +238,7 @@ async fn sync_hierarchy_marks_a_missing_entry_warning() {
 /// `materialized_paths` rather than a matter of naming.
 #[tokio::test]
 async fn sync_hierarchy_marks_nothing_on_a_skipped_entry() {
-    let workspace = mediapm_utils::temp::artifact_dir().unwrap();
+    let workspace = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(workspace.path());
     let cas = open_hierarchy_cas(&paths).await;
     let payload = b"an entry the second run finds already written";
@@ -285,7 +285,7 @@ async fn sync_hierarchy_marks_nothing_on_a_skipped_entry() {
 /// cheapest real `Err` the materializer produces.
 #[tokio::test]
 async fn sync_hierarchy_marks_a_failed_folder_entry() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
 

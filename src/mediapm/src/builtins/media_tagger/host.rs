@@ -525,7 +525,7 @@ mod tests {
     async fn the_content_hash_is_staged_where_the_pipeline_reads_it() {
         let cas = mediapm_cas::InMemoryCas::new();
         let hash = cas.put(Bytes::from_static(b"media bytes")).await.expect("store the bytes");
-        let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let sandbox = mediapm_utils::temp::output_dir().expect("artifact dir");
         let args = BTreeMap::from([(INPUT_CONTENT.to_string(), hash.to_string())]);
 
         let staged = stage_content(&args, &cas, sandbox.path())
@@ -548,7 +548,7 @@ mod tests {
     #[tokio::test]
     async fn a_step_that_binds_no_content_stages_nothing() {
         let cas = mediapm_cas::InMemoryCas::new();
-        let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let sandbox = mediapm_utils::temp::output_dir().expect("artifact dir");
 
         let staged = stage_content(&BTreeMap::new(), &cas, sandbox.path())
             .await

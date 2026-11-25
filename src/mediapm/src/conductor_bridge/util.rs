@@ -49,7 +49,7 @@ mod tests {
 
     #[test]
     fn write_bytes_if_changed_writes_when_content_differs() {
-        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let tmp = mediapm_utils::temp::output_dir().unwrap();
         let path = tmp.path().join("test.txt");
 
         // First write: file doesn't exist yet, should create it.
@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn write_bytes_if_changed_skips_write_when_content_identical() {
-        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let tmp = mediapm_utils::temp::output_dir().unwrap();
         let path = tmp.path().join("test.txt");
 
         // Write initial content and record mtime (with sub-second precision).
@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn write_bytes_if_changed_creates_parent_directories() {
-        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let tmp = mediapm_utils::temp::output_dir().unwrap();
         let path = tmp.path().join("a/b/c/test.txt");
 
         // File is in a deeply nested path that doesn't exist yet.
@@ -155,7 +155,7 @@ mod tests {
             }
         }
 
-        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let tmp = mediapm_utils::temp::output_dir().unwrap();
         let path = tmp.path().join("mediapm.ncl");
         let previous = crate::config::MediaPmDocument::default();
         crate::config::nickel_io::save_mediapm_document(&path, &previous)

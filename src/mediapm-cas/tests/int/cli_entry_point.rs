@@ -187,7 +187,7 @@ fn an_unsupported_shell_is_rejected() {
 /// the store cannot say more than "one of these two, or both".
 #[tokio::test]
 async fn corrupted_lists_recorded_objects() {
-    let dir = common::artifact_dir();
+    let dir = common::output_dir();
     let target = {
         let cas = common::open_file_cas_verifying_at(dir.path()).await;
         let base = cas.put(Bytes::from(common::similar(b'F', b"CHANGED"))).await.unwrap();

@@ -8,7 +8,7 @@ use super::*;
 
 #[tokio::test]
 async fn reconcile_desired_tools_with_override_does_not_touch_real_cache() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     // Record real cache state before the call.
@@ -58,7 +58,7 @@ async fn reconcile_desired_tools_with_override_does_not_touch_real_cache() {
 
 #[tokio::test]
 async fn reconcile_desired_tools_cache_override_supports_explicit_paths() {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let tmp = mediapm_utils::temp::output_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     // Pre-populate the cache dir with an empty store/ dir so the CAS

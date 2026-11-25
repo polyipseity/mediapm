@@ -1020,7 +1020,7 @@ mod tests {
     /// succeeds without external setup.
     #[tokio::test]
     async fn passthrough_cas_help_is_routable() {
-        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
+        let temp = mediapm_utils::temp::output_dir().expect("tempdir");
         let default_store = temp.path().join("store");
 
         let result = super::passthrough_cas(&["--help".to_string()], &default_store).await;
@@ -1035,7 +1035,7 @@ mod tests {
     /// subcommand first and renders its help.
     #[tokio::test]
     async fn passthrough_cas_subcommand_help_prints_subcommand_help() {
-        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
+        let temp = mediapm_utils::temp::output_dir().expect("tempdir");
         let default_store = temp.path().join("store");
 
         let result =
@@ -1050,7 +1050,7 @@ mod tests {
     /// runtime-path wrapper.
     #[tokio::test]
     async fn passthrough_conductor_tool_run_help_is_routable() {
-        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
+        let temp = mediapm_utils::temp::output_dir().expect("tempdir");
         let paths = MediaPmPaths::from_root(temp.path());
 
         let result = super::passthrough_conductor(

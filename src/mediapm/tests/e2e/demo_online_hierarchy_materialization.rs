@@ -467,7 +467,7 @@ fn build_online_hierarchy() -> Vec<HierarchyNode> {
 )]
 async fn demo_online_hierarchy_materialization_matches_golden_tree()
 -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let mut service = service_at(root.path(), Some("media")).await?;
 
     let video_hash = seed_cas(&service, Bytes::from_static(MKV_HEADER), "video").await?;

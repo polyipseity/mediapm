@@ -578,7 +578,7 @@ mod tests {
     fn a_candidate_that_is_not_the_stub_is_rejected() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let impostor = dir.path().join(format!("{STUB_TOOL_BIN_NAME}-impostor"));
         std::fs::write(&impostor, "#!/bin/sh\nexit 0\n").expect("the impostor must be writable");
         std::fs::set_permissions(&impostor, std::fs::Permissions::from_mode(0o755))
@@ -614,7 +614,7 @@ mod tests {
     fn a_candidate_that_outlives_the_probe_bound_is_rejected() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let sleeper = dir.path().join(format!("{STUB_TOOL_BIN_NAME}-sleeper"));
         let seconds = PROBE_TIMEOUT.as_secs().saturating_mul(4);
         std::fs::write(&sleeper, format!("#!/bin/sh\nexec sleep {seconds}\n"))
@@ -650,7 +650,7 @@ mod tests {
     fn a_candidate_whose_child_holds_stderr_is_rejected_within_the_bound() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let path = dir.path().join("mediapm-stub-tool");
         std::fs::write(&path, "#!/bin/sh\n( sleep 20 ) &\necho '--mode is required' >&2\nexit 2\n")
             .expect("write impostor");
@@ -682,7 +682,7 @@ mod tests {
     /// then hands a caller a path that cannot execute.
     #[test]
     fn a_candidate_that_cannot_be_spawned_is_rejected() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let unexecutable = dir
             .path()
             .join(format!("{STUB_TOOL_BIN_NAME}-unexecutable{}", std::env::consts::EXE_SUFFIX));
@@ -708,7 +708,7 @@ mod tests {
     /// panicking.
     #[test]
     fn a_stub_compiles_into_a_directory_that_has_none() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let path = compile_stub_into(dir.path());
 
         assert!(path.is_file(), "the compile must produce the executable at {}", path.display());
@@ -783,7 +783,7 @@ mod tests {
     /// asserts the verdict either way without touching the executable.
     #[test]
     fn a_changed_source_makes_the_compiled_stub_stale() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let path = compile_stub_into(dir.path());
 
         assert!(
@@ -854,7 +854,7 @@ mod tests {
     /// the newer is the one the current build wrote.
     #[test]
     fn hashed_candidates_return_the_executable_and_not_cargo_sidecars() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let older = dir.path().join(hashed_name("0f1e2d3c4b5a6978"));
         let newer = dir.path().join(hashed_name("8877665544332211"));
         std::fs::write(&older, b"#!/bin/sh\nexit 0\n").expect("write the older executable");
@@ -894,7 +894,7 @@ mod tests {
     /// wrong file while still looking like a working step.
     #[test]
     fn copy_mode_writes_the_first_input_to_the_last_argument() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let input = dir.path().join("input.bin");
         let second = dir.path().join("second.bin");
         let output = dir.path().join("output-0.mkv");
@@ -943,7 +943,7 @@ mod tests {
     /// looking successful while it produced nothing.
     #[test]
     fn copy_mode_with_the_input_as_the_output_is_a_usage_failure() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let input = dir.path().join("input.bin");
         std::fs::write(&input, b"payload-bytes").expect("write input");
 
@@ -965,7 +965,7 @@ mod tests {
     /// line means the wiring is wrong, a missing file means the staging is.
     #[test]
     fn copy_mode_with_a_missing_input_file_fails_with_the_io_exit_code() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let missing = dir.path().join("absent.bin");
         let output = dir.path().join("output-0.mkv");
 
@@ -1055,7 +1055,7 @@ mod tests {
     /// yet, because that is the shape a fresh hierarchy has.
     #[test]
     fn emit_mode_writes_every_entry_and_creates_missing_parent_directories() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let first_source = dir.path().join("first.bin");
         let second_source = dir.path().join("second.bin");
         std::fs::write(&first_source, b"first-bytes").expect("write the first source");
@@ -1105,7 +1105,7 @@ mod tests {
     /// the failure total.
     #[test]
     fn emit_mode_with_a_missing_source_writes_no_destination() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let present_source = dir.path().join("present.bin");
         std::fs::write(&present_source, b"present-bytes").expect("write the present source");
         let missing_source = dir.path().join("absent.bin");
@@ -1156,7 +1156,7 @@ mod tests {
     /// destination's parent is an existing file, which is the shape no write can pass.
     #[test]
     fn emit_mode_rolls_back_the_destinations_it_wrote_when_a_later_entry_fails() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let first_source = dir.path().join("first.bin");
         let second_source = dir.path().join("second.bin");
         std::fs::write(&first_source, b"first-bytes").expect("write the first source");
@@ -1204,7 +1204,7 @@ mod tests {
     /// silently smaller than the one the caller asked for.
     #[test]
     fn emit_mode_with_a_malformed_manifest_is_a_usage_failure() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let manifest = dir.path().join("malformed.manifest");
 
         for line in ["just-a-destination\n", "destination\t\n"] {
@@ -1231,7 +1231,7 @@ mod tests {
     /// exists to make loud.
     #[test]
     fn emit_mode_with_an_empty_manifest_is_a_usage_failure() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let manifest = dir.path().join("empty.manifest");
         std::fs::write(&manifest, "").expect("write the empty manifest");
 
@@ -1380,7 +1380,7 @@ mod tests {
     /// all.
     #[test]
     fn a_copy_named_yt_dlp_emits_the_manifest_the_environment_names() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let source = dir.path().join("source.bin");
         std::fs::write(&source, b"sidecar-bytes").expect("write the source");
         let destination = dir.path().join("downloads").join("clip.mkv");
@@ -1426,7 +1426,7 @@ mod tests {
     /// would then fail on a missing capture with nothing naming the cause.
     #[test]
     fn a_copy_named_yt_dlp_without_a_manifest_is_a_usage_failure() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let yt_dlp = copy_stub_named(dir.path(), "yt-dlp");
 
         let (code, _, stderr) = run_program(&yt_dlp, &["--no-progress"], &[], None);
@@ -1446,7 +1446,7 @@ mod tests {
     /// pinned facts.
     #[test]
     fn a_copy_named_ffprobe_answers_the_probe_document() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let input = dir.path().join("input.mkv");
         std::fs::write(&input, b"not-really-media").expect("write the input");
         let ffprobe = copy_stub_named(dir.path(), "ffprobe");
@@ -1486,7 +1486,7 @@ mod tests {
     /// sandbox as its working directory.
     #[test]
     fn a_copy_named_ffmpeg_copies_its_first_input_to_its_last_argument() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let inputs = dir.path().join("inputs");
         std::fs::create_dir_all(&inputs).expect("create the input directory");
         std::fs::write(inputs.join("input-0.bin"), b"media-bytes").expect("write the input");
@@ -1532,7 +1532,7 @@ mod tests {
     /// in-place shape and has to leave the file system exactly as it found it.
     #[test]
     fn a_copy_named_ffmpeg_writes_nothing_when_the_trailing_token_is_a_format_name() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let sandbox = dir.path().join("sandbox");
         std::fs::create_dir_all(&sandbox).expect("create the sandbox");
         let input = sandbox.join("input-0.mkv");
@@ -1589,7 +1589,7 @@ mod tests {
     /// so this pins the classification itself rather than the format's name.
     #[test]
     fn a_copy_named_ffmpeg_with_no_path_shaped_token_writes_nothing() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let sandbox = dir.path().join("sandbox");
         std::fs::create_dir_all(&sandbox).expect("create the sandbox");
         std::fs::write(sandbox.join("media"), b"media-bytes").expect("write the input");
@@ -1628,7 +1628,7 @@ mod tests {
     /// and the step's capture has to find the file still there.
     #[test]
     fn a_copy_named_sd_leaves_the_file_it_rewrites_in_place() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let inputs = dir.path().join("inputs");
         std::fs::create_dir_all(&inputs).expect("create the input directory");
         let staged = inputs.join("input.ffmeta");
@@ -1661,7 +1661,7 @@ mod tests {
     /// rather than to run a script.
     #[test]
     fn a_copy_named_deno_succeeds_with_no_arguments() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let deno = copy_stub_named(dir.path(), "deno");
 
         let (code, stdout, stderr) = run_program(&deno, &[], &[], Some(dir.path()));
@@ -1681,7 +1681,7 @@ mod tests {
     /// stray test harness named `mediapm_stub_tool-<hash>` looks like.
     #[test]
     fn an_unknown_program_name_without_a_mode_is_a_usage_failure() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let impostor = copy_stub_named(dir.path(), "mediapm_stub_tool-0123456789abcdef");
 
         let (code, stdout, stderr) = run_program(&impostor, &[], &[], None);
@@ -1701,7 +1701,7 @@ mod tests {
     /// copy has to copy rather than probe.
     #[test]
     fn a_mode_flag_overrides_the_program_name() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let source = dir.path().join("source.bin");
         std::fs::write(&source, b"payload-bytes").expect("write the source");
         let output = dir.path().join("output.bin");
@@ -1738,7 +1738,7 @@ mod tests {
     /// the mode.
     #[test]
     fn the_invocation_record_names_every_invocation() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let source = dir.path().join("source.bin");
         std::fs::write(&source, b"payload-bytes").expect("write the source");
         let output = dir.path().join("output.bin");
@@ -1793,7 +1793,7 @@ mod tests {
     /// argument vector without a shell.
     #[test]
     fn echo_writes_each_argument_on_its_own_line() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let output = dir.path().join("out.txt");
         let (code, _, stderr) = run_stub(&[
             "--mode",
@@ -1816,7 +1816,7 @@ mod tests {
     /// payload-staging fixture compared by bytes.
     #[test]
     fn echo_writes_a_lone_argument_verbatim() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let output = dir.path().join("out.txt");
         let (code, _, stderr) = run_stub(&[
             "--mode",
@@ -1841,7 +1841,7 @@ mod tests {
     /// says nothing about the argument the test was comparing.
     #[test]
     fn echo_creates_the_outputs_missing_parent() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let output = dir.path().join("downloads").join("out.txt");
         let (code, _, stderr) = run_stub(&[
             "--mode",

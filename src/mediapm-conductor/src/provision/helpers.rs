@@ -503,7 +503,7 @@ mod tests {
     /// succeeded would assert nothing this test's subject decides.
     #[test]
     fn a_leftover_temporary_from_an_older_build_is_not_swept() {
-        let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let root = mediapm_utils::temp::output_dir().expect("artifact dir");
         let metadata_path = root.path().join("metadata.json");
         let leftover = root.path().join("metadata.json.tmp");
         fs::write(&leftover, b"{\"version\": 1").expect("write the abandoned temporary");
@@ -538,7 +538,7 @@ mod tests {
     /// leaves it alone and this save publishes on a name of its own.
     #[test]
     fn a_young_temporary_from_another_process_does_not_block_the_save() {
-        let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let root = mediapm_utils::temp::output_dir().expect("artifact dir");
         let metadata_path = root.path().join("metadata.json");
         let live =
             root.path().join(format!("metadata.json.mediapm-tmp-{}-0", std::process::id() + 1));
@@ -562,7 +562,7 @@ mod tests {
     /// directory must hold nothing else a reader could mistake for it.
     #[test]
     fn a_save_replaces_the_previous_document_and_keeps_no_temporary() {
-        let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let root = mediapm_utils::temp::output_dir().expect("artifact dir");
         let metadata_path = root.path().join("metadata.json");
         fs::write(&metadata_path, b"{\"version\": 1, \"content_map\": {}}\n")
             .expect("write the previous document");
@@ -588,7 +588,7 @@ mod tests {
     /// and fails for another is worse than no test at all.
     #[test]
     fn a_save_is_refused_when_its_parent_cannot_be_created() {
-        let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let root = mediapm_utils::temp::output_dir().expect("artifact dir");
         let blocker = root.path().join("blocked");
         fs::write(&blocker, b"a file where the parent directory would be")
             .expect("write the blocker");
@@ -616,7 +616,7 @@ mod tests {
     fn ensure_user_execute_bit_sets_owner_execute_permission() {
         use std::os::unix::fs::PermissionsExt;
 
-        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let temp = mediapm_utils::temp::output_dir().expect("artifact dir");
         let file_path = temp.path().join("tool.bin");
         fs::write(&file_path, b"tool-bytes").expect("write file");
 

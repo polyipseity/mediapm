@@ -208,7 +208,7 @@ mod tests {
         if probe.output().is_err() {
             return;
         }
-        let tmp = mediapm_utils::temp::artifact_dir().expect("tempdir");
+        let tmp = mediapm_utils::temp::output_dir().expect("tempdir");
         let garbage = tmp.path().join("garbage.bin");
         std::fs::write(&garbage, b"definitely-not-media-bytes").expect("write garbage");
         let err = try_fetch_local_source_metadata_with_ffprobe(&garbage, "ffprobe", &pairs)
@@ -262,7 +262,7 @@ mod tests {
     /// Ensures a cache hit skips the probe on subsequent fetches.
     #[test]
     fn fetch_local_source_metadata_uses_cache_when_provided() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
         let cache = MetadataCache::open(dir.path());
         let probe_path = dir.path().join("media.bin");
         let mut probe_calls = 0;

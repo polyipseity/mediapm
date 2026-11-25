@@ -843,7 +843,7 @@ mod tests {
         use std::process::Command;
 
         let env_pairs = crate::child_env::default_host_inherited_env_pairs();
-        let tmp = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        let tmp = mediapm_utils::temp::output_dir().expect("temp dir");
         let fixture =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media/demo.mkv");
         let src = tmp.path().join(if with_attached_pic { "src.mp4" } else { "src.mkv" });

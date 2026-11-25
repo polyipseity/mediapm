@@ -70,7 +70,7 @@ fn read_conductor_state(
 /// the persisted state file, and the generated doc registers the workflow.
 #[tokio::test]
 async fn sync_executes_import_workflow() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let mut service = service_at(root.path(), None).await?;
 
     let uri = Url::parse("local:phase2-import").expect("url must parse");
@@ -129,7 +129,7 @@ async fn sync_executes_import_workflow() -> Result<(), mediapm::MediaPmError> {
 /// keeps the same instances instead of accumulating fresh per-run copies.
 #[tokio::test]
 async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
 
     // First service: add the source and run a full sync.
     let first_executed;
@@ -183,7 +183,7 @@ async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmErr
 /// supervised by the conductor actor.
 #[tokio::test]
 async fn sync_with_failed_step_then_shutdown_succeeds() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     {
         let mut service = service_at(root.path(), None).await?;
 
@@ -226,7 +226,7 @@ async fn sync_with_failed_step_then_shutdown_succeeds() -> Result<(), mediapm::M
 /// entries resolve workflow variant hashes from conductor state.
 #[tokio::test]
 async fn sync_populates_managed_files_from_conductor_state() -> Result<(), mediapm::MediaPmError> {
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let root = mediapm_utils::temp::output_dir().expect("tempdir");
     let mut service = service_at(root.path(), None).await?;
 
     let uri = Url::parse("local:phase3-managed-files").expect("url must parse");

@@ -46,7 +46,7 @@ const REWRITTEN_MEMBER_NAME: &str = "raw_b.jpg";
 /// leaves nothing.
 #[tokio::test]
 async fn a_media_folder_variant_name_the_sanitizer_would_rewrite_is_refused() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::from_static(b"variant-name-guard-bytes")).await.unwrap();
@@ -122,7 +122,7 @@ async fn a_media_folder_variant_name_the_sanitizer_would_rewrite_is_refused() {
 /// instead is the refusal, and the absence of both spellings on disk.
 #[tokio::test]
 async fn a_rename_rule_output_is_refused_even_when_sanitize_names_is_enabled() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let members = [("cover.jpg", &b"rename-rule-bytes"[..])];

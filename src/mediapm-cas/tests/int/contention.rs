@@ -9,14 +9,14 @@
 use mediapm_cas::error::CasError;
 use mediapm_cas::storage::file_system::FileSystemCas;
 
-use crate::common::{artifact_dir, open_file_cas, put_static};
+use crate::common::{open_file_cas, output_dir, put_static};
 
 /// Opening two `FileSystemCas` instances on the same directory in the same
 /// process must return `LockContention`. Dropping the first and retrying
 /// must succeed.
 #[tokio::test]
 async fn file_system_cas_same_process_contention() {
-    let dir = artifact_dir();
+    let dir = output_dir();
     let cas1 = FileSystemCas::open(dir.path()).await.unwrap();
 
     // Second open must fail with LockContention.
@@ -36,7 +36,7 @@ async fn file_system_cas_same_process_contention() {
 /// `LockContention`. Release the manual lock and retry — must succeed.
 #[tokio::test]
 async fn file_system_cas_contention_with_flock_barrier() {
-    let dir = artifact_dir();
+    let dir = output_dir();
     let lock_path = dir.path().join("lock");
 
     // Manually acquire the flock on the lock file.
@@ -92,7 +92,7 @@ async fn file_system_cas_concurrent_clones_no_contention() {
 /// see it as the same store.
 #[tokio::test]
 async fn file_system_cas_contention_with_canonical_symlink() {
-    let dir = artifact_dir();
+    let dir = output_dir();
     let link = dir.path().join("link");
     #[cfg(unix)]
     std::os::unix::fs::symlink(dir.path(), &link).unwrap();

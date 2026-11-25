@@ -216,7 +216,7 @@ async fn a_file_the_document_never_asked_for_does_not_stop_the_playlist_being_sk
 /// because any one of them alone is satisfiable by a run that stopped early.
 #[tokio::test]
 async fn a_playlist_whose_path_is_a_directory_is_counted_as_missing() {
-    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let root = mediapm_utils::temp::output_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let hash = cas.put(bytes::Bytes::from_static(b"blocked-playlist-media")).await.unwrap();

@@ -511,7 +511,7 @@ fn probe_media_bytes_cached(
         return Ok(cached);
     }
 
-    let temp_dir = mediapm_utils::temp::artifact_dir().map_err(|error| {
+    let temp_dir = mediapm_utils::temp::output_dir().map_err(|error| {
         MediaPmError::Workflow(format!(
             "failed to create temp directory for ffprobe metadata probe of variant '{variant}': {error}"
         ))
@@ -711,7 +711,7 @@ mod tests {
     /// artifact keyed by content, not an in-memory convenience.
     #[test]
     fn the_probe_helper_spawns_once_for_repeated_bytes() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
         let cache = MetadataCache::open(dir.path());
         let bytes = b"definitely not a JSON probe document";
 
@@ -755,7 +755,7 @@ mod tests {
     /// answer for garbage, while the cached answer resolves the template.
     #[tokio::test]
     async fn the_materializer_resolves_variant_metadata_from_the_workspace_cache() {
-        let workspace = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let workspace = mediapm_utils::temp::output_dir().expect("artifact dir");
         let paths = MediaPmPaths::from_root(workspace.path());
         let store_root = paths.runtime_root.join("store");
         std::fs::create_dir_all(&store_root).expect("store dir");

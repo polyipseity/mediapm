@@ -184,7 +184,7 @@ fn tool_shapes() -> Vec<ToolShape> {
 /// recorded as the tool it stands in for.
 #[test]
 fn every_chain_executable_answers_its_own_invocation_shape() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
     let chain = mount_offline_tool_chain(dir.path(), &fixture());
     let env = chain.env_pairs();
     let env: Vec<(&str, &str)> = env.iter().map(|(name, value)| (*name, value.as_str())).collect();
@@ -230,7 +230,7 @@ fn every_chain_executable_answers_its_own_invocation_shape() {
 /// with the fixture's bytes where a media file is expected.
 #[test]
 fn the_yt_dlp_stub_writes_the_whole_sidecar_set() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
     let fixture = fixture();
     let chain = mount_offline_tool_chain(dir.path(), &fixture);
     let env = chain.env_pairs();
@@ -344,7 +344,7 @@ async fn the_mount_provisions_a_tool_whose_payload_executable_is_the_stub() {
         "yt-dlp is a bare binary, so its host payload must be the stub's own bytes",
     );
 
-    let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
     let provisioned = dir.path().join(format!("yt-dlp{}", std::env::consts::EXE_SUFFIX));
     std::fs::write(&provisioned, &payload).expect("write the provisioned payload");
     // The provider materializes a payload with its container's permissions, so a
@@ -433,7 +433,7 @@ async fn the_mock_tagger_backend_answers_its_lookups_and_refuses_another_path() 
 /// is the one the run appends to.
 #[test]
 fn the_chain_publishes_the_environment_the_stub_reads() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
     let chain = mount_offline_tool_chain(dir.path(), &fixture());
     let pairs = chain.env_pairs();
 
