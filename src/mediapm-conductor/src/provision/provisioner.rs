@@ -698,6 +698,41 @@ mod tests {
         drop(guard);
     }
 
+    /// Metadata that still carries the removed `execute_bits_verified` field
+    /// is a cache hit, not a parse failure.
+    ///
+    /// The field is gone from this build's `Metadata` and that struct has no
+    /// `deny_unknown_fields`, so an older directory must keep working: a user
+    /// upgrading should not pay a re-extraction for bookkeeping that was
+    /// never load-bearing. This is the complement of
+    /// `cache_hit_accepts_v2_metadata_without_execute_bits_verified`.
+    #[tokio::test]
+    async fn cache_hit_accepts_v2_metadata_with_the_removed_field_present() {
+        let _serialized = SWEEP_STATE_LOCK.lock().await;
+        let (_tools_dir, cache) = cache_with_payload().await;
+        let content_map = BTreeMap::new();
+        let guard =
+            cache.materialize("legacy-with-exec-bit", &content_map).await.expect("materialize");
+        let payload = guard.payload_dir.clone();
+        let marker = payload.join("marker");
+        std::fs::write(&marker, b"present").expect("marker");
+        let metadata_path = payload.parent().expect("entry").join(METADATA_FILE_NAME);
+        let metadata = format!(
+            "{{\"version\":{VERSION},\"content_map\":{{}},\"last_used_unix_seconds\":{},\"execute_bits_verified\":true}}",
+            now_unix_seconds()
+        );
+        std::fs::write(&metadata_path, metadata)
+            .expect("rewrite metadata with the removed field present");
+        drop(guard);
+
+        let guard = cache
+            .materialize("legacy-with-exec-bit", &content_map)
+            .await
+            .expect("materialize again");
+        assert!(marker.exists(), "hit must reuse payload, not re-extract");
+        drop(guard);
+    }
+
     /// The automatic sweep runs once per cooldown in a process, and a process
     /// that has not swept yet does sweep.
     ///

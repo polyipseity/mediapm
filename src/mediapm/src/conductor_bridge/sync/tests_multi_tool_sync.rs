@@ -468,26 +468,10 @@ async fn sync_parallel_fetch_is_deterministic() {
     // at different paths. Everything else still has to match byte for byte.
     let doc1_raw = std::fs::read(&paths1.conductor_generated_ncl).expect("read generated doc 1");
     let doc2_raw = std::fs::read(&paths2.conductor_generated_ncl).expect("read generated doc 2");
-    let normalize_workspace_root = |document: &[u8], root: &std::path::Path| -> String {
-        let text = String::from_utf8(document.to_vec()).expect("the generated document is UTF-8");
-        let root_text = root.to_string_lossy();
-        let mut normalized = text.replace(root_text.as_ref(), "<workspace>");
-        let forward = root_text.replace('\\', "/");
-        if forward != root_text.as_ref() {
-            normalized = normalized.replace(&forward, "<workspace>");
-        }
-        let json_escaped = root_text.replace('\\', "\\\\");
-        if json_escaped != root_text.as_ref() {
-            normalized = normalized.replace(&json_escaped, "<workspace>");
-        }
-        assert!(
-            normalized.contains("<workspace>"),
-            "the generated document has to name the workspace root it was written in",
-        );
-        normalized
-    };
-    let doc1 = normalize_workspace_root(&doc1_raw, &paths1.root_dir);
-    let doc2 = normalize_workspace_root(&doc2_raw, &paths2.root_dir);
+    let doc1 =
+        mediapm_test_support::normalize::normalize_workspace_root(&doc1_raw, &paths1.root_dir);
+    let doc2 =
+        mediapm_test_support::normalize::normalize_workspace_root(&doc2_raw, &paths2.root_dir);
     assert_eq!(doc1, doc2, "generated-doc bytes differ between runs");
 
     // --- Assert identical bar-operation multisets ---

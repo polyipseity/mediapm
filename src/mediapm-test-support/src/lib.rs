@@ -73,6 +73,7 @@ pub mod env_registry;
 pub mod media_fixture;
 pub mod mock_musicbrainz;
 pub mod mock_upstream;
+pub mod normalize;
 pub mod seams;
 pub mod stub_media;
 pub mod stub_payload;

@@ -53,7 +53,8 @@ It keeps the examples self-contained: each consumer embeds the bytes with
 
 ### Regeneration
 
-The fixture was produced with this exact command, from the repository root:
+The fixture was produced with this exact command on `ffmpeg` 8.1.1, from the
+repository root:
 
 ```sh
 ffmpeg -y -f lavfi -i testsrc=duration=1:size=160x120:rate=24 -f lavfi -i sine=frequency=440:duration=1 -c:v libx264 -pix_fmt yuv420p -c:a aac -metadata comment="mediapm sample fixture" -shortest src/mediapm/tests/fixtures/media/sample-av.mp4

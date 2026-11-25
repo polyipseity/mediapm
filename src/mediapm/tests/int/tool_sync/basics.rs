@@ -226,7 +226,7 @@ async fn sync_env_paths_contain_payload_segment() -> Result<(), mediapm::MediaPm
                 std::path::Path::new(raw).components().any(|component| {
                     component.as_os_str() == mediapm_conductor::provision::PAYLOAD_DIR_NAME
                 }),
-                "env var value must include a payload directory component: {value} in env file"
+                "env var value must include a payload directory component: {raw} in env file"
             );
             assert!(
                 raw.starts_with('/') || raw.starts_with("\\\\") || raw.chars().nth(1) == Some(':'),
@@ -398,7 +398,7 @@ async fn sync_provisions_downloaded_payload() -> Result<(), mediapm::MediaPmErro
             std::path::Path::new(raw).components().any(|component| {
                 component.as_os_str() == mediapm_conductor::provision::PAYLOAD_DIR_NAME
             }),
-            "env var value must include a payload directory component: {value}"
+            "env var value must include a payload directory component: {raw}"
         );
         assert!(
             raw.starts_with('/') || raw.starts_with("\\\\") || raw.chars().nth(1) == Some(':'),
