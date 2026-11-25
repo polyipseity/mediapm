@@ -327,8 +327,7 @@ mod tests {
         let path = std::path::Path::new("C:\\repo\\file.txt");
         assert!(
             path.is_absolute(),
-            "Windows drive paths should be reported as absolute, got {:?}",
-            path
+            "Windows drive paths should be reported as absolute, got {path:?}"
         );
     }
 }
