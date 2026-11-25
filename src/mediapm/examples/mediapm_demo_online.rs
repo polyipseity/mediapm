@@ -1710,7 +1710,7 @@ fn configure_document_for_online_demo(
         instance_ttl_seconds: Some(3600),
         // Write every platform so the document can be synced from any host; the
         // stub env names are present on all platforms for offline runs.
-        inherited_env_vars: Some(all_platform_inherited_env_vars(&stub_env_names)),
+        inherited_env_vars: Some(all_platform_inherited_env_vars(stub_env_names)),
         // Enable conductor profiling so every sync run produces a per-step
         // timing profile at `.mediapm/profile.json` for latency investigation.
         profiler_enabled: Some(true),
