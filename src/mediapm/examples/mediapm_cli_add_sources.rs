@@ -16,7 +16,7 @@ const DUMMY_LOCAL_SOURCE_FILE: &str = "dummy-local-video.mp4";
 const DUMMY_YOUTUBE_URL: &str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 
 /// Embedded tiny MP4 payload containing both video and audio tracks.
-const SAMPLE_AV_MP4_BYTES: &[u8] = include_bytes!("assets/sample-av.mp4");
+const SAMPLE_AV_MP4_BYTES: &[u8] = include_bytes!("../tests/fixtures/media/sample-av.mp4");
 
 type ExampleResult<T> = Result<T, Box<dyn Error>>;
 

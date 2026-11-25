@@ -88,7 +88,7 @@ use serde::Serialize;
 type ExampleResult<T> = Result<T, Box<dyn Error>>;
 
 /// Embedded tiny MP4 payload containing both video and audio tracks.
-const SAMPLE_AV_MP4_BYTES: &[u8] = include_bytes!("assets/sample-av.mp4");
+const SAMPLE_AV_MP4_BYTES: &[u8] = include_bytes!("../tests/fixtures/media/sample-av.mp4");
 
 /// Payload the offline demo seeds only to have a second object to capture.
 ///
