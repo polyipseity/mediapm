@@ -27,7 +27,7 @@ pub struct Cli {
     pub command: Command,
 }
 
-/// The three things the runner can do.
+/// The four things the runner can do.
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Run the test suite, then the tempdir and janitor gates.
@@ -40,6 +40,8 @@ pub enum Command {
     Doc(Selection),
     /// Check every package and feature combination.
     FeatureMatrix(MatrixArgs),
+    /// Lint foreign-target code that only CI would otherwise compile.
+    Platform(PlatformArgs),
 }
 
 /// Cargo-style package and feature selection.
@@ -166,6 +168,36 @@ impl MatrixArgs {
     }
 }
 
+/// Arguments for the cross-target lint gate.
+#[derive(Debug, Args, Clone)]
+pub struct PlatformArgs {
+    /// Permit `Cargo.lock` to be updated. Wins over `--locked`.
+    #[arg(long)]
+    pub no_locked: bool,
+    /// Require an up-to-date `Cargo.lock`. This is the default, and the
+    /// `platform` cargo alias passes it explicitly.
+    #[arg(long)]
+    pub locked: bool,
+    /// Print the targets and package lists without running any of them.
+    #[arg(long)]
+    pub print: bool,
+}
+
+impl PlatformArgs {
+    /// Whether each `cargo clippy` must pass `--locked`.
+    ///
+    /// Reads both flags for the same reason as [`MatrixArgs::wants_lock`]:
+    /// `--no-locked` is the only one that changes the answer, and it wins
+    /// over `--locked` so a caller appending it to an alias carrying
+    /// `--locked` still gets the escape hatch.
+    pub fn wants_lock(&self) -> bool {
+        match (self.locked, self.no_locked) {
+            (_, true) => false,
+            (_, false) => true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
@@ -269,5 +301,32 @@ mod tests {
             sel.package_flags(),
             vec![OsString::from("-p"), OsString::from("mediapm-utils")]
         );
+    }
+
+    #[test]
+    fn platform_locks_by_default() {
+        let cli = Cli::parse_from(["test-runner", "platform"]);
+        let Command::Platform(args) = cli.command else {
+            panic!("expected platform");
+        };
+        assert!(args.wants_lock());
+    }
+
+    #[test]
+    fn platform_no_locked_opts_out() {
+        let cli = Cli::parse_from(["test-runner", "platform", "--no-locked"]);
+        let Command::Platform(args) = cli.command else {
+            panic!("expected platform");
+        };
+        assert!(!args.wants_lock());
+    }
+
+    #[test]
+    fn platform_print_parses() {
+        let cli = Cli::parse_from(["test-runner", "platform", "--print"]);
+        let Command::Platform(args) = cli.command else {
+            panic!("expected platform");
+        };
+        assert!(args.print);
     }
 }

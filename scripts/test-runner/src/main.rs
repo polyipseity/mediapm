@@ -2,10 +2,10 @@
 //!
 //! One binary owns every step the repository used to spell out four times:
 //! the nextest run, the doctest run, the rustdoc link gate, the
-//! temp-directory janitor gate, the unprefixed-tempdir invariant gate and
-//! the per-feature build matrix. `.cargo/config.toml`, `prek.toml` and
-//! `.github/workflows/ci.yml` call this binary instead of repeating the
-//! steps.
+//! temp-directory janitor gate, the unprefixed-tempdir invariant gate, the
+//! per-feature build matrix, and the cross-target lint gate.
+//! `.cargo/config.toml`, `prek.toml` and `.github/workflows/ci.yml` call
+//! this binary instead of repeating the steps.
 //!
 //! The runner never resolves paths through git. It anchors on
 //! `CARGO_MANIFEST_DIR` and asks cargo where the workspace root is, so it
@@ -17,6 +17,7 @@ mod doc;
 mod gates;
 mod matrix;
 mod nextest;
+mod platform;
 mod test;
 
 use std::process::ExitCode;
@@ -79,12 +80,14 @@ fn process_exit_code(code: i32) -> ExitCode {
 ///
 /// Takes `command` by value because the match owns it: each arm binds its
 /// own payload and hands it on by reference to [`test::run`],
-/// [`doc::run`] and [`matrix::run`], so no arm moves anything back out.
+/// [`doc::run`], [`matrix::run`] and [`platform::run`], so no arm moves
+/// anything back out.
 fn dispatch(command: Command) -> anyhow::Result<i32> {
     match command {
         Command::Test(selection) => test::run(&selection),
         Command::Doc(selection) => doc::run(&selection),
         Command::FeatureMatrix(args) => matrix::run(&args),
+        Command::Platform(args) => platform::run(&args),
     }
 }
 

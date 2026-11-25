@@ -11,6 +11,7 @@ clippy-all = ["clippy", "--workspace", "--all-targets", "--all-features"]
 fmt-check = ["fmt", "--all", "--", "--check"]
 test-all = ["run", "--package", "test-runner", "--", "test", "--all-features", "--locked"]
 test-doc-all = ["run", "--package", "test-runner", "--", "doc", "--all-features", "--locked"]
+platform = ["run", "--package", "test-runner", "--", "platform", "--locked"]
 
 # Targeted validation (recommended for most development)
 build-pkg = ["build", "--all-targets", "--all-features", "-p"]
