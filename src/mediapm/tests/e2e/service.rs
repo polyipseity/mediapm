@@ -103,9 +103,17 @@ async fn add_local_source_caches_metadata() -> Result<(), mediapm::MediaPmError>
         root.path().join(".mediapm").join("cache").join("mediapm").join("metadata.json");
     assert!(cache_path.is_file(), "metadata cache must be written after add");
     let cache_content = std::fs::read_to_string(&cache_path).expect("read metadata cache");
+    let cache: serde_json::Value =
+        serde_json::from_str(&cache_content).expect("metadata cache is JSON");
+    let entries = cache.get("entries").and_then(serde_json::Value::as_object).expect(
+        "the metadata cache holds an `entries` object; a cache whose shape changed must fail here \
+         rather than pass an empty check",
+    );
+    let key = format!("ffprobe:{}", media_path.display());
     assert!(
-        cache_content.contains(&format!("ffprobe:{}", media_path.display())),
-        "cache must contain ffprobe:{{path}} key"
+        entries.contains_key(&key),
+        "cache must contain the {key} key; entries: {:?}",
+        entries.keys().collect::<Vec<_>>()
     );
 
     Ok(())

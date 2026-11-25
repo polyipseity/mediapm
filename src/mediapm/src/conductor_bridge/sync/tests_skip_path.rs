@@ -95,9 +95,15 @@ async fn reconcile_desired_tools_skipped_tool_preserves_env_entries() {
         content.contains("MEDIAPM_MEDIA_TAGGER_MACOS_DIR"),
         "env file should have MEDIAPM_MEDIA_TAGGER_MACOS_DIR\n--- content:\n{content}",
     );
+    let media_tagger_payload =
+        mediapm_conductor::runtime_env::provisioned_payload_dir(&paths.tools_dir, "media-tagger")
+            .join("linux")
+            .display()
+            .to_string();
     assert!(
-        content.contains("/media-tagger/payload/"),
-        "env file paths should contain /media-tagger/payload/\n--- content:\n{content}",
+        content.contains(&media_tagger_payload),
+        "env file paths must point at the media-tagger payload directory \
+         {media_tagger_payload}\n--- content:\n{content}",
     );
 }
 
@@ -186,13 +192,19 @@ async fn reconcile_keys_tool_runtimes_by_conductor_tool_id() {
         content.contains("MEDIAPM_YT_DLP_LINUX="),
         "env file should have MEDIAPM_YT_DLP_LINUX\n--- content:\n{content}",
     );
+    let plain_id_payload =
+        mediapm_conductor::runtime_env::provisioned_payload_dir(&paths.tools_dir, "yt-dlp")
+            .join("linux")
+            .display()
+            .to_string();
     assert!(
         content.contains(&expected_payload_binary(&paths, &conductor_tool_id, "linux/yt-dlp")),
         "env path must use the sanitized conductor tool id\n--- content:\n{content}",
     );
     assert!(
-        !content.contains("/yt-dlp/payload/"),
-        "env path must not use the plain mediapm tool id\n--- content:\n{content}",
+        !content.contains(&plain_id_payload),
+        "env path must not use the plain mediapm tool id; it must not contain \
+         {plain_id_payload}\n--- content:\n{content}",
     );
 }
 
@@ -377,11 +389,19 @@ async fn reconcile_media_tagger(
 /// `provisioned_payload_dir` is the production rule for that layout — the one
 /// `ProvisionCache::materialize` writes and the generated dotenv reads — so a
 /// fixture that names the directory reads the rule instead of re-spelling it.
+/// The content-map key is a payload-relative path written with `/` on every
+/// platform, so it is split and pushed component by component: joining the
+/// whole key as one component would keep the `/` inside a single component and
+/// render a mixed-separator path on Windows.
 fn expected_payload_binary(paths: &MediaPmPaths, conductor_tool_id: &str, key: &str) -> String {
-    mediapm_conductor::runtime_env::provisioned_payload_dir(&paths.tools_dir, conductor_tool_id)
-        .join(key)
-        .display()
-        .to_string()
+    let mut path = mediapm_conductor::runtime_env::provisioned_payload_dir(
+        &paths.tools_dir,
+        conductor_tool_id,
+    );
+    for component in key.split('/') {
+        path.push(component);
+    }
+    path.display().to_string()
 }
 
 /// The human-readable version `media-tagger` reports: the crate version plus the

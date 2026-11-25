@@ -26,15 +26,19 @@ fn declared_subcommands() -> Vec<String> {
         .collect()
 }
 
-/// Returns the file name of the built binary.
+/// Returns the file name of the built binary, extension included.
 ///
 /// This is ground truth the definition cannot influence, which is what makes the
-/// usage-line assertions below non-circular.
+/// usage-line assertions below non-circular. The extension is part of it: clap
+/// names the command after `argv[0]`'s file name, so on Windows the binary
+/// renders `mediapm.exe` where the definition alone renders `mediapm`. A
+/// `file_stem()` here would drop the suffix and leave both assertions passing on
+/// a prefix rather than on the name.
 fn binary_name() -> String {
     Path::new(env!("CARGO_BIN_EXE_mediapm"))
-        .file_stem()
+        .file_name()
         .and_then(std::ffi::OsStr::to_str)
-        .expect("the binary target has a UTF-8 file stem")
+        .expect("the binary target has a UTF-8 file name")
         .to_string()
 }
 
@@ -93,21 +97,23 @@ fn every_declared_subcommand_is_routed_by_the_binary() {
 /// what it is for: it fails when the binary parses a definition the build script
 /// does not render, not when the definition's wording changes, since a doc
 /// comment moves both sides together. The `Usage:` assertion below carries the
-/// half the comparison cannot — the command must be named after the binary, not
-/// after the crate the definition lives in.
+/// half the comparison cannot — the command must be named after the binary file
+/// name, including its extension, because on Windows that differs from the
+/// crate-derived name.
 ///
 /// The expected string comes from `render_help` rather than `render_long_help`
 /// because that is what clap prints for a command where no argument carries a
 /// `long_help`: `--help` falls back to the short renderer.
 #[test]
 fn the_binary_renders_the_definition_it_ships() {
-    let expected = mediapm_cli::command().render_help().to_string();
+    let file_name = binary_name();
+    let expected = mediapm_cli::command().bin_name(&file_name).render_help().to_string();
     let (status, help) = run_help(&["--help"]);
     assert!(status.success(), "`mediapm --help` must succeed:\n{help}");
     assert_eq!(help, expected);
     assert!(
-        help.contains(&format!("Usage: {} ", binary_name())),
-        "the command must be named after the binary, not after the crate the definition lives \
-         in:\n{help}"
+        help.contains(&format!("Usage: {file_name} ")),
+        "the command must be named after the binary file, not after the crate the definition \
+         lives in:\n{help}"
     );
 }
