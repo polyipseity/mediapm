@@ -1357,7 +1357,6 @@ mod tests {
     }
 
     /// Reports whether two paths resolve to the same filesystem object.
-    /// Reports whether two paths resolve to the same filesystem object.
     ///
     /// Hard-link identity is the CAS materialization contract, so the check must
     /// be identity-based: comparing contents would not notice an object that was
