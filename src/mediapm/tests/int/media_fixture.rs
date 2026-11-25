@@ -51,3 +51,48 @@ fn media_fixture_states_what_the_demo_asserts() {
         "the fixture runs {duration} s, not the {MEDIA_FIXTURE_DURATION_SECONDS} s the demo expects"
     );
 }
+
+/// The committed sample AV fixture carries the markers its recipe produces.
+///
+/// `src/mediapm/tests/fixtures/media/README.md` pins ffmpeg 8.1.1 and the exact
+/// command that produced these bytes, and a re-run of that command reproduces
+/// them byte for byte. The markers below are what that recipe writes and a
+/// different recipe does not: the MP4 brand, the compatible-brand list the
+/// muxer emits, both sample entry formats, the libavformat muxer string, and
+/// the documented `comment` tag. Asserting them keeps the pin honest without
+/// spawning ffmpeg, which CI does not guarantee at this version.
+#[test]
+fn the_sample_av_fixture_carries_its_recipe_markers() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media/sample-av.mp4");
+    let bytes = std::fs::read(&path).expect("read the committed sample AV fixture");
+    let text = String::from_utf8_lossy(&bytes);
+
+    // The first box is `ftyp` with the isom major brand and the compatible
+    // brands the recipe's muxer writes; the sample entries below are what the
+    // `-c:v libx264 -c:a aac` arguments produce.
+    assert!(
+        bytes.starts_with(&[0x00, 0x00, 0x00, 0x20, b'f', b't', b'y', b'p'])
+            && text.contains("ftypisom"),
+        "the fixture must open with a 32-byte ftyp box declaring the isom brand"
+    );
+    for marker in ["isomiso2avc1mp41", "avc1", "mp4a"] {
+        assert!(
+            text.contains(marker),
+            "the fixture must carry '{marker}', which the documented recipe writes"
+        );
+    }
+    // The library strings are the pins that a different ffmpeg cannot satisfy
+    // silently: the muxer (`Lavf`) and the x264 encoder (`Lavc`, `x264 - core`)
+    // versions are the ones the pinned 8.1.1 build ships.
+    for marker in ["Lavf62.12.101", "Lavc62.28.101", "x264 - core"] {
+        assert!(
+            text.contains(marker),
+            "the fixture must carry '{marker}'; a regeneration on another ffmpeg build \
+             changes it, which is what makes the README's pin checkable"
+        );
+    }
+    assert!(
+        text.contains("mediapm sample fixture"),
+        "the fixture must carry the documented `-metadata comment` value"
+    );
+}

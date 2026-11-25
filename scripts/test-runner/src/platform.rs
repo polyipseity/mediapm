@@ -8,9 +8,9 @@
 //!
 //! It cannot cover the whole workspace. `mediapm`, `mediapm-conductor`,
 //! `mediapm-conductor-builtin-import`, `mediapm-test-support`, and (for the
-//! Windows target only) `mediapm-cas` pull in `ring` or `blake3`, whose C
-//! build scripts need a Windows SDK that a cross `clippy` run here does not
-//! have. Each such package is listed per target with its reason, and
+//! Windows target only) `mediapm-cas` pull in `ring` or `blake3`, whose C build
+//! scripts need the target's C toolchain, which a cross `clippy` run here does
+//! not have. Each such package is listed per target with its reason, and
 //! [`classify`] fails the gate when a real workspace package is in neither
 //! list, so a new crate cannot join the workspace uncovered.
 
@@ -33,7 +33,12 @@ pub struct LintTarget {
 }
 
 /// The `ring`/`blake3` reason shared by every target.
-const C_DEPENDENCY: &str = "needs ring/blake3 C build scripts, which require a Windows SDK a cross clippy run here does not have";
+///
+/// Target-neutral on purpose: the same constant is reported for the linux,
+/// darwin, and windows targets, so a sentence naming one target's missing SDK
+/// would misdescribe two of the three. What every case shares is that the
+/// cross run lacks the target's C toolchain.
+const C_DEPENDENCY: &str = "needs ring/blake3 C build scripts, which a cross clippy run cannot build without that target's C toolchain";
 
 /// The targets the gate lints for, with their package lists.
 pub fn targets() -> &'static [LintTarget] {
@@ -235,7 +240,8 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        LintTarget, classify, classify_conflict, target_argv, target_result_line, targets,
+        C_DEPENDENCY, LintTarget, classify, classify_conflict, target_argv, target_result_line,
+        targets,
     };
     use crate::cargo::Metadata;
     use crate::cli::{Cli, Command};
@@ -335,6 +341,20 @@ mod tests {
                     target.triple
                 );
             }
+        }
+    }
+
+    /// The shared reason must not name one target, because it is reported for
+    /// three: a reader of a linux exclusion would be told to look for a Windows
+    /// SDK it does not need.
+    #[test]
+    fn the_shared_exclusion_reason_names_no_single_target() {
+        for platform in ["Windows", "Linux", "macOS", "Darwin"] {
+            assert!(
+                !C_DEPENDENCY.contains(platform),
+                "the shared exclusion reason must stay target-neutral, but it names {platform}: \
+                 {C_DEPENDENCY}"
+            );
         }
     }
 

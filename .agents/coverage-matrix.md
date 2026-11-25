@@ -1630,3 +1630,10 @@ Step instance identity is derived from the step's logical tool name and key mate
 | Item | Status | Test |
 | --- | --- | --- |
 | A repository text comparison holds on an LF and a CRLF checkout | [covered] | `normalize_line_endings_collapses_only_crlf` (unit, `mediapm-test-support`), `the_wire_shape_check_tolerates_a_crlf_checkout`, `nextest_budget_check_reads_a_crlf_checkout` |
+
+## Windows CI test parity: deferred minors absorbed (2026-11-25)
+
+| Item | Status | Test |
+| --- | --- | --- |
+| `sample-av.mp4` is the artifact the README's ffmpeg 8.1.1 command produces: brand, compatible brands, both sample entries, libavformat muxer string, and the documented comment tag | [covered] | `the_sample_av_fixture_carries_its_recipe_markers` (integration, `src/mediapm/tests/int/media_fixture.rs`) |
+| Every platform-gate exclusion states a reason that describes its target (the shared `ring`/`blake3` reason stays target-neutral) | [covered] | `every_exclusion_carries_a_reason`, `the_shared_exclusion_reason_names_no_single_target` (unit, `scripts/test-runner/src/platform.rs`) |
