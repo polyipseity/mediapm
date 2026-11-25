@@ -246,7 +246,6 @@ pub(crate) fn record_cache_hit(metadata_path: &Path, content_map: &BTreeMap<Stri
         version: crate::provision::VERSION,
         content_map: content_map.clone(),
         last_used_unix_seconds: now_unix_seconds(),
-        execute_bits_verified: true,
     };
     if let Err(error) = persist_cache_metadata(metadata_path, &metadata) {
         tracing::warn!("could not record a cache hit at '{}': {error}", metadata_path.display());
@@ -478,7 +477,6 @@ mod tests {
             version: crate::provision::VERSION,
             content_map: std::collections::BTreeMap::new(),
             last_used_unix_seconds,
-            execute_bits_verified: true,
         }
     }
 

@@ -384,7 +384,7 @@ mod tests {
         fs::create_dir_all(entry.join("payload")).expect("entry payload dir");
         fs::write(entry.join(lock_name), b"").expect("entry lock file");
         let metadata = format!(
-            "{{\"version\":{VERSION},\"content_map\":{{}},\"last_used_unix_seconds\":{last_used},\"execute_bits_verified\":true}}"
+            "{{\"version\":{VERSION},\"content_map\":{{}},\"last_used_unix_seconds\":{last_used}}}"
         );
         fs::write(entry.join(METADATA_FILE_NAME), metadata).expect("entry metadata");
     }
@@ -639,9 +639,7 @@ mod tests {
         let foreign = VERSION + 1;
         fs::write(
             newer.join(METADATA_FILE_NAME),
-            format!(
-                "{{\"version\":{foreign},\"content_map\":{{}},\"last_used_unix_seconds\":0,\"execute_bits_verified\":true}}"
-            ),
+            format!("{{\"version\":{foreign},\"content_map\":{{}},\"last_used_unix_seconds\":0}}"),
         )
         .expect("rewrite the seeded metadata under another version");
 

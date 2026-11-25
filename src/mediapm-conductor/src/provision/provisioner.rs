@@ -13,9 +13,7 @@ use tokio::sync::{Notify, Semaphore};
 use crate::error::ConductorError;
 
 use super::extract::{ExtractPaths, extract_sync, fetch_all_cas_entries};
-use super::helpers::{
-    ensure_payload_tree_user_execute_bits, now_unix_seconds, record_cache_hit, sanitize_tool_id,
-};
+use super::helpers::{now_unix_seconds, record_cache_hit, sanitize_tool_id};
 use super::retain::{prune_expired_entries, retain_only_tool_dirs};
 use super::types::{CleanupGuard, Metadata, ProvisionedTool};
 use super::{
@@ -365,9 +363,6 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
                 }
 
                 // Cache hit!
-                if !metadata.execute_bits_verified {
-                    ensure_payload_tree_user_execute_bits(payload_dir)?;
-                }
                 record_cache_hit(metadata_path, content_map);
                 Ok(Some(ProvisionedTool {
                     payload_dir: payload_dir.to_path_buf(),
@@ -446,7 +441,7 @@ mod tests {
         std::fs::create_dir_all(entry.join(PAYLOAD_DIR_NAME)).expect("payload dir");
         std::fs::write(entry.join(LOCK_FILE_NAME), b"").expect("lock file");
         let metadata = format!(
-            "{{\"version\":{VERSION},\"content_map\":{{}},\"last_used_unix_seconds\":{last_used},\"execute_bits_verified\":true}}"
+            "{{\"version\":{VERSION},\"content_map\":{{}},\"last_used_unix_seconds\":{last_used}}}"
         );
         std::fs::write(entry.join(METADATA_FILE_NAME), metadata).expect("metadata");
     }
@@ -643,8 +638,7 @@ mod tests {
         // The exact shape a version-1 build wrote: version marker 1 and the
         // camelCase age field.
         let v1_metadata = format!(
-            "{{\"version\":1,\"content_map\":{{}},\"lastUsedUnixSeconds\":{},\
-             \"execute_bits_verified\":true}}",
+            "{{\"version\":1,\"content_map\":{{}},\"lastUsedUnixSeconds\":{}}}",
             now_unix_seconds()
         );
         std::fs::write(entry.join(METADATA_FILE_NAME), v1_metadata).expect("v1 metadata");
@@ -671,6 +665,37 @@ mod tests {
             !stale.exists(),
             "a version-1 directory is re-extracted, not served from: {metadata}"
         );
+    }
+
+    /// A v2 metadata file written before `execute_bits_verified` existed is
+    /// still a cache hit: the payload is reused, not re-extracted.
+    ///
+    /// The field was dead bookkeeping — extraction already sets the bits and
+    /// a missing field must not force a walk over a valid payload. This is
+    /// regression coverage for metadata written without the field.
+    #[tokio::test]
+    async fn cache_hit_accepts_v2_metadata_without_execute_bits_verified() {
+        let _serialized = SWEEP_STATE_LOCK.lock().await;
+        let (_tools_dir, cache) = cache_with_payload().await;
+        let content_map = BTreeMap::new();
+        let guard =
+            cache.materialize("legacy-no-exec-bit", &content_map).await.expect("materialize");
+        let payload = guard.payload_dir.clone();
+        let marker = payload.join("marker");
+        std::fs::write(&marker, b"present").expect("marker");
+        let metadata_path = payload.parent().expect("entry").join(METADATA_FILE_NAME);
+        let metadata = format!(
+            "{{\"version\":{VERSION},\"content_map\":{{}},\"last_used_unix_seconds\":{}}}",
+            now_unix_seconds()
+        );
+        std::fs::write(&metadata_path, metadata)
+            .expect("rewrite metadata without execute_bits_verified");
+        drop(guard);
+
+        let guard =
+            cache.materialize("legacy-no-exec-bit", &content_map).await.expect("materialize again");
+        assert!(marker.exists(), "hit must reuse payload, not re-extract");
+        drop(guard);
     }
 
     /// The automatic sweep runs once per cooldown in a process, and a process

@@ -217,7 +217,6 @@ pub(crate) fn extract_sync(
             // the lock has just finished writing, and the time it was queued is
             // not when the payload became usable.
             last_used_unix_seconds: now_unix_seconds(),
-            execute_bits_verified: true,
         },
     )?;
 
@@ -299,9 +298,6 @@ fn double_check_hit(
     }
 
     // Double-check hit — another worker finished extraction while we waited.
-    if !metadata.execute_bits_verified {
-        ensure_payload_tree_user_execute_bits(payload_dir)?;
-    }
     record_cache_hit(metadata_path, content_map);
     // Clone fd and downgrade to shared.
     let shared_file = excl_file.try_clone().map_err(|source| ConductorError::Io {

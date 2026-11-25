@@ -55,8 +55,6 @@ pub(crate) struct Metadata {
     /// keeps it and warns, and [`Metadata::version`] only marks the entry.
     #[serde(alias = "lastUsedUnixSeconds")]
     pub(crate) last_used_unix_seconds: u64,
-    #[serde(default)]
-    pub(crate) execute_bits_verified: bool,
 }
 
 /// Classifies a raw `content_map` key into a file or directory extraction target.
