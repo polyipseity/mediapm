@@ -31,7 +31,7 @@ Four base URL env vars are read per call and never cached: `MEDIAPM_GITHUB_API_B
 
 ## Demo hierarchy golden
 
-`mediapm_demo_online` materializes a hierarchy under `<artifact_root>/media/`. `tests/fixtures/demo_hierarchy_golden.json` and `src/mediapm/src/demo_hierarchy_spec.rs` encode the tree.
+`mediapm_demo_online` materializes a hierarchy under `<output_root>/media/`. `tests/fixtures/demo_hierarchy_golden.json` and `src/mediapm/src/demo_hierarchy_spec.rs` encode the tree.
 
 ### Two link formats
 

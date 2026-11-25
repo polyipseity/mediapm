@@ -1224,11 +1224,11 @@ pub(super) async fn persist_cover_art_slot_artifacts(
     cache: &MediaTaggerHttpCache,
     deadline: Instant,
 ) -> anyhow::Result<()> {
-    let output_directory = resolve_cover_art_output_directory(output_path);
-    fs::create_dir_all(&output_directory).with_context(|| {
+    let artifact_directory = resolve_cover_art_artifact_directory(output_path);
+    fs::create_dir_all(&artifact_directory).with_context(|| {
         format!(
             "creating media-tagger cover-art artifact directory '{}'",
-            output_directory.display()
+            artifact_directory.display()
         )
     })?;
 
@@ -1265,8 +1265,8 @@ pub(super) async fn persist_cover_art_slot_artifacts(
     for slot_index in 1..=slot_count {
         let image_member = cover_art_slot_image_member_name(slot_index);
         let flag_member = cover_art_slot_flag_member_name(slot_index);
-        let image_path = output_directory.join(&image_member);
-        let flag_path = output_directory.join(&flag_member);
+        let image_path = artifact_directory.join(&image_member);
+        let flag_path = artifact_directory.join(&flag_member);
 
         if let Some(bytes) = downloaded.get(slot_index - 1) {
             fs::write(&image_path, bytes).with_context(|| {
@@ -1289,7 +1289,7 @@ pub(super) async fn persist_cover_art_slot_artifacts(
 }
 
 /// Resolves sandbox folder where managed runs expose materialized input files.
-pub(super) fn resolve_cover_art_output_directory(output_path: &Path) -> PathBuf {
+pub(super) fn resolve_cover_art_artifact_directory(output_path: &Path) -> PathBuf {
     let metadata_dir = output_path.parent().unwrap_or_else(|| Path::new("."));
     // Cover art files are placed under a dedicated `coverart/` directory in the
     // sandbox root rather than alongside the input media in `inputs/`. This keeps
