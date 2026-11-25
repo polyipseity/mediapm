@@ -272,7 +272,7 @@ fn is_temporary_suffix(tail: &str) -> bool {
 /// genuine permission error, because the same small backoff budget is the only
 /// cost a real denial pays.
 ///
-/// The POSIX PermissionDenied path is not retried: a directory-permission error
+/// The POSIX `PermissionDenied` path is not retried: a directory-permission error
 /// there is not transient. The read-only clear retry is exercised on POSIX by
 /// `a_publish_replaces_a_read_only_target` only as unreachable code in
 /// practice, and on Windows through `test-all`.
