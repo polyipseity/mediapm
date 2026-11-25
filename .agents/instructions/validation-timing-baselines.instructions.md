@@ -37,7 +37,7 @@ Record these fields for every baseline. Write `unknown` or `not captured`, never
 | Environment | GitHub Actions ubuntu-latest (3 jobs) + windows-latest (1 job) |
 | Result | success, ~800 s wall (Build & Test 797 s, Feature Matrix 102 s, Release Build 127 s, Windows 303 s) |
 | Cache | All four jobs exact-key full matches, `full match: true`, Post Cache `Cache up-to-date` (see warmed pair below) |
-| Counts | Build & Test nextest `[128.694s] 3061 run: 3061 passed (5 slow), 0 skipped`; Feature Matrix 58/58 check clean; Release Build green; Windows nextest 13 + 43 passed |
+| Counts | Build & Test nextest `[128.694s] 3061 run: 3061 passed (5 slow), 0 skipped`; Feature Matrix 58/58 check clean; Release Build green |
 | Build & Test steps | cheap checks 329.5 s, install ffprobe 14.0 s, tests 353.4 s (nextest 128.694 s), doctests+rustdoc 34.9 s, build 47.6 s |
 | Evidence | <https://github.com/polyipseity/mediapm/actions/runs/44900229817>, `/tmp/ci-evidence/44900229817/` |
 
@@ -52,7 +52,6 @@ Before: 44865482029 (`6847623b`, 2026-11-21T04:18:50Z, green, attempt 1) restore
 | Build & Test | `v0-rust-ci-build-Linux-x64-bbe94a93-8274b117` partial, `full match: false` | same key, `full match: true` | 846 s | 797 s |
 | Feature Matrix | `v0-rust-ci-feature-matrix-Linux-x64-bbe94a93-a142a65c` partial, `full match: false` | `v0-rust-ci-feature-matrix-Linux-x64-9c09dd5e-8274b117`, `full match: true` | 51 s | 102 s |
 | Release Build | `v0-rust-ci-release-Linux-x64-bbe94a93-a142a65c` partial, `full match: false` | `v0-rust-ci-release-Linux-x64-bbe94a93-8274b117`, `full match: true` | 152 s | 127 s |
-| Windows: Workspace Tests | `v0-rust-ci-windows-Windows_NT-x64-21b8dcfc-dd242995` partial, `full match: false` | `v0-rust-ci-windows-Windows_NT-x64-21b8dcfc-c597198c`, `full match: true` | 380 s | 303 s |
 
 ## Newest local baseline
 

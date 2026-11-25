@@ -452,8 +452,8 @@ fn path_with_rm_shim(sandbox: &Path, body: &str) -> OsString {
     // set through the same shell that will stat the file: `chmod +x` there sets
     // exactly what its own `stat` reports, which is what the sweeps rely on.
     //
-    // Two things about that shell come from the Windows CI job. It is the
-    // resolved POSIX one, not the name `bash`: the name is
+    // Two things about that shell come from running this suite on Windows CI.
+    // It is the resolved POSIX one, not the name `bash`: the name is
     // `%SystemRoot%\System32\bash.exe`, the WSL launcher, and `chmod +x` through
     // it fails before it reaches the file. And the path is handed over in `/`
     // form, the separator every POSIX shell reads, rather than the Win32
@@ -551,7 +551,7 @@ fn skip_unless(program: &str, args: &[&str]) -> bool {
 /// On Windows the name `bash` is not a POSIX shell: `%SystemRoot%\System32\bash.exe`
 /// is the WSL launcher, and with no distribution installed it exits non-zero
 /// with `Windows Subsystem for Linux has no installed distributions.` — the text
-/// the Windows CI job captured from this suite. A test that spawned the name
+/// captured from this suite on a Windows runner. A test that spawned the name
 /// would fail there while a real Git Bash sat on the same host, so every
 /// candidate is asked to answer one POSIX command and the first that does is the
 /// shell. The probe is the resolver, which is what makes the order in
