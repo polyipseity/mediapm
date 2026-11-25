@@ -246,9 +246,9 @@ const AUX_SNAPSHOT_NAME: &str = "metadata-v3.json";
 ///
 /// The snapshot file is moved aside and a directory is created at its path, so
 /// the staging rename onto that path fails on every target. The previous split
-/// used platform-specific permission denial on Unix and Windows, but no
-/// Windows job executed these tests. Blocking the snapshot rather than the
-/// fan-out directory is also what keeps the sabotage scoped to the bookkeeping
+/// used platform-specific permission denial on Unix and Windows; creating a
+/// directory at the snapshot path is portable. Blocking the snapshot rather
+/// than the fan-out directory also keeps the sabotage scoped to the bookkeeping
 /// write, because the read resolves the payload through that same directory.
 pub(crate) struct BlockedAuxSnapshot {
     snapshot: std::path::PathBuf,
