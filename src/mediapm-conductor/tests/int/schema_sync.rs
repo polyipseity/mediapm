@@ -7,13 +7,7 @@
 
 use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec};
 
-/// Normalizes Nickel source for line-ending-independent matching.
-///
-/// `include_str!` preserves the checked-out line endings, so CRLF Windows
-/// checkouts embed `\r\n` in schema text while test literals use `\n`.
-fn ncl(source: &str) -> String {
-    source.replace("\r\n", "\n")
-}
+use mediapm_test_support::normalize::normalize_line_endings as ncl;
 
 /// Validates that the Rust struct serialization shape matches the expected
 /// V2 schema contract invariants.

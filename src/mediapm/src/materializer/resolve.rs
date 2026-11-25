@@ -3391,6 +3391,27 @@ mod tests {
         }
     }
 
+    /// Asserts `fixture_text` is the wire shape the encoder produces for it.
+    ///
+    /// Takes the text rather than the path so a CRLF check can feed the same
+    /// assertion without writing a file.
+    fn assert_wire_shape(fixture_text: &str, what: &str) {
+        let state = decode_state_json(fixture_text.as_bytes())
+            .unwrap_or_else(|error| panic!("decode {what}: {error}"));
+        let mut encoded = encode_state_json(&state).expect("encode demo conductor state");
+        encoded.push(b'\n');
+
+        assert_eq!(
+            mediapm_test_support::normalize::normalize_line_endings(
+                &String::from_utf8(encoded).expect("encoded state is utf-8")
+            ),
+            mediapm_test_support::normalize::normalize_line_endings(fixture_text),
+            "the checked-in demo state fixture must already be in the current wire shape; run \
+             `MEDIAPM_UPDATE_FIXTURES=1 cargo test -p mediapm --lib \
+             demo_conductor_state_fixture_matches_its_derivation -- --nocapture` to rewrite it",
+        );
+    }
+
     /// The checked-in fixture is already in the current state wire shape.
     ///
     /// A fixture one migration behind is migrated on every read, so the write
@@ -3404,17 +3425,23 @@ mod tests {
     fn the_demo_fixture_is_in_the_current_wire_shape() {
         let path = fixture_path("demo_conductor_state.json");
         let bytes = std::fs::read(&path).expect("read demo conductor state fixture");
-        let state = decode_state_json(&bytes).expect("decode demo conductor state fixture");
-        let mut encoded = encode_state_json(&state).expect("encode demo conductor state");
-        encoded.push(b'\n');
+        let text = String::from_utf8(bytes).expect("fixture is utf-8");
+        assert_wire_shape(&text, "the checked-in fixture");
+    }
 
-        assert_eq!(
-            String::from_utf8(encoded).expect("encoded state is utf-8"),
-            String::from_utf8(bytes).expect("fixture is utf-8"),
-            "the checked-in demo state fixture must already be in the current wire shape; run \
-             `MEDIAPM_UPDATE_FIXTURES=1 cargo test -p mediapm --lib \
-             demo_conductor_state_fixture_matches_its_derivation -- --nocapture` to rewrite it",
-        );
+    /// A CRLF working-tree copy still counts as the current wire shape.
+    ///
+    /// `.gitattributes` does not pin `eol` for JSON, so a Windows checkout
+    /// hands this test CRLF where `encode_state_json` writes LF. The check is
+    /// about the wire shape, so it normalizes before comparing; an assertion on
+    /// bytes would be asserting the checkout.
+    #[test]
+    fn the_wire_shape_check_tolerates_a_crlf_checkout() {
+        let path = fixture_path("demo_conductor_state.json");
+        let lf = std::fs::read_to_string(&path).expect("read demo conductor state fixture");
+        let crlf = lf.replace('\n', "\r\n");
+
+        assert_wire_shape(&crlf, "a CRLF checkout of the fixture");
     }
 
     /// The yt-dlp tool document the relaxed-resolution tests resolve against.

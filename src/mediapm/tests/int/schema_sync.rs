@@ -21,13 +21,7 @@ use std::collections::BTreeMap;
 use mediapm::MediaPmDocument;
 use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolSpec, decode_document, encode_document};
 
-/// Normalizes Nickel source for line-ending-independent matching.
-///
-/// `include_str!` preserves the checked-out line endings, so CRLF Windows
-/// checkouts embed `\r\n` in schema text while test literals use `\n`.
-fn ncl(source: &str) -> String {
-    source.replace("\r\n", "\n")
-}
+use mediapm_test_support::normalize::normalize_line_endings as ncl;
 
 /// Extracts the body of the Nickel record contract `let <contract> = { ... }`.
 ///

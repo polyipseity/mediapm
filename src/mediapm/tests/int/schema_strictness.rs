@@ -46,13 +46,8 @@ const REALISTIC_V1_DOC: &str = r#"
 }
 "#;
 
-/// Normalizes Nickel source for line-ending-independent matching.
-///
-/// `include_str!` preserves the checked-out line endings, so CRLF Windows
-/// checkouts embed `\r\n` in schema text while test literals use `\n`.
-fn ncl(source: &str) -> String {
-    source.replace("\r\n", "\n")
-}
+use mediapm_test_support::normalize::normalize_line_endings as ncl;
+
 fn expect_rejected(contract: &str, source: &str) {
     let result = apply_v1_contract(contract, source);
     assert!(

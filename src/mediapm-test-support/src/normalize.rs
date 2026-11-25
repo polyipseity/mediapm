@@ -1,5 +1,5 @@
-//! Shared normalization for the two tests that compare generated documents
-//! written in different workspaces.
+//! Shared normalization for comparisons that must hold across workspaces and
+//! across checkouts.
 //!
 //! The conductor's generated document names the directory each tool payload
 //! was materialized into, and that path starts with the workspace root the
@@ -9,6 +9,12 @@
 //! written twice; it lives here once because one of the callers is an
 //! integration test, which cannot reach a helper compiled only under
 //! `cfg(test)` inside the library.
+//!
+//! Line endings are the other cross-host spelling difference: `.gitattributes`
+//! pins `eol` for markdown and shell scripts only, so JSON, TOML, and Nickel
+//! working-tree copies carry the host's line ending. A test that compares
+//! repository text against generated text normalizes through
+//! [`normalize_line_endings`] instead of asserting the checkout.
 
 use std::path::Path;
 
@@ -52,11 +58,41 @@ pub fn normalize_workspace_root(document: &[u8], root: &Path) -> String {
     normalized
 }
 
+/// Collapses CRLF to LF so a comparison can hold across checkouts.
+///
+/// `.gitattributes` pins `eol` for markdown and shell scripts only, so a
+/// Windows checkout gives JSON, TOML, and Nickel files CRLF endings while a
+/// POSIX checkout gives LF. A test that compares repository text against
+/// generated text must normalize first, or it asserts the checkout's line
+/// endings instead of the content.
+#[must_use]
+pub fn normalize_line_endings(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
-    use super::{WORKSPACE_PLACEHOLDER, normalize_workspace_root};
+    use super::{WORKSPACE_PLACEHOLDER, normalize_line_endings, normalize_workspace_root};
+
+    /// Both checkouts of the same file normalize to the same string, and a
+    /// bare CR survives, since it is content rather than a line ending.
+    #[test]
+    fn normalize_line_endings_collapses_only_crlf() {
+        assert_eq!(normalize_line_endings("a\r\nb\r\n"), "a\nb\n");
+        assert_eq!(normalize_line_endings("a\nb\n"), "a\nb\n");
+        assert_eq!(
+            normalize_line_endings("a\rb"),
+            "a\rb",
+            "a lone carriage return is content, not a line ending"
+        );
+        assert_eq!(
+            normalize_line_endings("a\r\nb\nc\r\n"),
+            "a\nb\nc\n",
+            "a mixed file normalizes every CRLF pair it holds"
+        );
+    }
 
     /// The plain spelling is the one every platform produces, so it is the
     /// case that has to work everywhere.

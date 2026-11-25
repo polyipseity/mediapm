@@ -5250,13 +5250,19 @@ mod tests {
     /// The test reads `.config/nextest.toml` instead of restating the numbers,
     /// and requires at least one matching override so deleting or renaming the
     /// filter fails loudly rather than passing over an empty set.
+    /// `.gitattributes` does not pin `eol` for TOML, so a Windows checkout
+    /// gives this file CRLF and the header regex below would never match; the
+    /// config is normalized first so the test reads the same document on every
+    /// checkout.
     #[test]
     fn nextest_budget_outlasts_the_hard_watchdog() {
-        let config = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../.config/nextest.toml"
-        ))
-        .expect(".config/nextest.toml must be readable beside the workspace root");
+        let config = mediapm_test_support::normalize::normalize_line_endings(
+            &std::fs::read_to_string(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../.config/nextest.toml"
+            ))
+            .expect(".config/nextest.toml must be readable beside the workspace root"),
+        );
 
         let header = regex::Regex::new(r"(?m)^\[\[profile\.([^\]]+)\.overrides\]\][ \t]*$")
             .expect("override header regex is valid");
@@ -5322,6 +5328,28 @@ mod tests {
                 grace = super::DEMO_ONLINE_HARD_TIMEOUT_GRACE_SECS,
             );
         }
+    }
+
+    /// A CRLF checkout of the nextest config is read the same as an LF one.
+    ///
+    /// The header pattern is anchored to end-of-line, so an unnormalized CRLF
+    /// file matches no override at all and the budget check would report a
+    /// missing filter rather than a real one. This asserts the normalization
+    /// is what carries the check across checkouts.
+    #[test]
+    fn nextest_budget_check_reads_a_crlf_checkout() {
+        let lf = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../.config/nextest.toml"
+        ))
+        .expect(".config/nextest.toml must be readable beside the workspace root");
+        let crlf = lf.replace('\n', "\r\n");
+        assert_ne!(lf, crlf, "the fixture must actually differ, or this proves nothing");
+        assert_eq!(
+            mediapm_test_support::normalize::normalize_line_endings(&crlf),
+            mediapm_test_support::normalize::normalize_line_endings(&lf),
+            "normalization must erase the difference the header regex cannot tolerate"
+        );
     }
 
     /// Ensures ReplayGain payload detection requires single-track gain/peak

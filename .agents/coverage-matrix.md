@@ -1624,3 +1624,9 @@ Step instance identity is derived from the step's logical tool name and key mate
 | A document with no deployment record still resolves | [covered] | `sync::tests_active_tool_spec` `a_tool_with_no_deployment_record_falls_back_to_the_content_map` |
 | One post-apply pass clears superseded content maps for provisioned tool ids in the run | [covered] | `sync::tests_active_tool_spec::a_stale_sibling_key_is_cleared_but_the_live_one_is_kept`, `sync::tests_skip_path::skip_reuse_clears_superseded_content_maps`, `sync::tests_skip_path::post_apply_pass_clears_superseded_content_maps_for_fetched_outcome`, `sync::tests_skip_path::post_apply_pass_clears_superseded_content_maps_for_no_payload_outcome`, `sync::tests_pruning::reconcile_prunes_old_tool_version_clears_content_map`, `int::tool_sync::superseded_maps::a_skipping_sync_clears_a_stale_sibling_map_through_reconcile` |
 | The Windows leg runs the CAS corruption module | [covered] | `windows-latest` leg of `Build & Test` in `.github/workflows/ci.yml`, step "Run tests" (`cargo --locked test-all`), which includes `mediapm-cas`'s `corrupt_objects` module |
+
+## Repository text comparisons across line endings (2026-11-25)
+
+| Item | Status | Test |
+| --- | --- | --- |
+| A repository text comparison holds on an LF and a CRLF checkout | [covered] | `normalize_line_endings_collapses_only_crlf` (unit, `mediapm-test-support`), `the_wire_shape_check_tolerates_a_crlf_checkout`, `nextest_budget_check_reads_a_crlf_checkout` |

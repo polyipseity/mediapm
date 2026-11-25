@@ -16,6 +16,7 @@ use mediapm_conductor::config::{
     ConductorRuntimeConfig, OutputCaptureSpec, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec,
     WorkflowSpec, WorkflowStepSpec,
 };
+use mediapm_test_support::normalize::normalize_line_endings as ncl;
 
 // ---------------------------------------------------------------------------
 // Error-extraction helpers (assertions stay at each call site)
@@ -25,13 +26,6 @@ use mediapm_conductor::config::{
 ///
 /// The version in each fixture's source decides which contract runs; the
 /// helper makes no claim about it.
-/// Normalizes Nickel source for line-ending-independent matching.
-///
-/// `include_str!` preserves the checked-out line endings, so CRLF Windows
-/// checkouts embed `\r\n` in schema text while test literals use `\n`.
-fn ncl(source: &str) -> String {
-    source.replace("\r\n", "\n")
-}
 fn decode_error(doc: &str) -> String {
     format!("{}", decode_document(doc.as_bytes()).expect_err("document must be rejected"))
 }
