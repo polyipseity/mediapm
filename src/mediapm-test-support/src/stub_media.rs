@@ -458,10 +458,14 @@ const JELLYFIN_LINE: &str = "latest-10.x";
 /// The jellyfin version the mocked archive names carry.
 const JELLYFIN_VERSION: &str = "7.1.1";
 
-/// The host-OS payload URL of each managed tool the mount answered.
+/// The host-OS payload URL of each managed tool the mount answered, and the
+/// stub bytes those payloads carry.
 pub struct ManagedToolUpstreams {
     /// One payload URL per tool, for the OS slot this host runs.
     host_payload_urls: BTreeMap<&'static str, String>,
+    /// The stub bytes read once after `stub_tool_path()` settles, shared by every
+    /// mounted host payload.
+    stub_bytes: Vec<u8>,
 }
 
 impl ManagedToolUpstreams {
@@ -474,6 +478,17 @@ impl ManagedToolUpstreams {
     #[must_use]
     pub fn host_payload_url(&self, tool: &str) -> Option<&str> {
         self.host_payload_urls.get(tool).map(String::as_str)
+    }
+
+    /// The stub bytes every host payload executable carries.
+    ///
+    /// The mount reads the stub once, after `stub_tool_path()` settles, and uses
+    /// that same read for every payload it serves; this exposes the same bytes so
+    /// a caller can compare a fetched payload against them without a second read
+    /// that a concurrent rebuild could make differ.
+    #[must_use]
+    pub fn stub_bytes(&self) -> &[u8] {
+        &self.stub_bytes
     }
 }
 
@@ -498,7 +513,7 @@ pub async fn mount_managed_tool_upstreams(mock: &MockUpstream) -> ManagedToolUps
     host_payload_urls.insert("sd", mount_sd(mock, &stub).await);
     host_payload_urls.insert("ffmpeg", mount_ffmpeg(mock, &stub).await);
 
-    ManagedToolUpstreams { host_payload_urls }
+    ManagedToolUpstreams { host_payload_urls, stub_bytes: stub }
 }
 
 /// Returns the file name the provider's `find_os_executable` resolves in a slot.

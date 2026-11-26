@@ -15,7 +15,7 @@ use mediapm_test_support::stub_media::{
     CHAIN_TOOLS, INVOCATION_RECORD_ENV, MANIFEST_ENV, OfflineToolChain,
     mount_managed_tool_upstreams, mount_offline_tool_chain,
 };
-use mediapm_test_support::{MockUpstream, media_fixture_path, stub_tool_path};
+use mediapm_test_support::{MockUpstream, media_fixture_path};
 
 /// The media file the emitted artifact carries, resolved from this crate's
 /// manifest directory.
@@ -329,7 +329,7 @@ fn the_yt_dlp_stub_writes_the_whole_sidecar_set() {
 async fn the_mount_provisions_a_tool_whose_payload_executable_is_the_stub() {
     let mock = MockUpstream::start().await;
     let upstreams = mount_managed_tool_upstreams(&mock).await;
-    let stub = std::fs::read(stub_tool_path()).expect("the stub must be readable");
+    let stub = upstreams.stub_bytes();
 
     let yt_dlp_url = upstreams.host_payload_url("yt-dlp").expect("yt-dlp's host payload");
     let payload = reqwest::get(yt_dlp_url)
@@ -340,12 +340,20 @@ async fn the_mount_provisions_a_tool_whose_payload_executable_is_the_stub() {
         .expect("the payload body");
     assert_eq!(
         payload.as_ref(),
-        stub.as_slice(),
+        stub,
         "yt-dlp is a bare binary, so its host payload must be the stub's own bytes",
     );
 
     let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
     let provisioned = dir.path().join(format!("yt-dlp{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        provisioned
+            .file_name()
+            .expect("provisioned path has a file name")
+            .to_string_lossy()
+            .ends_with(std::env::consts::EXE_SUFFIX),
+        "the provisioned executable name must carry the host EXE_SUFFIX",
+    );
     std::fs::write(&provisioned, &payload).expect("write the provisioned payload");
     // The provider materializes a payload with its container's permissions, so a
     // written-out payload has to be made executable before it can stand in for
