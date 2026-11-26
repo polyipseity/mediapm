@@ -103,13 +103,15 @@ const RENAMED_TAGGER_OPTIONS: [(&str, &str); 2] = [
 pub(crate) struct MediaTaggerBuiltin {
     /// Host environment-variable pairs the pipeline's child processes inherit.
     env_pairs: Vec<(String, String)>,
+    /// Runtime root used for login-gated auth state.
+    runtime_root: Option<PathBuf>,
 }
 
 impl MediaTaggerBuiltin {
     /// Creates a runner that applies `env_pairs` to every child it spawns.
     #[must_use]
-    pub(crate) fn new(env_pairs: Vec<(String, String)>) -> Self {
-        Self { env_pairs }
+    pub(crate) fn new(env_pairs: Vec<(String, String)>, runtime_root: Option<PathBuf>) -> Self {
+        Self { env_pairs, runtime_root }
     }
 }
 
@@ -133,7 +135,12 @@ impl HostBuiltin for MediaTaggerBuiltin {
         request: HostBuiltinRequest<'_>,
     ) -> Result<HostBuiltinOutput, ConductorError> {
         let input_path = stage_content(request.args, request.cas, request.sandbox_dir).await?;
-        let options = options_from_args(request.args, input_path, request.sandbox_dir)?;
+        let options = options_from_args(
+            request.args,
+            input_path,
+            request.sandbox_dir,
+            self.runtime_root.clone(),
+        )?;
 
         run_internal_media_tagger(options, &self.env_pairs)
             .await
@@ -207,6 +214,7 @@ fn options_from_args(
     args: &BTreeMap<String, String>,
     input_path: Option<PathBuf>,
     sandbox_dir: &Path,
+    runtime_root: Option<PathBuf>,
 ) -> Result<InternalMediaTaggerOptions, ConductorError> {
     reject_retired_command_options(args)?;
 
@@ -271,6 +279,7 @@ fn options_from_args(
             )?,
             include_user_tags: flag(args, "include_user_tags", DEFAULT_INCLUDE_USER_TAGS)?,
         },
+        runtime_root,
     })
 }
 
@@ -417,8 +426,9 @@ mod tests {
         args.insert("preserve_existing_tags".to_string(), "false".to_string());
         args.insert("preserve_existing_stream_tags".to_string(), "false".to_string());
         args.insert("preserve_existing_images".to_string(), "false".to_string());
-        let options = options_from_args(&args, Some("/sandbox/inputs/input.media".into()), sandbox)
-            .expect("a step that binds valid values must map");
+        let options =
+            options_from_args(&args, Some("/sandbox/inputs/input.media".into()), sandbox, None)
+                .expect("a step that binds valid values must map");
 
         assert_eq!(
             options.output_path,
@@ -459,8 +469,9 @@ mod tests {
     /// a run that says nothing about an option gets a value at all.
     #[test]
     fn an_unbound_option_gets_the_library_default() {
-        let options = options_from_args(&BTreeMap::new(), None, std::path::Path::new("/sandbox"))
-            .expect("an empty step maps to the defaults");
+        let options =
+            options_from_args(&BTreeMap::new(), None, std::path::Path::new("/sandbox"), None)
+                .expect("an empty step maps to the defaults");
 
         assert!(options.write_all_tags);
         assert!(options.write_all_images);
@@ -513,7 +524,7 @@ mod tests {
     fn a_binding_of_a_retired_command_option_fails_the_step() {
         for key in ["option_args", "leading_args", "trailing_args", "enable_acoustid"] {
             let args = BTreeMap::from([(key.to_string(), "--quiet -v".to_string())]);
-            let error = options_from_args(&args, None, std::path::Path::new("/sandbox"))
+            let error = options_from_args(&args, None, std::path::Path::new("/sandbox"), None)
                 .expect_err("an option no field of the pipeline reads must not be ignored");
 
             assert!(
@@ -531,7 +542,7 @@ mod tests {
             ("preserve_images", "preserve_existing_images"),
         ] {
             let args = BTreeMap::from([(key.to_string(), "false".to_string())]);
-            let error = options_from_args(&args, None, std::path::Path::new("/sandbox"))
+            let error = options_from_args(&args, None, std::path::Path::new("/sandbox"), None)
                 .expect_err("a renamed option must be rejected for every document version");
 
             let message = error.to_string();
@@ -558,7 +569,7 @@ mod tests {
     #[test]
     fn a_bound_boolean_that_is_neither_value_fails_the_step() {
         let args = BTreeMap::from([("write_all_tags".to_string(), "yes".to_string())]);
-        let error = options_from_args(&args, None, std::path::Path::new("/sandbox"))
+        let error = options_from_args(&args, None, std::path::Path::new("/sandbox"), None)
             .expect_err("a mistyped boolean must not be read as a value");
 
         assert!(
@@ -571,7 +582,7 @@ mod tests {
     #[test]
     fn a_strict_identification_option_is_rejected() {
         let args = BTreeMap::from([("strict_identification".to_string(), "false".to_string())]);
-        let error = options_from_args(&args, None, std::path::Path::new("/sandbox"))
+        let error = options_from_args(&args, None, std::path::Path::new("/sandbox"), None)
             .expect_err("strict_identification must be rejected");
 
         let message = error.to_string();

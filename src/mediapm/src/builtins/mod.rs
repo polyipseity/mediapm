@@ -12,6 +12,7 @@
 #[cfg(feature = "media-tagger")]
 pub mod media_tagger;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use mediapm_conductor::error::ConductorError;
@@ -71,7 +72,8 @@ const IMPORT_BUILTIN_ID: &str = "import";
 ///
 /// `env_pairs` are the whitelisted host environment-variable pairs the
 /// registered runners apply to every child process they spawn, resolved from the
-/// effective mediapm runtime storage.
+/// effective mediapm runtime storage. `runtime_root` is the effective runtime
+/// root used for login-gated auth state.
 ///
 /// # Errors
 ///
@@ -81,13 +83,15 @@ const IMPORT_BUILTIN_ID: &str = "import";
 /// than something a run can be asked to tolerate.
 pub(crate) fn host_builtins(
     env_pairs: Vec<(String, String)>,
+    runtime_root: Option<PathBuf>,
 ) -> Result<HostBuiltins, ConductorError> {
     #[cfg(feature = "media-tagger")]
     let entries: Vec<Arc<dyn HostBuiltin>> =
-        vec![Arc::new(MediaTaggerBuiltin::new(env_pairs)) as Arc<dyn HostBuiltin>];
+        vec![Arc::new(MediaTaggerBuiltin::new(env_pairs, runtime_root)) as Arc<dyn HostBuiltin>];
     #[cfg(not(feature = "media-tagger"))]
     let entries: Vec<Arc<dyn HostBuiltin>> = {
         let _ = env_pairs;
+        let _ = runtime_root;
         Vec::new()
     };
 

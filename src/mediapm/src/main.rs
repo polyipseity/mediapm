@@ -769,6 +769,7 @@ async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Resu
                 include_user_collections: args.include_user_collections,
                 include_user_tags: args.include_user_tags,
             },
+            runtime_root: None,
         },
         &env_pairs,
     )

@@ -100,6 +100,7 @@ mod tests {
                     DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
                 enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
                 metadata_selection: MetadataSelection::default(),
+                runtime_root: None,
             },
             &test_env_pairs(),
         )
@@ -163,6 +164,7 @@ mod tests {
                     DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
                 enable_logged_in_features_acoustid: false,
                 metadata_selection: MetadataSelection::default(),
+                runtime_root: None,
             },
             &test_env_pairs(),
         )
@@ -220,6 +222,7 @@ mod tests {
                     DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
                 enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
                 metadata_selection: MetadataSelection::default(),
+                runtime_root: None,
             },
             &test_env_pairs(),
         )
@@ -275,6 +278,7 @@ mod tests {
                     DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
                 enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
                 metadata_selection: MetadataSelection::default(),
+                runtime_root: None,
             },
             &test_env_pairs(),
         )
@@ -323,6 +327,7 @@ mod tests {
                     DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
                 enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
                 metadata_selection: MetadataSelection::default(),
+                runtime_root: None,
             },
             &test_env_pairs(),
         )
@@ -588,6 +593,11 @@ mod tests {
             write_all_tags: false,
             release_ars: false,
             endpoint: "https://musicbrainz.org/ws/2".to_string(),
+
+            include_user_genres: false,
+            include_user_ratings: false,
+            include_user_collections: false,
+            include_user_tags: false,
         };
         let cache_key = shape.cache_key("recording-demo", Some("release-demo")).expect("shape key");
         let payload = serde_json::json!({
@@ -894,6 +904,11 @@ pub struct InternalMediaTaggerOptions {
     pub enable_logged_in_features_acoustid: bool,
     /// Which login-gated MusicBrainz metadata fields to include.
     pub metadata_selection: MetadataSelection,
+    /// Runtime root directory used for login-gated auth files.
+    ///
+    /// When `None`, login-gated MusicBrainz features that require an auth file
+    /// cannot resolve login state.
+    pub runtime_root: Option<PathBuf>,
 }
 
 /// Normalized MBID override mode from runtime input text.
@@ -1098,16 +1113,128 @@ async fn run_internal_media_tagger_impl(
         );
     };
 
+    let mb_labels = GateLabels {
+        service: "MusicBrainz",
+        disabled_flag: "--enable-logged-in-features-musicbrainz",
+        missing_login_hint: "no MusicBrainz login is available (run 'mediapm auth musicbrainz login')",
+    };
+    let wanted_user_fields = [
+        ("user-genres", options.metadata_selection.include_user_genres),
+        ("user-ratings", options.metadata_selection.include_user_ratings),
+        ("user-collections", options.metadata_selection.include_user_collections),
+        ("user-tags", options.metadata_selection.include_user_tags),
+    ];
+    let any_wanted_user_field = wanted_user_fields.iter().any(|(_, wanted)| *wanted);
+    let mut mb_token: Option<String> = None;
+    let mut mb_auth_state: Option<AuthState> = None;
+    let mut mb_auth_error: Option<String> = None;
+    if any_wanted_user_field && options.enable_logged_in_features_musicbrainz {
+        if let Some(runtime_root) = options.runtime_root.as_deref() {
+            match crate::auth::musicbrainz::MusicBrainzOAuthConfig::from_env() {
+                Ok(config) => {
+                    match crate::auth::musicbrainz::ensure_access_token(runtime_root, &config).await
+                    {
+                        Ok(token) => {
+                            mb_token = Some(token);
+                            mb_auth_state = Some(AuthState::LoggedIn);
+                        }
+                        Err(
+                            err @ (crate::auth::musicbrainz::MusicBrainzAuthError::NotLoggedIn
+                            | crate::auth::musicbrainz::MusicBrainzAuthError::LoginExpired),
+                        ) => {
+                            let _ = err;
+                            mb_auth_state = Some(AuthState::LoggedOut);
+                        }
+                        Err(err) => {
+                            mb_auth_error = Some(err.to_string());
+                            mb_auth_state = Some(AuthState::LoggedOut);
+                        }
+                    }
+                }
+                Err(err) => {
+                    mb_auth_error = Some(err.to_string());
+                    mb_auth_state = Some(AuthState::LoggedOut);
+                }
+            }
+        } else {
+            mb_auth_state = Some(AuthState::LoggedOut);
+        }
+    }
+    let mut include_user_genres = false;
+    let mut include_user_ratings = false;
+    let mut include_user_collections = false;
+    let mut include_user_tags = false;
+    for (field, wanted) in wanted_user_fields {
+        let need = if wanted { Need::Optional(field) } else { Need::None };
+        let outcome =
+            resolve_gate(options.enable_logged_in_features_musicbrainz, need, mb_labels, || {
+                mb_auth_state.unwrap_or(AuthState::LoggedOut)
+            });
+        match outcome {
+            GateOutcome::Use => {
+                if let Some(message) = mb_auth_error.as_ref() {
+                    bail!("{message}");
+                }
+                match field {
+                    "user-genres" if wanted => include_user_genres = true,
+                    "user-ratings" if wanted => include_user_ratings = true,
+                    "user-collections" if wanted => include_user_collections = true,
+                    "user-tags" if wanted => include_user_tags = true,
+                    _ => {}
+                }
+            }
+            GateOutcome::Dropped { field, service } => {
+                tracing::info!(
+                    "dropped {field} because logged-in features for {service} are disabled"
+                );
+            }
+            GateOutcome::Fail { message } => {
+                if let Some(auth_error) = mb_auth_error.as_ref() {
+                    bail!("{auth_error}");
+                }
+                bail!("{message}");
+            }
+        }
+    }
+    let bearer_token = if include_user_genres
+        || include_user_ratings
+        || include_user_collections
+        || include_user_tags
+    {
+        if mb_token.is_none() {
+            let runtime_root = options.runtime_root.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "MusicBrainz user-data fields are wanted but no runtime root is available"
+                )
+            })?;
+            let config = crate::auth::musicbrainz::MusicBrainzOAuthConfig::from_env()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            mb_token = Some(
+                crate::auth::musicbrainz::ensure_access_token(runtime_root, &config)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?,
+            );
+        }
+        mb_token.as_deref()
+    } else {
+        None
+    };
+
     let metadata_payload = fetch_musicbrainz_payloads(
         &MusicBrainzFetchShape {
             write_all_tags: options.write_all_tags,
             release_ars: options.release_ars,
             endpoint: options.musicbrainz_endpoint.clone(),
+            include_user_genres,
+            include_user_ratings,
+            include_user_collections,
+            include_user_tags,
         },
         &recording_mbid,
         detected_release_mbid.as_deref(),
         MUSICBRAINZ_FETCH_DEADLINE,
         &media_tagger_cache,
+        bearer_token,
     )
     .await
     .with_context(|| {
@@ -1115,14 +1242,7 @@ async fn run_internal_media_tagger_impl(
             "fetching MusicBrainz entities from '{}' for recording '{}'",
             options.musicbrainz_endpoint, recording_mbid
         )
-    });
-
-    let metadata_payload = match metadata_payload {
-        Ok(payload) => payload,
-        Err(error) => {
-            return Err(error);
-        }
-    };
+    })?;
 
     let mut ffmetadata_map = build_ffmetadata_map(&metadata_payload, options.write_all_tags)
         .context("building FFmetadata mapping from MusicBrainz payload")?;

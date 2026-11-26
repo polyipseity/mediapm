@@ -72,6 +72,7 @@ fn hermetic_options(
         enable_logged_in_features_musicbrainz: DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
         enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
         metadata_selection: MetadataSelection::default(),
+        runtime_root: None,
     }
 }
 
@@ -582,6 +583,8 @@ async fn disabling_tag_saving_preserves_existing_global_tags_when_requested() {
         enable_logged_in_features_musicbrainz: DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
         enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
         metadata_selection: MetadataSelection::default(),
+
+        runtime_root: None,
     };
 
     run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
@@ -629,6 +632,8 @@ async fn disabling_tag_saving_drops_existing_global_tags_when_not_preserved() {
         enable_logged_in_features_musicbrainz: DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
         enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
         metadata_selection: MetadataSelection::default(),
+
+        runtime_root: None,
     };
 
     run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
@@ -707,5 +712,63 @@ async fn a_successful_tag_run_drops_existing_global_tags_when_not_preserved() {
     assert!(
         !tags.contains_key("COMMENT") && !tags.contains_key("comment"),
         "existing global tags must be dropped when preservation is off: {tags:?}"
+    );
+}
+
+#[tokio::test]
+async fn wanted_user_data_dropped_when_musicbrainz_login_features_disabled() {
+    let workspace = mediapm_utils::temp::output_dir().expect("workspace");
+    let musicbrainz = wiremock::MockServer::start().await;
+    mount_musicbrainz(&musicbrainz).await;
+
+    let endpoint = format!("{}/ws/2", musicbrainz.uri());
+    let mut options = hermetic_options(workspace.path(), &endpoint, DEFAULT_CAA_ENDPOINT);
+    options.enable_logged_in_features_musicbrainz = false;
+    let output_path = options.output_path.clone();
+
+    run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
+        .await
+        .expect("run should succeed when wanted user-data is dropped by flag");
+
+    assert!(output_path.exists(), "output ffmetadata should be written");
+
+    let requests = musicbrainz.received_requests().await.expect("requests");
+    assert!(!requests.is_empty(), "musicbrainz should be queried");
+    for req in requests {
+        let url = req.url.to_string();
+        assert!(
+            !url.contains("user-genres")
+                && !url.contains("user-ratings")
+                && !url.contains("user-tags")
+                && !url.contains("user-collections"),
+            "dropped user-data must not be requested: {url}"
+        );
+        assert!(
+            req.headers.get("authorization").is_none(),
+            "dropped user-data must not send authorization"
+        );
+    }
+}
+
+#[tokio::test]
+async fn wanted_user_data_errors_when_musicbrainz_login_unavailable() {
+    let workspace = mediapm_utils::temp::output_dir().expect("workspace");
+    let musicbrainz = wiremock::MockServer::start().await;
+    mount_musicbrainz(&musicbrainz).await;
+
+    let endpoint = format!("{}/ws/2", musicbrainz.uri());
+    let mut options = hermetic_options(workspace.path(), &endpoint, DEFAULT_CAA_ENDPOINT);
+    options.enable_logged_in_features_musicbrainz = true;
+    options.runtime_root = None;
+
+    let err =
+        run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
+            .await
+            .expect_err("wanted user-data with no login should fail");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("no MusicBrainz login is available")
+            || message.contains("MusicBrainz OAuth client credentials are missing"),
+        "error should explain missing login or missing client credentials: {message}"
     );
 }

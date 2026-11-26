@@ -8,22 +8,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Need {
     /// The step does not need the service.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "constructed in gate tests and wired by T8/T9 call sites; T5 delivers the gate contract"
-        )
-    )]
     None,
     /// The step can succeed without the service; dropping it is logged.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "constructed in gate tests and wired by T8/T9 call sites; T5 delivers the gate contract"
-        )
-    )]
     Optional(&'static str),
     /// The step cannot succeed without the service; denial is an error.
     Required(&'static str),

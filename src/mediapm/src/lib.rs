@@ -600,6 +600,7 @@ pub(crate) fn append_unique_env_var_names(target: &mut Vec<String>, source: &[St
 /// bug in this crate rather than a condition a run can recover from.
 pub(crate) fn conductor_run_workflow_options(
     runtime_storage: &MediaRuntimeStorage,
+    runtime_root: &std::path::Path,
     progress_group: Option<Arc<dyn mediapm_utils::progress::ProgressScreenApi + Send + Sync>>,
     overall_bar: Option<Arc<dyn mediapm_utils::progress::ProgressBarApi>>,
 ) -> Result<mediapm_conductor::RunWorkflowOptions, MediaPmError> {
@@ -608,9 +609,12 @@ pub(crate) fn conductor_run_workflow_options(
     Ok(mediapm_conductor::RunWorkflowOptions {
         progress_group,
         overall_bar,
-        host_builtins: crate::builtins::host_builtins(env_pairs).map_err(|error| {
-            MediaPmError::Workflow(format!("builtin runner registry rejected its entries: {error}"))
-        })?,
+        host_builtins: crate::builtins::host_builtins(env_pairs, Some(runtime_root.to_path_buf()))
+            .map_err(|error| {
+                MediaPmError::Workflow(format!(
+                    "builtin runner registry rejected its entries: {error}"
+                ))
+            })?,
         ..mediapm_conductor::RunWorkflowOptions::default()
     })
 }

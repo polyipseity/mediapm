@@ -276,8 +276,13 @@ async fn run_tagging_step() -> String {
     )
     .expect("write the conductor document");
 
-    let options = conductor_run_workflow_options(&MediaRuntimeStorage::default(), None, None)
-        .expect("the host builtins must register");
+    let options = conductor_run_workflow_options(
+        &MediaRuntimeStorage::default(),
+        &workspace.path().join(".mediapm"),
+        None,
+        None,
+    )
+    .expect("the host builtins must register");
     assert!(
         options.host_builtins.get("media-tagger").is_some(),
         "every run must carry the media-tagger runner, or a library that tags cannot sync",

@@ -34,6 +34,24 @@ use super::util::{
     sanitize_metadata_key, truncate_metadata_value,
 };
 
+/// User-specific MusicBrainz data extracted from entity responses.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "user_ prefix distinguishes MusicBrainz user-data fields from generic payload fields"
+)]
+pub(super) struct MusicBrainzUserData {
+    /// User-provided genres as `(name, count)` pairs.
+    pub(super) user_genres: Vec<(String, u32)>,
+    /// User-provided tags as `(name, count)` pairs.
+    pub(super) user_tags: Vec<(String, u32)>,
+    /// User rating value, when present.
+    pub(super) user_rating: Option<u32>,
+    /// User collection IDs the entity belongs to.
+    pub(super) user_collections: Vec<String>,
+}
+
 /// Recording + optional release payload fetched from MusicBrainz.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct MusicBrainzPayload {
@@ -41,6 +59,12 @@ pub(super) struct MusicBrainzPayload {
     pub(super) recording: Recording,
     /// Optional release entity resolved from MusicBrainz API.
     pub(super) release: Option<Release>,
+    /// User-specific data extracted from the recording response.
+    #[serde(default)]
+    pub(super) recording_user_data: MusicBrainzUserData,
+    /// User-specific data extracted from the release response.
+    #[serde(default)]
+    pub(super) release_user_data: MusicBrainzUserData,
 }
 
 /// Env var naming the per-request timeout in whole seconds, the same name
@@ -203,6 +227,10 @@ fn musicbrainz_host_for_endpoint(endpoint: &str) -> anyhow::Result<String> {
 /// construction site that fills the shape into view instead of leaving a
 /// stale-cache hole.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "fetch shape mirrors independent MusicBrainz request dimensions; T9 will add genre knobs"
+)]
 pub(super) struct MusicBrainzFetchShape {
     /// Whether the extended Picard tag block was requested.
     pub(super) write_all_tags: bool,
@@ -210,6 +238,14 @@ pub(super) struct MusicBrainzFetchShape {
     pub(super) release_ars: bool,
     /// MusicBrainz endpoint URL.
     pub(super) endpoint: String,
+    /// Whether user-genre data should be requested.
+    pub(super) include_user_genres: bool,
+    /// Whether user-rating data should be requested.
+    pub(super) include_user_ratings: bool,
+    /// Whether user-collection data should be requested.
+    pub(super) include_user_collections: bool,
+    /// Whether user-tag data should be requested.
+    pub(super) include_user_tags: bool,
 }
 
 impl MusicBrainzFetchShape {
@@ -218,7 +254,8 @@ impl MusicBrainzFetchShape {
     /// The scheme is deliberately absent: `http://x` and `https://x`
     /// produce equivalent cached rows. The deadline and API credentials are
     /// absent too — one is latency policy, the other must never land in the
-    /// on-disk index.
+    /// on-disk index. User-data flags are included because they change the
+    /// requested `inc` set and response shape.
     pub(super) fn cache_key(
         &self,
         recording_mbid: &str,
@@ -228,9 +265,13 @@ impl MusicBrainzFetchShape {
             release_mbid.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("");
         let domain = musicbrainz_host_for_endpoint(&self.endpoint)?;
         Ok(format!(
-            "recording={recording_mbid}|release={release_mbid}|all_tags={}|ars={}|endpoint={domain}",
+            "recording={recording_mbid}|release={release_mbid}|all_tags={}|ars={}|endpoint={domain}|user_genres={}|user_ratings={}|user_collections={}|user_tags={}",
             u8::from(self.write_all_tags),
             u8::from(self.release_ars),
+            u8::from(self.include_user_genres),
+            u8::from(self.include_user_ratings),
+            u8::from(self.include_user_collections),
+            u8::from(self.include_user_tags),
         ))
     }
 }
@@ -275,6 +316,15 @@ fn recording_includes(shape: &MusicBrainzFetchShape) -> Vec<&'static str> {
     if shape.write_all_tags {
         includes.extend(["annotation", "work-level-rels"]);
     }
+    if shape.include_user_genres {
+        includes.push("user-genres");
+    }
+    if shape.include_user_ratings {
+        includes.push("user-ratings");
+    }
+    if shape.include_user_tags {
+        includes.push("user-tags");
+    }
     includes
 }
 
@@ -296,6 +346,18 @@ fn release_includes(shape: &MusicBrainzFetchShape) -> Vec<&'static str> {
     if shape.write_all_tags || shape.release_ars {
         includes.push("recording-level-rels");
         includes.push("release-group-level-rels");
+    }
+    if shape.include_user_genres {
+        includes.push("user-genres");
+    }
+    if shape.include_user_ratings {
+        includes.push("user-ratings");
+    }
+    if shape.include_user_collections {
+        includes.push("user-collections");
+    }
+    if shape.include_user_tags {
+        includes.push("user-tags");
     }
     includes
 }
@@ -322,11 +384,16 @@ async fn fetch_entity<T: DeserializeOwned>(
     entity_label: &str,
     policy: MusicBrainzRetryPolicy,
     request_timeout: Duration,
-) -> anyhow::Result<T> {
+    bearer_token: Option<&str>,
+) -> anyhow::Result<(T, serde_json::Value)> {
     let mut last_error: Option<anyhow::Error> = None;
     for attempt in 1..=policy.attempts {
         pace_musicbrainz_request().await;
-        let send_result = client.get(url.clone()).timeout(request_timeout).send().await;
+        let mut request = client.get(url.clone()).timeout(request_timeout);
+        if let Some(token) = bearer_token {
+            request = request.bearer_auth(token);
+        }
+        let send_result = request.send().await;
         match send_result {
             Ok(response) => {
                 let status = response.status();
@@ -334,9 +401,16 @@ async fn fetch_entity<T: DeserializeOwned>(
                     let bytes = response.bytes().await.with_context(|| {
                         format!("reading MusicBrainz {entity_label} response body from '{url}'")
                     })?;
-                    return serde_json::from_slice::<T>(&bytes).with_context(|| {
+                    let value: serde_json::Value =
+                        serde_json::from_slice(&bytes).with_context(|| {
+                            format!(
+                                "deserializing MusicBrainz {entity_label} response from '{url}'"
+                            )
+                        })?;
+                    let typed = serde_json::from_value::<T>(value.clone()).with_context(|| {
                         format!("deserializing MusicBrainz {entity_label} response from '{url}'")
-                    });
+                    })?;
+                    return Ok((typed, value));
                 }
                 if is_retryable_status(status) {
                     let retry_after = retry_after_secs(&response);
@@ -372,6 +446,79 @@ async fn fetch_entity<T: DeserializeOwned>(
     }))
 }
 
+/// Extracts user-data fields from a raw MusicBrainz entity JSON value.
+fn extract_user_data(value: &serde_json::Value) -> MusicBrainzUserData {
+    let user_genres = value
+        .get("user-genres")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let name = item.get("name").and_then(serde_json::Value::as_str)?.to_owned();
+                    let count = item
+                        .get("count")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(1)
+                        .try_into()
+                        .unwrap_or(u32::MAX);
+                    Some((name, count))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let user_tags = value
+        .get("user-tags")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let name = item.get("name").and_then(serde_json::Value::as_str)?.to_owned();
+                    let count = item
+                        .get("count")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(1)
+                        .try_into()
+                        .unwrap_or(u32::MAX);
+                    Some((name, count))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let user_rating = value.get("user-rating").and_then(|v| {
+        v.get("value")
+            .and_then(serde_json::Value::as_f64)
+            .and_then(|n| {
+                let rounded = n.round();
+                if rounded.is_finite() && (0.0..=f64::from(u32::MAX)).contains(&rounded) {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "rounded rating is finite and clamped to the u32 range"
+                    )]
+                    Some(rounded as u32)
+                } else {
+                    None
+                }
+            })
+            .or_else(|| v.as_u64().and_then(|n| u32::try_from(n).ok()))
+    });
+    let user_collections = value
+        .get("user-collections")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.get("id").and_then(serde_json::Value::as_str).map(ToOwned::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    MusicBrainzUserData { user_genres, user_tags, user_rating, user_collections }
+}
+
 /// Fetches one recording and, when resolvable, its release.
 ///
 /// Each entity fetch is paced and retried independently according to `policy`.
@@ -381,17 +528,19 @@ async fn fetch_pair_with_policy(
     recording_mbid: &str,
     release_mbid: Option<&str>,
     policy: MusicBrainzRetryPolicy,
+    bearer_token: Option<&str>,
 ) -> anyhow::Result<MusicBrainzPayload> {
     let base = normalized_endpoint_base(&shape.endpoint)?;
     let request_timeout = musicbrainz_timeout();
 
     let recording_url = entity_url(&base, "recording", recording_mbid, &recording_includes(shape))?;
-    let recording: Recording = fetch_entity(
+    let (recording, recording_value): (Recording, serde_json::Value) = fetch_entity(
         client,
         &recording_url,
         &format!("recording '{recording_mbid}'"),
         policy,
         request_timeout,
+        bearer_token,
     )
     .await
     .with_context(|| format!("fetching MusicBrainz recording '{recording_mbid}'"))?;
@@ -406,23 +555,29 @@ async fn fetch_pair_with_policy(
             .map(|release| release.id.clone())
     });
 
-    let release = if let Some(release_id) = release_id {
+    let (release, release_value) = if let Some(release_id) = release_id {
         let release_url = entity_url(&base, "release", &release_id, &release_includes(shape))?;
-        let release: Release = fetch_entity(
+        let (release, release_value): (Release, serde_json::Value) = fetch_entity(
             client,
             &release_url,
             &format!("release '{release_id}'"),
             policy,
             request_timeout,
+            bearer_token,
         )
         .await
         .with_context(|| format!("fetching MusicBrainz release '{release_id}'"))?;
-        Some(release)
+        (Some(release), Some(release_value))
     } else {
-        None
+        (None, None)
     };
 
-    Ok(MusicBrainzPayload { recording, release })
+    Ok(MusicBrainzPayload {
+        recording_user_data: extract_user_data(&recording_value),
+        release_user_data: release_value.as_ref().map(extract_user_data).unwrap_or_default(),
+        recording,
+        release,
+    })
 }
 
 /// Fetches recording/release payloads through the shared HTTP client.
@@ -438,12 +593,21 @@ pub(super) async fn fetch_musicbrainz_payloads(
     release_mbid: Option<&str>,
     deadline: Duration,
     cache: &MediaTaggerHttpCache,
+    bearer_token: Option<&str>,
 ) -> anyhow::Result<MusicBrainzPayload> {
     let client = shared_http_client()
         .map_err(|error| anyhow::anyhow!("{error}"))
         .context("acquiring shared HTTP client for MusicBrainz fetch")?;
-    fetch_musicbrainz_payloads_on(client, shape, recording_mbid, release_mbid, deadline, cache)
-        .await
+    fetch_musicbrainz_payloads_on(
+        client,
+        shape,
+        recording_mbid,
+        release_mbid,
+        deadline,
+        cache,
+        bearer_token,
+    )
+    .await
 }
 
 /// The fetch itself, against an explicit client and the production retry policy.
@@ -454,6 +618,7 @@ pub(super) async fn fetch_musicbrainz_payloads_on(
     release_mbid: Option<&str>,
     deadline: Duration,
     cache: &MediaTaggerHttpCache,
+    bearer_token: Option<&str>,
 ) -> anyhow::Result<MusicBrainzPayload> {
     fetch_musicbrainz_payloads_on_with_policy(
         client,
@@ -463,6 +628,7 @@ pub(super) async fn fetch_musicbrainz_payloads_on(
         deadline,
         cache,
         MusicBrainzRetryPolicy::production(),
+        bearer_token,
     )
     .await
 }
@@ -473,6 +639,10 @@ pub(super) async fn fetch_musicbrainz_payloads_on(
 /// production construction. The shape carries both the fetch inputs and the
 /// cache key, so a payload is only ever read from or written to the row of the
 /// exact shape that produced it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bearer token and retry policy are independent fetch dimensions; callers pass one request shape"
+)]
 pub(super) async fn fetch_musicbrainz_payloads_on_with_policy(
     client: &Client,
     shape: &MusicBrainzFetchShape,
@@ -481,17 +651,26 @@ pub(super) async fn fetch_musicbrainz_payloads_on_with_policy(
     deadline: Duration,
     cache: &MediaTaggerHttpCache,
     policy: MusicBrainzRetryPolicy,
+    bearer_token: Option<&str>,
 ) -> anyhow::Result<MusicBrainzPayload> {
     let cache_key = shape.cache_key(recording_mbid, release_mbid)?;
-    let cached_payload = cache.read_musicbrainz_payload(&cache_key).await;
-    if let Some(cached) = cached_payload.as_ref()
-        && cached.is_fresh
-    {
-        return Ok(cached.payload.clone());
+    let cache_user_data = bearer_token.is_some()
+        || shape.include_user_genres
+        || shape.include_user_ratings
+        || shape.include_user_collections
+        || shape.include_user_tags;
+    if !cache_user_data {
+        let cached_payload = cache.read_musicbrainz_payload(&cache_key).await;
+        if let Some(cached) = cached_payload.as_ref()
+            && cached.is_fresh
+        {
+            return Ok(cached.payload.clone());
+        }
     }
 
     let fetched_payload = tokio::time::timeout(deadline, async {
-        fetch_pair_with_policy(client, shape, recording_mbid, release_mbid, policy).await
+        fetch_pair_with_policy(client, shape, recording_mbid, release_mbid, policy, bearer_token)
+            .await
     })
     .await
     .with_context(|| {
@@ -502,11 +681,17 @@ pub(super) async fn fetch_musicbrainz_payloads_on_with_policy(
         )
     })??;
 
-    let _ = cache.write_musicbrainz_payload(&cache_key, &fetched_payload).await;
+    if !cache_user_data {
+        let _ = cache.write_musicbrainz_payload(&cache_key, &fetched_payload).await;
+    }
     Ok(fetched_payload)
 }
 
 /// Converts MusicBrainz payload into FFmetadata key/value map.
+#[expect(
+    clippy::too_many_lines,
+    reason = "maps the full MusicBrainz payload into ffmetadata tags; user-data output is part of the same mapping"
+)]
 pub(super) fn build_ffmetadata_map(
     payload: &MusicBrainzPayload,
     write_all_tags: bool,
@@ -593,6 +778,70 @@ pub(super) fn build_ffmetadata_map(
                 tags.insert("disctotal".to_string(), total_discs.to_string());
                 tags.insert("totaldiscs".to_string(), total_discs.to_string());
             }
+        }
+    }
+
+    if let Some(rating) =
+        payload.recording_user_data.user_rating.or(payload.release_user_data.user_rating)
+    {
+        tags.insert("~rating".to_string(), rating.to_string());
+    }
+    if !payload.release_user_data.user_collections.is_empty() {
+        tags.insert(
+            "musicbrainz_collectionid".to_string(),
+            join_unique(payload.release_user_data.user_collections.iter().map(String::as_str)),
+        );
+    }
+    if !payload.recording_user_data.user_tags.is_empty()
+        || !payload.release_user_data.user_tags.is_empty()
+    {
+        let mut all_user_tags: Vec<String> = payload
+            .recording_user_data
+            .user_tags
+            .iter()
+            .chain(payload.release_user_data.user_tags.iter())
+            .map(|(name, _)| name.as_str().to_owned())
+            .collect();
+        all_user_tags.sort();
+        all_user_tags.dedup();
+        if !all_user_tags.is_empty() {
+            tags.insert(
+                "~usertags".to_string(),
+                join_unique(all_user_tags.iter().map(String::as_str)),
+            );
+        }
+    }
+    if !payload.recording_user_data.user_genres.is_empty()
+        || !payload.release_user_data.user_genres.is_empty()
+    {
+        let mut all_user_genres: Vec<String> = payload
+            .recording_user_data
+            .user_genres
+            .iter()
+            .chain(payload.release_user_data.user_genres.iter())
+            .map(|(name, _)| name.as_str().to_owned())
+            .collect();
+        all_user_genres.sort();
+        all_user_genres.dedup();
+        if !all_user_genres.is_empty() {
+            let existing = tags.get("genre").cloned().unwrap_or_default();
+            let merged = if existing.trim().is_empty() {
+                join_unique(all_user_genres.iter().map(String::as_str))
+            } else {
+                let mut parts: Vec<String> = existing
+                    .split(';')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect();
+                for g in all_user_genres {
+                    if !parts.iter().any(|p| p.eq_ignore_ascii_case(&g)) {
+                        parts.push(g);
+                    }
+                }
+                join_unique(parts.iter().map(String::as_str))
+            };
+            tags.insert("genre".to_string(), merged);
         }
     }
 
@@ -700,6 +949,10 @@ mod tests {
             write_all_tags: false,
             release_ars: false,
             endpoint: endpoint.to_string(),
+            include_user_genres: false,
+            include_user_ratings: false,
+            include_user_collections: false,
+            include_user_tags: false,
         }
     }
 
@@ -782,6 +1035,7 @@ mod tests {
             Duration::from_secs(90),
             &cache,
             policy,
+            None,
         )
         .await;
         let elapsed = started.elapsed();
@@ -818,6 +1072,7 @@ mod tests {
                 Duration::from_secs(30),
                 &cache,
                 MusicBrainzRetryPolicy::production(),
+                None,
             )
             .await;
             let elapsed = started.elapsed();
@@ -856,6 +1111,7 @@ mod tests {
                 Duration::from_secs(30),
                 &cache,
                 policy,
+                None,
             )
             .await;
 
@@ -901,6 +1157,7 @@ mod tests {
             "recording 'transport-test'",
             policy,
             Duration::from_secs(2),
+            None,
         )
         .await;
 
@@ -927,6 +1184,11 @@ mod tests {
             write_all_tags: true,
             release_ars: false,
             endpoint: "https://musicbrainz.example.test".to_string(),
+
+            include_user_genres: false,
+            include_user_ratings: false,
+            include_user_collections: false,
+            include_user_tags: false,
         };
         let base = normalized_endpoint_base(&shape.endpoint).expect("base");
         let url = entity_url(&base, "recording", mbid, &recording_includes(&shape)).expect("url");
@@ -948,6 +1210,11 @@ mod tests {
             write_all_tags: false,
             release_ars: false,
             endpoint: "http://musicbrainz.example.test".to_string(),
+
+            include_user_genres: false,
+            include_user_ratings: false,
+            include_user_collections: false,
+            include_user_tags: false,
         };
         let http_base = normalized_endpoint_base(&http_shape.endpoint).expect("http base");
         let http_url = entity_url(&http_base, "recording", mbid, &recording_includes(&http_shape))
@@ -961,11 +1228,21 @@ mod tests {
             write_all_tags: false,
             release_ars: false,
             endpoint: "https://musicbrainz.example.test:8443/base".to_string(),
+
+            include_user_genres: false,
+            include_user_ratings: false,
+            include_user_collections: false,
+            include_user_tags: false,
         };
         let plain_shape = MusicBrainzFetchShape {
             write_all_tags: false,
             release_ars: false,
             endpoint: "http://musicbrainz.example.test:8443/base".to_string(),
+
+            include_user_genres: false,
+            include_user_ratings: false,
+            include_user_collections: false,
+            include_user_tags: false,
         };
         let secure_key = secure_shape.cache_key(recording_mbid(), None).expect("https key");
         let plain_key = plain_shape.cache_key(recording_mbid(), None).expect("http key");
@@ -1042,6 +1319,7 @@ mod tests {
             "recording 'timeout-test'",
             policy,
             Duration::from_millis(100),
+            None,
         )
         .await;
         let elapsed = started.elapsed();
@@ -1063,5 +1341,72 @@ mod tests {
         assert_eq!(parse_musicbrainz_timeout(Some("5")), Duration::from_secs(30));
         assert_eq!(parse_musicbrainz_timeout(Some("30")), Duration::from_secs(30));
         assert_eq!(parse_musicbrainz_timeout(Some("60")), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn recording_includes_user_data_incs_when_requested() {
+        let shape = MusicBrainzFetchShape {
+            write_all_tags: false,
+            release_ars: false,
+            endpoint: "https://musicbrainz.org/ws/2".to_string(),
+            include_user_genres: true,
+            include_user_ratings: true,
+            include_user_collections: true,
+            include_user_tags: true,
+        };
+        let incs = recording_includes(&shape);
+        assert!(incs.contains(&"user-genres"));
+        assert!(incs.contains(&"user-ratings"));
+        assert!(incs.contains(&"user-tags"));
+        let release_incs = release_includes(&shape);
+        assert!(release_incs.contains(&"user-collections"));
+        assert!(release_incs.contains(&"user-genres"));
+        assert!(release_incs.contains(&"user-ratings"));
+        assert!(release_incs.contains(&"user-tags"));
+    }
+
+    #[test]
+    fn extract_user_data_reads_user_fields() {
+        let value = serde_json::json!({
+            "user-rating": {"value": 5},
+            "user-genres": [{"name": "rock", "count": 2}],
+            "user-tags": [{"name": "favorite", "count": 1}],
+            "user-collections": [{"id": "coll-1"}],
+            "collections": [{"id": "public-coll"}]
+        });
+        let data = extract_user_data(&value);
+        assert_eq!(data.user_rating, Some(5));
+        assert_eq!(data.user_genres, vec![("rock".to_string(), 2)]);
+        assert_eq!(data.user_tags, vec![("favorite".to_string(), 1)]);
+        assert_eq!(data.user_collections, vec!["coll-1".to_string()]);
+    }
+
+    #[test]
+    fn build_ffmetadata_map_includes_user_data_output() {
+        let payload = MusicBrainzPayload {
+            recording: serde_json::from_value(serde_json::json!({
+                "id": "11111111-1111-1111-1111-111111111111",
+                "title": "Song"
+            }))
+            .expect("recording"),
+            release: None,
+            recording_user_data: MusicBrainzUserData {
+                user_genres: vec![("rock".to_string(), 1)],
+                user_tags: vec![("favorite".to_string(), 1)],
+                user_rating: Some(4),
+                user_collections: vec![],
+            },
+            release_user_data: MusicBrainzUserData {
+                user_genres: vec![],
+                user_tags: vec![],
+                user_rating: None,
+                user_collections: vec!["coll-1".to_string()],
+            },
+        };
+        let tags = build_ffmetadata_map(&payload, false).expect("tags");
+        assert_eq!(tags.get("~rating").map(String::as_str), Some("4"));
+        assert_eq!(tags.get("musicbrainz_collectionid").map(String::as_str), Some("coll-1"));
+        assert!(tags.get("genre").is_some_and(|g| g.contains("rock")));
+        assert!(tags.get("~usertags").is_some_and(|t| t.contains("favorite")));
     }
 }

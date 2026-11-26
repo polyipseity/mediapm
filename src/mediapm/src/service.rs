@@ -1540,6 +1540,7 @@ impl MediaPmService<FileSystemCas> {
         for workflow_name in workflow_names {
             let mut run_options = conductor_run_workflow_options(
                 &merged,
+                &effective_paths.runtime_root,
                 workflow_pg.clone(),
                 workflow_overall.clone(),
             )?;
