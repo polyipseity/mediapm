@@ -64,17 +64,37 @@ pub fn normalize_workspace_root(document: &[u8], root: &Path) -> String {
 /// Windows checkout gives JSON, TOML, and Nickel files CRLF endings while a
 /// POSIX checkout gives LF. A test that compares repository text against
 /// generated text must normalize first, or it asserts the checkout's line
-/// endings instead of the content.
+/// endings instead of the content. A malformed doubled carriage return before
+/// a line feed collapses the same way, because that is the shape a naive
+/// `\n`-to-`\r\n` expansion leaves behind on an already-CRLF checkout.
 #[must_use]
 pub fn normalize_line_endings(text: &str) -> String {
-    text.replace("\r\n", "\n")
+    let mut normalized = text.replace("\r\n", "\n");
+    while normalized.contains("\r\n") {
+        normalized = normalized.replace("\r\n", "\n");
+    }
+    normalized
+}
+
+/// Produces the CRLF form of `text` the way a Windows checkout would hold it.
+///
+/// The input may already be CRLF: a CRLF checkout read through
+/// `std::fs::read_to_string` keeps `\r\n` on this platform because Rust opens
+/// files in binary mode. Replacing every `\n` in that text yields `\r\r\n`, a
+/// malformed line ending. CRLF input may be malformed; normalization first makes
+/// the CRLF derivation exact and avoids passing malformed `\r\r\n` through.
+#[must_use]
+pub fn crlf_checkout_of(text: &str) -> String {
+    normalize_line_endings(text).replace('\n', "\r\n")
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
-    use super::{WORKSPACE_PLACEHOLDER, normalize_line_endings, normalize_workspace_root};
+    use super::{
+        WORKSPACE_PLACEHOLDER, crlf_checkout_of, normalize_line_endings, normalize_workspace_root,
+    };
 
     /// Both checkouts of the same file normalize to the same string, and a
     /// bare CR survives, since it is content rather than a line ending.
@@ -139,5 +159,31 @@ b = "C:/ws/x"
     #[should_panic(expected = "has to name the workspace root")]
     fn a_document_without_the_root_panics() {
         let _ = normalize_workspace_root(b"root = \"somewhere else\"", Path::new("/repo/work"));
+    }
+
+    /// A CRLF checkout derived from an LF file and from an already-CRLF file is
+    /// the same exact CRLF text, with no doubled carriage return.
+    #[test]
+    fn crlf_checkout_of_is_exact_from_both_checkouts() {
+        let lf = "a\nb\n";
+        let crlf = "a\r\nb\r\n";
+        let doubled = "a\r\r\nb\r\r\n";
+
+        assert_eq!(crlf_checkout_of(lf), crlf);
+        assert_eq!(crlf_checkout_of(crlf), crlf, "a CRLF checkout is already the target form");
+        assert_eq!(
+            crlf_checkout_of(doubled),
+            crlf,
+            "the doubled-CR shape left by replacing \\n in a CRLF file must collapse"
+        );
+        assert!(
+            !crlf_checkout_of(crlf).contains("\r\r\n"),
+            "the output must not contain a doubled carriage return"
+        );
+        assert_eq!(
+            crlf_checkout_of("a\rb"),
+            "a\rb",
+            "a bare carriage return is content, not a line ending to expand"
+        );
     }
 }

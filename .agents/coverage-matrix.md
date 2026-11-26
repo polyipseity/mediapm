@@ -1630,6 +1630,7 @@ Step instance identity is derived from the step's logical tool name and key mate
 | Item | Status | Test |
 | --- | --- | --- |
 | A repository text comparison holds on an LF and a CRLF checkout | [covered] | `normalize_line_endings_collapses_only_crlf` (unit, `mediapm-test-support`), `the_wire_shape_check_tolerates_a_crlf_checkout`, `nextest_budget_check_reads_a_crlf_checkout` |
+| A CRLF fixture is synthesised exactly from an LF or CRLF checkout, and a malformed CRLF fixture fails with a line-ending diagnostic | [covered] | `crlf_checkout_of_is_exact_from_both_checkouts` (unit, `mediapm-test-support`), `the_wire_shape_check_tolerates_a_crlf_checkout` (unit, `mediapm`), `the_wire_shape_guard_rejects_a_doubled_crlf_fixture` (unit, `mediapm`), `nextest_budget_check_reads_a_crlf_checkout` (example test, `mediapm_demo_online`) |
 
 ## Windows CI test parity: deferred minors absorbed (2026-11-25)
 

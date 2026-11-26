@@ -5334,20 +5334,25 @@ mod tests {
     ///
     /// The header pattern is anchored to end-of-line, so an unnormalized CRLF
     /// file matches no override at all and the budget check would report a
-    /// missing filter rather than a real one. This asserts the normalization
-    /// is what carries the check across checkouts.
+    /// missing filter rather than a real one. The CRLF form is derived from
+    /// normalized text so the derivation is exact on an LF and on a CRLF
+    /// checkout.
     #[test]
     fn nextest_budget_check_reads_a_crlf_checkout() {
-        let lf = std::fs::read_to_string(concat!(
+        let text = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../.config/nextest.toml"
         ))
         .expect(".config/nextest.toml must be readable beside the workspace root");
-        let crlf = lf.replace('\n', "\r\n");
-        assert_ne!(lf, crlf, "the fixture must actually differ, or this proves nothing");
+        let crlf = mediapm_test_support::normalize::crlf_checkout_of(&text);
+        let normalized = mediapm_test_support::normalize::normalize_line_endings(&text);
+        assert_ne!(
+            normalized, crlf,
+            "the fixture must differ from its LF form, or this proves nothing"
+        );
         assert_eq!(
             mediapm_test_support::normalize::normalize_line_endings(&crlf),
-            mediapm_test_support::normalize::normalize_line_endings(&lf),
+            normalized,
             "normalization must erase the difference the header regex cannot tolerate"
         );
     }

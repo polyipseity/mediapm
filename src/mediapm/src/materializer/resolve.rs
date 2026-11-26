@@ -3401,11 +3401,22 @@ mod tests {
         let mut encoded = encode_state_json(&state).expect("encode demo conductor state");
         encoded.push(b'\n');
 
+        let encoded_text = String::from_utf8(encoded).expect("encoded state is utf-8");
+        let normalized_encoded =
+            mediapm_test_support::normalize::normalize_line_endings(&encoded_text);
+        let normalized_fixture =
+            mediapm_test_support::normalize::normalize_line_endings(fixture_text);
+        let single_pass_crlf_collapsed = fixture_text.replace("\r\n", "\n");
+        assert!(
+            !single_pass_crlf_collapsed.contains('\r'),
+            "{what} still carries a bare carriage return after CRLF normalization; synthesise a \
+             CRLF checkout from LF text with \
+             mediapm_test_support::normalize::crlf_checkout_of, never by replacing '\\n' in text \
+             that may already be CRLF"
+        );
+
         assert_eq!(
-            mediapm_test_support::normalize::normalize_line_endings(
-                &String::from_utf8(encoded).expect("encoded state is utf-8")
-            ),
-            mediapm_test_support::normalize::normalize_line_endings(fixture_text),
+            normalized_encoded, normalized_fixture,
             "the checked-in demo state fixture must already be in the current wire shape; run \
              `MEDIAPM_UPDATE_FIXTURES=1 cargo test -p mediapm --lib \
              demo_conductor_state_fixture_matches_its_derivation -- --nocapture` to rewrite it",
@@ -3434,14 +3445,33 @@ mod tests {
     /// `.gitattributes` does not pin `eol` for JSON, so a Windows checkout
     /// hands this test CRLF where `encode_state_json` writes LF. The check is
     /// about the wire shape, so it normalizes before comparing; an assertion on
-    /// bytes would be asserting the checkout.
+    /// bytes would be asserting the checkout. The CRLF form is derived from the
+    /// normalized text so the derivation is exact on an LF and on a CRLF
+    /// checkout.
     #[test]
     fn the_wire_shape_check_tolerates_a_crlf_checkout() {
         let path = fixture_path("demo_conductor_state.json");
-        let lf = std::fs::read_to_string(&path).expect("read demo conductor state fixture");
-        let crlf = lf.replace('\n', "\r\n");
+        let text = std::fs::read_to_string(&path).expect("read demo conductor state fixture");
+        let crlf = mediapm_test_support::normalize::crlf_checkout_of(&text);
 
         assert_wire_shape(&crlf, "a CRLF checkout of the fixture");
+    }
+
+    /// A fixture corrupted by the exact `\r\r\n` construction the diagnostic
+    /// names must be rejected, not silently normalized away.
+    #[test]
+    #[should_panic(expected = "still carries a bare carriage return after CRLF normalization")]
+    fn the_wire_shape_guard_rejects_a_doubled_crlf_fixture() {
+        let path = fixture_path("demo_conductor_state.json");
+        let text = std::fs::read_to_string(&path).expect("read demo conductor state fixture");
+        let crlf = mediapm_test_support::normalize::crlf_checkout_of(&text);
+        let doubled = crlf.replace('\n', "\r\n");
+
+        assert!(
+            doubled.contains("\r\r\n"),
+            "the construction must produce the malformed doubled-CRLF shape"
+        );
+        assert_wire_shape(&doubled, "a doubled-CRLF fixture");
     }
 
     /// The yt-dlp tool document the relaxed-resolution tests resolve against.
