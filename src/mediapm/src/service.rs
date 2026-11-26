@@ -80,51 +80,6 @@ fn sync_progress_terminal(overrides: SyncProgressOverrides, no_progress: bool) -
 const MEDIAPM_EXTRA_GITIGNORE: &str =
     concat!("/cache/\n", "/tools/\n", "/.env.example\n", "/auth/\n");
 
-/// Reference `.env.example` content for a mediapm runtime root.
-///
-/// Names and doc comments only — never values. The file is machine-written
-/// on runtime init/refresh so operators have a copyable template for the
-/// credential and upstream env vars mediapm reads.
-const MEDIAPM_DOTENV_EXAMPLE_CONTENT: &str = concat!(
-    "# AcoustID API key — https://acoustid.org/api-key\n",
-    "ACOUSTID_API_KEY=\n",
-    "\n",
-    "# MusicBrainz OAuth — register at https://metabrainz.org/profile/applications\n",
-    "MUSICBRAINZ_OAUTH_CLIENT_ID=\n",
-    "MUSICBRAINZ_OAUTH_CLIENT_SECRET=\n",
-);
-
-/// Writes the mediapm reference `.env.example` into the runtime root.
-///
-/// The file contains names and doc comments only, never secret values. The
-/// write is change-detected so an unchanged refresh leaves the file alone.
-/// Mirroring [`mediapm_conductor::runtime_env::extend_runtime_gitignore`]'s
-/// idempotency spirit, repeated calls are deterministic.
-fn ensure_mediapm_dotenv_example(runtime_root: &std::path::Path) -> Result<(), MediaPmError> {
-    let example_path = runtime_root.join(".env.example");
-    match std::fs::read(&example_path) {
-        Ok(existing) if existing == MEDIAPM_DOTENV_EXAMPLE_CONTENT.as_bytes() => return Ok(()),
-        Ok(_) => {}
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
-        Err(source) => {
-            return Err(MediaPmError::Io {
-                operation: "reading mediapm runtime .env.example".to_string(),
-                path: example_path.clone(),
-                source,
-            });
-        }
-    }
-    mediapm_utils::fs::write_bytes_atomically(
-        &example_path,
-        MEDIAPM_DOTENV_EXAMPLE_CONTENT.as_bytes(),
-    )
-    .map_err(|source| MediaPmError::Io {
-        operation: "writing mediapm runtime .env.example".to_string(),
-        path: example_path,
-        source,
-    })
-}
-
 /// Resolves the workspace CAS store used for tool payload import and materialization.
 pub(crate) trait WorkspaceProvisioningCas:
     CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + Sized + 'static
@@ -995,7 +950,6 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         )
         .map_err(MediaPmError::Conductor)?;
         extend_runtime_gitignore(&effective_paths.runtime_root, MEDIAPM_EXTRA_GITIGNORE)?;
-        ensure_mediapm_dotenv_example(&effective_paths.runtime_root)?;
 
         // Export the contract sources this document is validated against.
         export_config_contracts(
@@ -1256,7 +1210,6 @@ impl MediaPmService<FileSystemCas> {
             source: e,
         })?;
         extend_runtime_gitignore(&effective_paths.runtime_root, MEDIAPM_EXTRA_GITIGNORE)?;
-        ensure_mediapm_dotenv_example(&effective_paths.runtime_root)?;
 
         // Bootstrap the mediapm document so a fresh workspace has a default
         // `mediapm.ncl` on disk. Reconstructed workspaces keep their existing
@@ -1872,66 +1825,65 @@ mod tests {
         );
     }
 
-    /// The mediapm .env.example is a copyable template: names and doc
-    /// comments only, never values. It must name the credentials mediapm
-    /// reads and the doc lines D6 requires.
+    /// The registry writer must document mediapm's credential names without
+    /// carrying any credential values into the reference file.
     #[test]
-    fn ensure_mediapm_dotenv_example_writes_names_and_doc_lines_only() {
+    fn the_composed_env_registry_writes_credential_names_without_values() {
         let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
-        ensure_mediapm_dotenv_example(dir.path()).expect("write .env.example");
+        mediapm_conductor::runtime_env::ensure_runtime_env_files(
+            dir.path(),
+            &crate::env_registry::composed_env_registry(),
+        )
+        .expect("write the runtime env pair");
 
-        let content =
-            std::fs::read_to_string(dir.path().join(".env.example")).expect("read .env.example");
-        for expected in [
-            "# AcoustID API key — https://acoustid.org/api-key",
-            "ACOUSTID_API_KEY=",
-            "# MusicBrainz OAuth — register at https://metabrainz.org/profile/applications",
-            "MUSICBRAINZ_OAUTH_CLIENT_ID=",
-            "MUSICBRAINZ_OAUTH_CLIENT_SECRET=",
-        ] {
-            assert!(
-                content.contains(expected),
-                "mediapm .env.example must contain {expected:?}\ncontent:\n{content}"
-            );
+        let example = std::fs::read_to_string(dir.path().join(".env.example"))
+            .expect("read the registry-written example");
+        for name in
+            ["ACOUSTID_API_KEY", "MUSICBRAINZ_OAUTH_CLIENT_ID", "MUSICBRAINZ_OAUTH_CLIENT_SECRET"]
+        {
+            assert!(example.contains(name), "the example must list {name}: {example}");
         }
-
-        for line in content.lines() {
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let Some((name, value)) = line.split_once('=') else {
-                panic!("non-comment line must be a KEY= assignment: {line:?}\ncontent:\n{content}");
-            };
-            assert!(
-                !name.is_empty(),
-                "env example assignment must name a key: {line:?}\ncontent:\n{content}"
-            );
-            assert!(
-                value.is_empty(),
-                "env example must never write secret values: {line:?}\ncontent:\n{content}"
-            );
-        }
+        assert!(
+            !example.contains("secret-value") && !example.contains("client-id-value"),
+            "the example must never carry values",
+        );
     }
 
-    /// A refresh must not churn an unchanged .env.example. The write is
-    /// change-detected, so identical bytes leave the file's mtime alone.
+    /// Re-ensuring after an external edit repairs the example to exactly the
+    /// bytes the registry rendered on the first call.
     #[test]
-    fn ensure_mediapm_dotenv_example_is_change_detected() {
+    fn the_composed_env_registry_repairs_a_tampered_example() {
         let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
-        ensure_mediapm_dotenv_example(dir.path()).expect("first write");
+        let registry = crate::env_registry::composed_env_registry();
+        mediapm_conductor::runtime_env::ensure_runtime_env_files(dir.path(), &registry)
+            .expect("write the runtime env pair");
         let path = dir.path().join(".env.example");
-        let before = std::fs::metadata(&path)
-            .expect("stat after first write")
-            .modified()
-            .expect("mtime after first write");
+        let rendered = std::fs::read(&path).expect("read the rendered example");
 
-        ensure_mediapm_dotenv_example(dir.path()).expect("second write");
+        std::fs::write(&path, "# tampered\n").expect("tamper the example");
+        mediapm_conductor::runtime_env::ensure_runtime_env_files(dir.path(), &registry)
+            .expect("re-ensure the runtime env pair");
 
-        let after = std::fs::metadata(&path)
-            .expect("stat after second write")
-            .modified()
-            .expect("mtime after second write");
-        assert_eq!(after, before, "identical .env.example bytes must not be rewritten");
+        let restored = std::fs::read(&path).expect("read the restored example");
+        assert_eq!(restored, rendered, "a repaired example must match the rendered bytes");
+        assert!(!restored.starts_with(b"# tampered"), "the tampered line survived");
+    }
+
+    /// A refresh must leave the registry's rendered example in place: the
+    /// service itself must not publish a second, hand-maintained copy.
+    #[tokio::test]
+    async fn refresh_keeps_the_registry_owned_env_example() {
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
+        let service = MediaPmService::new_fs_at(dir.path()).await.expect("service opens");
+        service.refresh_runtime_configuration().expect("refresh runtime configuration");
+
+        let example = std::fs::read_to_string(dir.path().join(".mediapm").join(".env.example"))
+            .expect("read the refreshed example");
+        assert!(
+            example
+                .contains("# Do not edit this file; it is regenerated on every runtime refresh."),
+            "the registry-owned example was replaced by a service copy:\n{example}"
+        );
     }
 
     /// The runtime .gitignore must keep local credentials and generated env
