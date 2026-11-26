@@ -844,7 +844,7 @@ mod tests {
 
     #[test]
     fn auth_file_round_trip_and_permissions() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::output_dir().expect("tempdir");
         let path = dir.path().join("auth").join("musicbrainz.json");
         let auth = sample_auth(current_unix_time() + 3600);
         save_auth_file(&path, &auth).expect("save");
@@ -870,7 +870,7 @@ mod tests {
         )
         .await;
 
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::output_dir().expect("tempdir");
         let runtime_root = dir.path();
         let config = MusicBrainzOAuthConfig {
             base_url: mock.server().uri(),
@@ -902,7 +902,7 @@ mod tests {
 
     #[test]
     fn status_reports_logged_out_and_logged_in() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::output_dir().expect("tempdir");
         let runtime_root = dir.path();
         let status = auth_status(runtime_root).expect("status");
         assert!(status.contains("not logged in"));
@@ -925,7 +925,7 @@ mod tests {
         )
         .await;
 
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::output_dir().expect("tempdir");
         let runtime_root = dir.path();
         let path = musicbrainz_auth_file_path(runtime_root);
         let mut expired = sample_auth(current_unix_time().saturating_sub(10));
@@ -956,7 +956,7 @@ mod tests {
             .mount(mock.server())
             .await;
 
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::output_dir().expect("tempdir");
         let runtime_root = dir.path();
         let path = musicbrainz_auth_file_path(runtime_root);
         let mut expired = sample_auth(current_unix_time().saturating_sub(10));
@@ -979,7 +979,7 @@ mod tests {
         let mock = MockMusicBrainz::start().await;
         mock.mount_oauth_revoke().await;
 
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = mediapm_utils::temp::output_dir().expect("tempdir");
         let runtime_root = dir.path();
         let path = musicbrainz_auth_file_path(runtime_root);
         save_auth_file(&path, &sample_auth(current_unix_time() + 3600)).expect("save");
