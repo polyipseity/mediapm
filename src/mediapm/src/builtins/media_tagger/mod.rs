@@ -26,7 +26,6 @@
     reason = "module docs reference upstream tool names (MBID, AcoustID, MusicBrainz) as plain terms"
 )]
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
@@ -93,6 +92,12 @@ mod tests {
                 preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
                 enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
                 release_ars: DEFAULT_RELEASE_ARS,
+                use_genres: DEFAULT_USE_GENRES,
+                only_my_genres: DEFAULT_ONLY_MY_GENRES,
+                max_genres: DEFAULT_MAX_GENRES,
+                min_genre_usage: DEFAULT_MIN_GENRE_USAGE,
+                genres_filter: DEFAULT_GENRES_FILTER.to_string(),
+                join_genres: DEFAULT_JOIN_GENRES.to_string(),
                 cover_art_slot_count: 8,
                 recording_mbid: None,
                 release_mbid: None,
@@ -157,6 +162,12 @@ mod tests {
                 preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
                 enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
                 release_ars: DEFAULT_RELEASE_ARS,
+                use_genres: DEFAULT_USE_GENRES,
+                only_my_genres: DEFAULT_ONLY_MY_GENRES,
+                max_genres: DEFAULT_MAX_GENRES,
+                min_genre_usage: DEFAULT_MIN_GENRE_USAGE,
+                genres_filter: DEFAULT_GENRES_FILTER.to_string(),
+                join_genres: DEFAULT_JOIN_GENRES.to_string(),
                 cover_art_slot_count: 8,
                 recording_mbid: None,
                 release_mbid: None,
@@ -215,6 +226,12 @@ mod tests {
                 preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
                 enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
                 release_ars: DEFAULT_RELEASE_ARS,
+                use_genres: DEFAULT_USE_GENRES,
+                only_my_genres: DEFAULT_ONLY_MY_GENRES,
+                max_genres: DEFAULT_MAX_GENRES,
+                min_genre_usage: DEFAULT_MIN_GENRE_USAGE,
+                genres_filter: DEFAULT_GENRES_FILTER.to_string(),
+                join_genres: DEFAULT_JOIN_GENRES.to_string(),
                 cover_art_slot_count: 8,
                 recording_mbid: None,
                 release_mbid: None,
@@ -271,6 +288,12 @@ mod tests {
                 preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
                 enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
                 release_ars: DEFAULT_RELEASE_ARS,
+                use_genres: DEFAULT_USE_GENRES,
+                only_my_genres: DEFAULT_ONLY_MY_GENRES,
+                max_genres: DEFAULT_MAX_GENRES,
+                min_genre_usage: DEFAULT_MIN_GENRE_USAGE,
+                genres_filter: DEFAULT_GENRES_FILTER.to_string(),
+                join_genres: DEFAULT_JOIN_GENRES.to_string(),
                 cover_art_slot_count: 8,
                 recording_mbid: Some("none".to_string()),
                 release_mbid: None,
@@ -320,6 +343,12 @@ mod tests {
                 preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
                 enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
                 release_ars: DEFAULT_RELEASE_ARS,
+                use_genres: DEFAULT_USE_GENRES,
+                only_my_genres: DEFAULT_ONLY_MY_GENRES,
+                max_genres: DEFAULT_MAX_GENRES,
+                min_genre_usage: DEFAULT_MIN_GENRE_USAGE,
+                genres_filter: DEFAULT_GENRES_FILTER.to_string(),
+                join_genres: DEFAULT_JOIN_GENRES.to_string(),
                 cover_art_slot_count: 8,
                 recording_mbid: Some("auto".to_string()),
                 release_mbid: Some("auto".to_string()),
@@ -351,15 +380,21 @@ mod tests {
             ";FFMETADATA1\nartist=Example Artist\ncomment=hello\\=world\n[CHAPTER]\nstart=0\n",
         );
 
-        assert_eq!(parsed.get("artist"), Some(&"Example Artist".to_string()));
-        assert_eq!(parsed.get("comment"), Some(&"hello=world".to_string()));
-        assert!(!parsed.contains_key("start"));
+        assert_eq!(
+            parsed.iter().find(|(key, _)| key == "artist").map(|(_, value)| value.as_str()),
+            Some("Example Artist")
+        );
+        assert_eq!(
+            parsed.iter().find(|(key, _)| key == "comment").map(|(_, value)| value.as_str()),
+            Some("hello=world")
+        );
+        assert!(!parsed.iter().any(|(key, _)| key == "start"));
     }
 
     /// Protects Picard-compatible cover-art tag projection from discovered URLs.
     #[test]
     fn insert_musicbrainz_image_tags_emits_picard_coverart_aliases() {
-        let mut tags = BTreeMap::new();
+        let mut tags = Vec::new();
         insert_musicbrainz_image_tags(
             &mut tags,
             &[SelectedCoverArt {
@@ -369,12 +404,15 @@ mod tests {
                 comment: "Scanned sleeve".to_string(),
             }],
         );
+        let get = |key: &str| {
+            tags.iter().find(|(existing, _)| existing == key).map(|(_, value)| value.as_str())
+        };
 
-        assert_eq!(tags.get("coverart_url"), Some(&"https://example.test/front.jpg".to_string()));
-        assert_eq!(tags.get("coverart_url_0"), Some(&"https://example.test/front.jpg".to_string()));
-        assert_eq!(tags.get("coverart_maintype"), Some(&"front".to_string()));
-        assert_eq!(tags.get("coverart_types"), Some(&"front; booklet".to_string()));
-        assert_eq!(tags.get("coverart_comment"), Some(&"Scanned sleeve".to_string()));
+        assert_eq!(get("coverart_url"), Some("https://example.test/front.jpg"));
+        assert_eq!(get("coverart_url_0"), Some("https://example.test/front.jpg"));
+        assert_eq!(get("coverart_maintype"), Some("front"));
+        assert_eq!(get("coverart_types"), Some("front; booklet"));
+        assert_eq!(get("coverart_comment"), Some("Scanned sleeve"));
     }
 
     /// Protects cover-art quality selection so each artwork entry prefers the
@@ -598,6 +636,8 @@ mod tests {
             include_user_ratings: false,
             include_user_collections: false,
             include_user_tags: false,
+            use_genres: false,
+            only_my_genres: false,
         };
         let cache_key = shape.cache_key("recording-demo", Some("release-demo")).expect("shape key");
         let payload = serde_json::json!({
@@ -663,10 +703,13 @@ use self::gate::{AuthState, GateLabels, GateOutcome, Need, resolve_gate};
 /// the request count a persistent `502` costs, and that count is this number.
 pub use self::musicbrainz::MUSICBRAINZ_FETCH_ATTEMPTS;
 use self::musicbrainz::{
-    MUSICBRAINZ_FETCH_DEADLINE, MusicBrainzFetchShape, build_ffmetadata_map,
+    GenreConfig, MUSICBRAINZ_FETCH_DEADLINE, MusicBrainzFetchShape, build_ffmetadata_map,
     fetch_musicbrainz_payloads,
 };
-use self::util::{normalize_optional_text, resolve_ffmpeg_executable, write_ffmetadata_document};
+use self::util::{
+    merge_ffmetadata_maps, normalize_optional_text, resolve_ffmpeg_executable,
+    write_ffmetadata_document,
+};
 
 /// Default AcoustID lookup endpoint used by the internal tagger.
 pub const DEFAULT_ACOUSTID_ENDPOINT: &str = "https://api.acoustid.org/v2/lookup";
@@ -753,6 +796,30 @@ pub const DEFAULT_CACHE_EXPIRY_SECONDS: i64 = 24 * 60 * 60;
 pub const DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ: bool = true;
 /// Managed default for allowing AcoustID login-gated features.
 pub const DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID: bool = true;
+/// Managed default for MusicBrainz genre usage.
+///
+/// Picard default: `use_genres = false`.
+pub const DEFAULT_USE_GENRES: bool = false;
+/// Managed default for restricting genres to the authenticated user's genres.
+///
+/// Picard default: `only_my_genres = false`.
+pub const DEFAULT_ONLY_MY_GENRES: bool = false;
+/// Managed default maximum number of genre tags.
+///
+/// Picard default: `max_genres = 5`.
+pub const DEFAULT_MAX_GENRES: usize = 5;
+/// Managed default minimum genre usage percentage.
+///
+/// Picard default: `min_genre_usage = 90`.
+pub const DEFAULT_MIN_GENRE_USAGE: u8 = 90;
+/// Managed default genre filter list.
+///
+/// Picard default filters out seen/live/favorites/fixme/owned.
+pub const DEFAULT_GENRES_FILTER: &str = "-seen live\n-favorites\n-fixme\n-owned";
+/// Managed default genre join separator.
+///
+/// Picard default is an empty string, producing multi-value genre tags.
+pub const DEFAULT_JOIN_GENRES: &str = "";
 /// Cache-index format marker for media-tagger JSON metadata rows.
 const MEDIA_TAGGER_CACHE_INDEX_VERSION: u32 = 1;
 /// Default media-tagger metadata index file name under cache root.
@@ -885,6 +952,18 @@ pub struct InternalMediaTaggerOptions {
     /// Whether release relationships should be considered by provider logic
     /// that depends on relationship metadata.
     pub release_ars: bool,
+    /// Whether genre tags should be written.
+    pub use_genres: bool,
+    /// Whether to only use the authenticated user's own genres/tags.
+    pub only_my_genres: bool,
+    /// Maximum number of genre tags to emit.
+    pub max_genres: usize,
+    /// Minimum genre usage percentage relative to top genre.
+    pub min_genre_usage: u8,
+    /// Newline-delimited genre filter patterns.
+    pub genres_filter: String,
+    /// Separator used to join genre values; empty means multi-value.
+    pub join_genres: String,
     /// Optional direct recording MBID override.
     ///
     /// Sentinel values:
@@ -1018,7 +1097,7 @@ async fn run_internal_media_tagger_impl(
         let fallback_map = if options.preserve_existing_tags {
             fallback_ffmetadata_map(resolved_input.as_deref(), env_pairs).await
         } else {
-            BTreeMap::new()
+            Vec::new()
         };
 
         persist_cover_art_slot_artifacts(
@@ -1101,7 +1180,7 @@ async fn run_internal_media_tagger_impl(
         let fallback_map = if options.preserve_existing_tags {
             fallback_ffmetadata_map(resolved_input.as_deref(), env_pairs).await
         } else {
-            BTreeMap::new()
+            Vec::new()
         };
         write_ffmetadata_document(&options.output_path, &fallback_map)?;
         return Ok(());
@@ -1118,11 +1197,15 @@ async fn run_internal_media_tagger_impl(
         disabled_flag: "--enable-logged-in-features-musicbrainz",
         missing_login_hint: "no MusicBrainz login is available (run 'mediapm auth musicbrainz login')",
     };
+    let want_user_genres = options.metadata_selection.include_user_genres
+        || (options.use_genres && options.only_my_genres);
+    let want_user_tags = options.metadata_selection.include_user_tags
+        || (options.use_genres && options.only_my_genres);
     let wanted_user_fields = [
-        ("user-genres", options.metadata_selection.include_user_genres),
+        ("user-genres", want_user_genres),
         ("user-ratings", options.metadata_selection.include_user_ratings),
         ("user-collections", options.metadata_selection.include_user_collections),
-        ("user-tags", options.metadata_selection.include_user_tags),
+        ("user-tags", want_user_tags),
     ];
     let any_wanted_user_field = wanted_user_fields.iter().any(|(_, wanted)| *wanted);
     let mut mb_token: Option<String> = None;
@@ -1229,6 +1312,8 @@ async fn run_internal_media_tagger_impl(
             include_user_ratings,
             include_user_collections,
             include_user_tags,
+            use_genres: options.use_genres,
+            only_my_genres: options.only_my_genres,
         },
         &recording_mbid,
         detected_release_mbid.as_deref(),
@@ -1244,8 +1329,19 @@ async fn run_internal_media_tagger_impl(
         )
     })?;
 
-    let mut ffmetadata_map = build_ffmetadata_map(&metadata_payload, options.write_all_tags)
-        .context("building FFmetadata mapping from MusicBrainz payload")?;
+    let mut ffmetadata_map = build_ffmetadata_map(
+        &metadata_payload,
+        options.write_all_tags,
+        &GenreConfig {
+            use_genres: options.use_genres,
+            only_my_genres: options.only_my_genres,
+            max_genres: options.max_genres,
+            min_genre_usage: options.min_genre_usage,
+            genres_filter: options.genres_filter.clone(),
+            join_genres: options.join_genres.clone(),
+        },
+    )
+    .context("building FFmetadata mapping from MusicBrainz payload")?;
 
     let mut selected_cover_art = Vec::new();
     let cover_art_deadline = tokio::time::Instant::now() + COVER_ART_PHASE_BUDGET;
@@ -1275,11 +1371,7 @@ async fn run_internal_media_tagger_impl(
     {
         let existing_metadata = extract_existing_ffmetadata_map(input_path, env_pairs).await?;
         if !existing_metadata.is_empty() {
-            let mut merged = existing_metadata;
-            for (key, value) in ffmetadata_map {
-                merged.insert(key, value);
-            }
-            ffmetadata_map = merged;
+            ffmetadata_map = merge_ffmetadata_maps(existing_metadata, ffmetadata_map);
         }
     }
 
@@ -1309,9 +1401,9 @@ async fn run_internal_media_tagger_impl(
 async fn fallback_ffmetadata_map(
     input_path: Option<&Path>,
     env_pairs: &[(String, String)],
-) -> BTreeMap<String, String> {
+) -> Vec<(String, String)> {
     let Some(input_path) = input_path else {
-        return BTreeMap::new();
+        return Vec::new();
     };
 
     extract_existing_ffmetadata_map(input_path, env_pairs).await.unwrap_or_default()
@@ -1325,7 +1417,7 @@ async fn fallback_ffmetadata_map(
 async fn extract_existing_ffmetadata_map(
     input_path: &Path,
     env_pairs: &[(String, String)],
-) -> anyhow::Result<BTreeMap<String, String>> {
+) -> anyhow::Result<Vec<(String, String)>> {
     let ffmpeg_executable = resolve_ffmpeg_executable();
     let mut cmd = Command::new(&ffmpeg_executable);
     // Apply the child_env whitelist: clear the ambient environment, then set

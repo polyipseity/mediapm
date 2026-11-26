@@ -147,6 +147,10 @@ fn tagging_document(musicbrainz_endpoint: &str, source_hash: mediapm_cas::Hash) 
                         ("recording_mbid".to_string(), option(RECORDING_MBID)),
                         ("musicbrainz_endpoint".to_string(), option(musicbrainz_endpoint)),
                         ("write_all_images".to_string(), option("false")),
+                        ("include_user_genres".to_string(), option("false")),
+                        ("include_user_ratings".to_string(), option("false")),
+                        ("include_user_collections".to_string(), option("false")),
+                        ("include_user_tags".to_string(), option("false")),
                     ]),
                 }],
                 ..MediaSourceSpec::default()

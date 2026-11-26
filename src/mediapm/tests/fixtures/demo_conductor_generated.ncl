@@ -1185,6 +1185,10 @@ managed tool content root for sd
           kind = "string",
           required = false,
         },
+        genres_filter = {
+          kind = "string",
+          required = false,
+        },
         include_user_collections = {
           kind = "string",
           required = false,
@@ -1201,7 +1205,23 @@ managed tool content root for sd
           kind = "string",
           required = false,
         },
+        join_genres = {
+          kind = "string",
+          required = false,
+        },
+        max_genres = {
+          kind = "string",
+          required = false,
+        },
+        min_genre_usage = {
+          kind = "string",
+          required = false,
+        },
         musicbrainz_endpoint = {
+          kind = "string",
+          required = false,
+        },
+        only_my_genres = {
           kind = "string",
           required = false,
         },
@@ -1234,6 +1254,10 @@ managed tool content root for sd
           required = false,
         },
         save_images_to_tags = {
+          kind = "string",
+          required = false,
+        },
+        use_genres = {
           kind = "string",
           required = false,
         },

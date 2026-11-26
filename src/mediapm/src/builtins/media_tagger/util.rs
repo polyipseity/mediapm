@@ -225,9 +225,13 @@ pub(super) fn truncate_metadata_value(value: &str) -> String {
 /// private tag that no player asks for. Normalizing on the way out also covers
 /// keys merged in from the source file, whatever convention wrote them, while the
 /// parser stays a faithful reader of whatever document it is handed.
+///
+/// The input preserves insertion order and allows repeated keys so multi-value
+/// tags (for example Picard-style genre output) can be emitted as repeated
+/// FFmetadata entries.
 pub(super) fn write_ffmetadata_document(
     output_path: &Path,
-    metadata_map: &BTreeMap<String, String>,
+    metadata_map: &[(String, String)],
 ) -> anyhow::Result<()> {
     let document = FFMetadata {
         global: metadata_map
@@ -247,6 +251,26 @@ pub(super) fn write_ffmetadata_document(
         .with_context(|| format!("writing ffmetadata file '{}'", output_path.display()))?;
 
     Ok(())
+}
+
+/// Merges generated global metadata into preserved existing metadata.
+///
+/// Keys are compared in the pipeline's canonical spelling, so a generated
+/// entry replaces existing entries that name the same tag regardless of case or
+/// separator spelling. Every other entry and every repeated generated value
+/// keeps its order.
+pub(super) fn merge_ffmetadata_maps(
+    existing: Vec<(String, String)>,
+    generated: Vec<(String, String)>,
+) -> Vec<(String, String)> {
+    let overwritten_keys =
+        generated.iter().map(|(key, _)| sanitize_metadata_key(key)).collect::<BTreeSet<_>>();
+    let mut merged = existing
+        .into_iter()
+        .filter(|(key, _)| !overwritten_keys.contains(&sanitize_metadata_key(key)))
+        .collect::<Vec<_>>();
+    merged.extend(generated);
+    merged
 }
 
 /// Returns normalized, non-empty optional string value.
@@ -290,7 +314,8 @@ pub(super) fn resolve_ffmpeg_executable_from_configured_path(
 
 #[cfg(test)]
 mod tests {
-    use super::{sanitize_metadata_key, write_ffmetadata_document};
+    use super::{merge_ffmetadata_maps, sanitize_metadata_key, write_ffmetadata_document};
+    use crate::builtins::media_tagger::ffmetadata::parse_ffmetadata_global_map;
 
     /// An internal metadata key stays lowercase and becomes a valid name.
     ///
@@ -318,11 +343,11 @@ mod tests {
     fn a_written_document_carries_matroska_tag_names() {
         let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let path = dir.path().join("output.ffmetadata");
-        let map = std::collections::BTreeMap::from([
+        let map = vec![
             ("title".to_string(), "A Title".to_string()),
             ("musicbrainz_recordingid".to_string(), "an-mbid".to_string()),
             ("replaygain-track_gain".to_string(), "-3.5 dB".to_string()),
-        ]);
+        ];
 
         write_ffmetadata_document(&path, &map).expect("write the document");
 
@@ -342,6 +367,49 @@ mod tests {
         assert!(
             !written.contains("TITLE="),
             "a TITLE tag would leave the container's Title element empty: {written}",
+        );
+    }
+
+    /// Generated lowercase genres replace parsed uppercase genres without losing repeats.
+    #[test]
+    fn generated_genres_replace_parsed_genres_without_losing_repeats() {
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
+        let merged_path = dir.path().join("merged.ffmetadata");
+        let existing =
+            parse_ffmetadata_global_map(";FFMETADATA1\nARTIST=Example Artist\nGENRE=old\n");
+        assert!(
+            existing.iter().any(|(key, value)| key == "GENRE" && value == "old"),
+            "the existing genre must be parsed as an uppercase ffmetadata key",
+        );
+        let generated = vec![
+            ("genre".to_string(), "Rock".to_string()),
+            ("genre".to_string(), "Jazz".to_string()),
+        ];
+
+        let merged = merge_ffmetadata_maps(existing, generated);
+        write_ffmetadata_document(&merged_path, &merged).expect("write merged document");
+
+        let written = std::fs::read_to_string(&merged_path).expect("read merged document");
+        assert!(written.contains("ARTIST=Example Artist"), "unrelated tags are preserved");
+        assert!(
+            !written.lines().any(|line| line == "GENRE=old"),
+            "the old genre must be overwritten: {written}",
+        );
+        let genre_lines =
+            written.lines().filter(|line| line.starts_with("GENRE=")).collect::<Vec<_>>();
+        assert_eq!(
+            genre_lines,
+            vec!["GENRE=Rock", "GENRE=Jazz"],
+            "both generated genre values must survive: {written}",
+        );
+        let parsed = parse_ffmetadata_global_map(&written);
+        assert_eq!(
+            parsed
+                .iter()
+                .filter(|(key, _)| key == "GENRE")
+                .map(|(_, value)| value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Rock", "Jazz"],
         );
     }
 }

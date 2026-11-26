@@ -67,11 +67,22 @@ fn hermetic_options(
         preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
         enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
         release_ars: DEFAULT_RELEASE_ARS,
+        use_genres: false,
+        only_my_genres: false,
+        max_genres: 5,
+        min_genre_usage: 90,
+        genres_filter: "-seen live\n-favorites\n-fixme\n-owned".to_string(),
+        join_genres: String::new(),
         recording_mbid: Some(RECORDING_MBID.to_string()),
         release_mbid: None,
         enable_logged_in_features_musicbrainz: DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
         enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
-        metadata_selection: MetadataSelection::default(),
+        metadata_selection: MetadataSelection {
+            include_user_genres: false,
+            include_user_ratings: false,
+            include_user_collections: false,
+            include_user_tags: false,
+        },
         runtime_root: None,
     }
 }
@@ -578,11 +589,22 @@ async fn disabling_tag_saving_preserves_existing_global_tags_when_requested() {
         preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
         enable_tag_saving: false,
         release_ars: DEFAULT_RELEASE_ARS,
+        use_genres: false,
+        only_my_genres: false,
+        max_genres: 5,
+        min_genre_usage: 90,
+        genres_filter: "-seen live\n-favorites\n-fixme\n-owned".to_string(),
+        join_genres: String::new(),
         recording_mbid: Some("none".to_string()),
         release_mbid: None,
         enable_logged_in_features_musicbrainz: DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
         enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
-        metadata_selection: MetadataSelection::default(),
+        metadata_selection: MetadataSelection {
+            include_user_genres: false,
+            include_user_ratings: false,
+            include_user_collections: false,
+            include_user_tags: false,
+        },
 
         runtime_root: None,
     };
@@ -627,11 +649,22 @@ async fn disabling_tag_saving_drops_existing_global_tags_when_not_preserved() {
         preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
         enable_tag_saving: false,
         release_ars: DEFAULT_RELEASE_ARS,
+        use_genres: false,
+        only_my_genres: false,
+        max_genres: 5,
+        min_genre_usage: 90,
+        genres_filter: "-seen live\n-favorites\n-fixme\n-owned".to_string(),
+        join_genres: String::new(),
         recording_mbid: Some("none".to_string()),
         release_mbid: None,
         enable_logged_in_features_musicbrainz: DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
         enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
-        metadata_selection: MetadataSelection::default(),
+        metadata_selection: MetadataSelection {
+            include_user_genres: false,
+            include_user_ratings: false,
+            include_user_collections: false,
+            include_user_tags: false,
+        },
 
         runtime_root: None,
     };
@@ -724,6 +757,7 @@ async fn wanted_user_data_dropped_when_musicbrainz_login_features_disabled() {
     let endpoint = format!("{}/ws/2", musicbrainz.uri());
     let mut options = hermetic_options(workspace.path(), &endpoint, DEFAULT_CAA_ENDPOINT);
     options.enable_logged_in_features_musicbrainz = false;
+    options.metadata_selection = MetadataSelection::default();
     let output_path = options.output_path.clone();
 
     run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
@@ -759,6 +793,7 @@ async fn wanted_user_data_errors_when_musicbrainz_login_unavailable() {
     let endpoint = format!("{}/ws/2", musicbrainz.uri());
     let mut options = hermetic_options(workspace.path(), &endpoint, DEFAULT_CAA_ENDPOINT);
     options.enable_logged_in_features_musicbrainz = true;
+    options.metadata_selection = MetadataSelection::default();
     options.runtime_root = None;
 
     let err =

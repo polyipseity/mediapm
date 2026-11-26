@@ -67,6 +67,22 @@ mod defaults {
     pub const DEFAULT_RELEASE_ARS: bool = true;
     /// How many cover-art slots are written.
     pub const DEFAULT_COVER_ART_SLOT_COUNT: usize = 16;
+    /// Managed default for allowing `MusicBrainz` login-gated features.
+    pub const DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ: bool = true;
+    /// Managed default for allowing `AcoustID` login-gated features.
+    pub const DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID: bool = true;
+    /// Managed default for `MusicBrainz` genre usage.
+    pub const DEFAULT_USE_GENRES: bool = false;
+    /// Managed default for restricting genres to the authenticated user's genres.
+    pub const DEFAULT_ONLY_MY_GENRES: bool = false;
+    /// Managed default maximum number of genre tags.
+    pub const DEFAULT_MAX_GENRES: usize = 5;
+    /// Managed default minimum genre usage percentage.
+    pub const DEFAULT_MIN_GENRE_USAGE: u8 = 90;
+    /// Managed default genre filter list.
+    pub const DEFAULT_GENRES_FILTER: &str = "-seen live\n-favorites\n-fixme\n-owned";
+    /// Managed default genre join separator.
+    pub const DEFAULT_JOIN_GENRES: &str = "";
 }
 
 #[cfg(feature = "media-tagger")]
@@ -74,9 +90,12 @@ use defaults::{
     DEFAULT_ACOUSTID_ENDPOINT, DEFAULT_CA_PROVIDERS, DEFAULT_CAA_APPROVED_ONLY,
     DEFAULT_CAA_ENDPOINT, DEFAULT_CAA_IMAGE_SIZE, DEFAULT_CAA_IMAGE_TYPES,
     DEFAULT_CACHE_EXPIRY_SECONDS, DEFAULT_COVER_ART_SLOT_COUNT, DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
-    DEFAULT_ENABLE_TAG_SAVING, DEFAULT_MUSICBRAINZ_ENDPOINT, DEFAULT_PRESERVE_EXISTING_IMAGES,
-    DEFAULT_PRESERVE_EXISTING_STREAM_TAGS, DEFAULT_PRESERVE_EXISTING_TAGS, DEFAULT_RELEASE_ARS,
-    DEFAULT_SAVE_IMAGES_TO_TAGS,
+    DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID, DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
+    DEFAULT_ENABLE_TAG_SAVING, DEFAULT_GENRES_FILTER, DEFAULT_JOIN_GENRES, DEFAULT_MAX_GENRES,
+    DEFAULT_MIN_GENRE_USAGE, DEFAULT_MUSICBRAINZ_ENDPOINT, DEFAULT_ONLY_MY_GENRES,
+    DEFAULT_PRESERVE_EXISTING_IMAGES, DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
+    DEFAULT_PRESERVE_EXISTING_TAGS, DEFAULT_RELEASE_ARS, DEFAULT_SAVE_IMAGES_TO_TAGS,
+    DEFAULT_USE_GENRES,
 };
 
 /// `mediapm` orchestration CLI.
@@ -513,11 +532,29 @@ pub struct InternalMediaTaggerArgs {
     /// Release relationship processing.
     #[arg(long, action = clap::ArgAction::Set, default_value_t = DEFAULT_RELEASE_ARS)]
     pub release_ars: bool,
+    /// Enable genre tag generation.
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = DEFAULT_USE_GENRES)]
+    pub use_genres: bool,
+    /// Restrict genres to the authenticated user's own genres and tags.
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = DEFAULT_ONLY_MY_GENRES)]
+    pub only_my_genres: bool,
+    /// Maximum number of genre tags to emit.
+    #[arg(long, default_value_t = DEFAULT_MAX_GENRES)]
+    pub max_genres: usize,
+    /// Minimum genre usage percentage relative to the top genre.
+    #[arg(long, default_value_t = DEFAULT_MIN_GENRE_USAGE)]
+    pub min_genre_usage: u8,
+    /// Newline-delimited genre filter patterns.
+    #[arg(long, default_value = DEFAULT_GENRES_FILTER)]
+    pub genres_filter: String,
+    /// Separator used to join genre values; empty emits multi-value tags.
+    #[arg(long, default_value = DEFAULT_JOIN_GENRES, allow_hyphen_values = true)]
+    pub join_genres: String,
     /// Allow `MusicBrainz` login-gated features when credentials are available.
-    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ)]
     pub enable_logged_in_features_musicbrainz: bool,
     /// Allow `AcoustID` login-gated features when credentials are available.
-    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID)]
     pub enable_logged_in_features_acoustid: bool,
     /// Include `MusicBrainz` user genres when available.
     #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]

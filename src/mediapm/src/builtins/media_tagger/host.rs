@@ -46,10 +46,11 @@ use super::{
     DEFAULT_CAA_ENDPOINT, DEFAULT_CAA_IMAGE_SIZE, DEFAULT_CAA_IMAGE_TYPES,
     DEFAULT_CACHE_EXPIRY_SECONDS, DEFAULT_COVER_ART_SLOT_COUNT, DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
     DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID, DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
-    DEFAULT_ENABLE_TAG_SAVING, DEFAULT_MUSICBRAINZ_ENDPOINT, DEFAULT_PRESERVE_EXISTING_IMAGES,
-    DEFAULT_PRESERVE_EXISTING_STREAM_TAGS, DEFAULT_PRESERVE_EXISTING_TAGS, DEFAULT_RELEASE_ARS,
-    DEFAULT_SAVE_IMAGES_TO_TAGS, InternalMediaTaggerOptions, MetadataSelection,
-    run_internal_media_tagger,
+    DEFAULT_ENABLE_TAG_SAVING, DEFAULT_GENRES_FILTER, DEFAULT_JOIN_GENRES, DEFAULT_MAX_GENRES,
+    DEFAULT_MIN_GENRE_USAGE, DEFAULT_MUSICBRAINZ_ENDPOINT, DEFAULT_ONLY_MY_GENRES,
+    DEFAULT_PRESERVE_EXISTING_IMAGES, DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
+    DEFAULT_PRESERVE_EXISTING_TAGS, DEFAULT_RELEASE_ARS, DEFAULT_SAVE_IMAGES_TO_TAGS,
+    DEFAULT_USE_GENRES, InternalMediaTaggerOptions, MetadataSelection, run_internal_media_tagger,
 };
 
 /// The sandbox file the step's `content` input is staged at.
@@ -257,6 +258,12 @@ fn options_from_args(
         )?,
         enable_tag_saving: flag(args, "enable_tag_saving", DEFAULT_ENABLE_TAG_SAVING)?,
         release_ars: flag(args, "release_ars", DEFAULT_RELEASE_ARS)?,
+        use_genres: flag(args, "use_genres", DEFAULT_USE_GENRES)?,
+        only_my_genres: flag(args, "only_my_genres", DEFAULT_ONLY_MY_GENRES)?,
+        max_genres: number(args, "max_genres", DEFAULT_MAX_GENRES)?,
+        min_genre_usage: number(args, "min_genre_usage", DEFAULT_MIN_GENRE_USAGE)?,
+        genres_filter: text(args, "genres_filter", DEFAULT_GENRES_FILTER),
+        join_genres: text(args, "join_genres", DEFAULT_JOIN_GENRES),
         recording_mbid: optional_text(args, "recording_mbid"),
         release_mbid: optional_text(args, "release_mbid"),
         enable_logged_in_features_musicbrainz: flag(

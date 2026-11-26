@@ -1,10 +1,12 @@
 //! FFmetadata document parsing helpers.
 
-use std::collections::BTreeMap;
-
-/// Parses ffmpeg `-f ffmetadata -` output into a global metadata map.
-pub(super) fn parse_ffmetadata_global_map(document: &str) -> BTreeMap<String, String> {
-    let mut metadata = BTreeMap::new();
+/// Parses ffmpeg `-f ffmetadata -` output into global metadata entries.
+///
+/// Repeated keys are preserved because some tag families, such as
+/// Picard-style genre output, can be represented as multiple FFmetadata
+/// entries with the same key.
+pub(super) fn parse_ffmetadata_global_map(document: &str) -> Vec<(String, String)> {
+    let mut metadata = Vec::new();
     for raw_line in document.lines() {
         let line = raw_line.trim();
         if line.is_empty() || line.starts_with(';') {
@@ -22,7 +24,7 @@ pub(super) fn parse_ffmetadata_global_map(document: &str) -> BTreeMap<String, St
         if key.trim().is_empty() || value.trim().is_empty() {
             continue;
         }
-        metadata.insert(key, value);
+        metadata.push((key, value));
     }
 
     metadata

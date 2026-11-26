@@ -229,7 +229,7 @@ fn musicbrainz_host_for_endpoint(endpoint: &str) -> anyhow::Result<String> {
 #[derive(Debug, Clone)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "fetch shape mirrors independent MusicBrainz request dimensions; T9 will add genre knobs"
+    reason = "fetch shape mirrors independent MusicBrainz request dimensions"
 )]
 pub(super) struct MusicBrainzFetchShape {
     /// Whether the extended Picard tag block was requested.
@@ -246,6 +246,10 @@ pub(super) struct MusicBrainzFetchShape {
     pub(super) include_user_collections: bool,
     /// Whether user-tag data should be requested.
     pub(super) include_user_tags: bool,
+    /// Whether genre tags are enabled.
+    pub(super) use_genres: bool,
+    /// Whether to only use the authenticated user's own genres/tags.
+    pub(super) only_my_genres: bool,
 }
 
 impl MusicBrainzFetchShape {
@@ -265,13 +269,15 @@ impl MusicBrainzFetchShape {
             release_mbid.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("");
         let domain = musicbrainz_host_for_endpoint(&self.endpoint)?;
         Ok(format!(
-            "recording={recording_mbid}|release={release_mbid}|all_tags={}|ars={}|endpoint={domain}|user_genres={}|user_ratings={}|user_collections={}|user_tags={}",
+            "recording={recording_mbid}|release={release_mbid}|all_tags={}|ars={}|endpoint={domain}|user_genres={}|user_ratings={}|user_collections={}|user_tags={}|use_genres={}|only_my_genres={}",
             u8::from(self.write_all_tags),
             u8::from(self.release_ars),
             u8::from(self.include_user_genres),
             u8::from(self.include_user_ratings),
             u8::from(self.include_user_collections),
             u8::from(self.include_user_tags),
+            u8::from(self.use_genres),
+            u8::from(self.only_my_genres),
         ))
     }
 }
@@ -312,17 +318,20 @@ fn entity_url(base: &Url, entity: &str, mbid: &str, includes: &[&str]) -> anyhow
 
 /// Recording `inc` tokens for the requested fetch shape.
 fn recording_includes(shape: &MusicBrainzFetchShape) -> Vec<&'static str> {
-    let mut includes = vec!["artists", "releases", "isrcs", "genres", "tags"];
+    let mut includes = vec!["artists", "releases", "isrcs"];
+    if shape.use_genres && !shape.only_my_genres {
+        includes.extend(["genres", "tags"]);
+    }
     if shape.write_all_tags {
         includes.extend(["annotation", "work-level-rels"]);
     }
-    if shape.include_user_genres {
+    if shape.include_user_genres || (shape.use_genres && shape.only_my_genres) {
         includes.push("user-genres");
     }
     if shape.include_user_ratings {
         includes.push("user-ratings");
     }
-    if shape.include_user_tags {
+    if shape.include_user_tags || (shape.use_genres && shape.only_my_genres) {
         includes.push("user-tags");
     }
     includes
@@ -330,16 +339,10 @@ fn recording_includes(shape: &MusicBrainzFetchShape) -> Vec<&'static str> {
 
 /// Release `inc` tokens for the requested fetch shape.
 fn release_includes(shape: &MusicBrainzFetchShape) -> Vec<&'static str> {
-    let mut includes = vec![
-        "artists",
-        "recordings",
-        "release-groups",
-        "media",
-        "labels",
-        "isrcs",
-        "genres",
-        "tags",
-    ];
+    let mut includes = vec!["artists", "recordings", "release-groups", "media", "labels", "isrcs"];
+    if shape.use_genres && !shape.only_my_genres {
+        includes.extend(["genres", "tags"]);
+    }
     if shape.write_all_tags {
         includes.push("annotation");
     }
@@ -347,7 +350,7 @@ fn release_includes(shape: &MusicBrainzFetchShape) -> Vec<&'static str> {
         includes.push("recording-level-rels");
         includes.push("release-group-level-rels");
     }
-    if shape.include_user_genres {
+    if shape.include_user_genres || (shape.use_genres && shape.only_my_genres) {
         includes.push("user-genres");
     }
     if shape.include_user_ratings {
@@ -356,7 +359,7 @@ fn release_includes(shape: &MusicBrainzFetchShape) -> Vec<&'static str> {
     if shape.include_user_collections {
         includes.push("user-collections");
     }
-    if shape.include_user_tags {
+    if shape.include_user_tags || (shape.use_genres && shape.only_my_genres) {
         includes.push("user-tags");
     }
     includes
@@ -687,6 +690,193 @@ pub(super) async fn fetch_musicbrainz_payloads_on_with_policy(
     Ok(fetched_payload)
 }
 
+/// Genre processing configuration for [`build_ffmetadata_map`].
+#[derive(Debug, Clone)]
+pub(super) struct GenreConfig {
+    /// Whether genre output is enabled.
+    pub(super) use_genres: bool,
+    /// Whether to only use the user's own genres/tags.
+    pub(super) only_my_genres: bool,
+    /// Maximum number of genres to emit.
+    pub(super) max_genres: usize,
+    /// Minimum genre usage percentage relative to the top genre.
+    pub(super) min_genre_usage: u8,
+    /// Newline-delimited genre filter patterns.
+    pub(super) genres_filter: String,
+    /// Separator for joining genres; empty means multi-value.
+    pub(super) join_genres: String,
+}
+
+/// Compiles newline-delimited `+include` / `-exclude` genre patterns.
+///
+/// Patterns are anchored, case-insensitive globs: every character except `*`
+/// and `?` is escaped, so regex metacharacters in user configuration stay
+/// literal.
+fn parse_genre_filter(filter_text: &str) -> (Vec<regex::Regex>, Vec<regex::Regex>) {
+    let mut include = Vec::new();
+    let mut exclude = Vec::new();
+    for line in filter_text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some(prefix) = line.chars().next() else { continue };
+        if prefix != '+' && prefix != '-' {
+            continue;
+        }
+        let remain = line[prefix.len_utf8()..].trim();
+        if remain.is_empty() {
+            continue;
+        }
+        let mut pattern = String::from("^(?:");
+        for character in remain.chars() {
+            match character {
+                '*' => pattern.push_str(".*"),
+                '?' => pattern.push('.'),
+                _ => pattern.push_str(&regex::escape(&character.to_string())),
+            }
+        }
+        pattern.push_str(")$");
+        let Ok(re) = regex::RegexBuilder::new(&pattern).case_insensitive(true).build() else {
+            continue;
+        };
+        if prefix == '+' {
+            include.push(re);
+        } else {
+            exclude.push(re);
+        }
+    }
+    (include, exclude)
+}
+
+fn genre_name_matches(name: &str, include: &[regex::Regex], exclude: &[regex::Regex]) -> bool {
+    if include.is_empty() && exclude.is_empty() {
+        return true;
+    }
+    for re in include {
+        if re.is_match(name) {
+            return true;
+        }
+    }
+    if !include.is_empty() {
+        return false;
+    }
+    for re in exclude {
+        if re.is_match(name) {
+            return false;
+        }
+    }
+    true
+}
+
+fn titlecase_genre(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut new_word = true;
+    for ch in name.chars() {
+        if ch.is_alphanumeric() {
+            if new_word {
+                for uc in ch.to_uppercase() {
+                    out.push(uc);
+                }
+                new_word = false;
+            } else {
+                for lc in ch.to_lowercase() {
+                    out.push(lc);
+                }
+            }
+        } else {
+            out.push(ch);
+            new_word = true;
+        }
+    }
+    out
+}
+
+/// Computes title-cased genre values for one payload.
+///
+/// A zero `max_genres` emits nothing, matching Picard's early return. Names are
+/// folded to lowercase as they are counted, so `rock` and `Rock` share one
+/// count and one limit slot.
+fn compute_genre_values(payload: &MusicBrainzPayload, genre_config: &GenreConfig) -> Vec<String> {
+    if !genre_config.use_genres || genre_config.max_genres == 0 {
+        return Vec::new();
+    }
+    let mut counts: BTreeMap<String, (String, u32)> = BTreeMap::new();
+    let mut add = |name: &str, count: u32| {
+        let name = name.trim();
+        if name.is_empty() || count == 0 {
+            return;
+        }
+        let key = name.to_lowercase();
+        let entry = counts.entry(key).or_insert_with(|| (name.to_string(), 0));
+        entry.1 += count;
+    };
+
+    if genre_config.only_my_genres {
+        for (name, _count) in &payload.recording_user_data.user_genres {
+            add(name, 1);
+        }
+        for (name, _count) in &payload.release_user_data.user_genres {
+            add(name, 1);
+        }
+        for (name, _count) in &payload.recording_user_data.user_tags {
+            add(name, 1);
+        }
+        for (name, _count) in &payload.release_user_data.user_tags {
+            add(name, 1);
+        }
+    } else {
+        if let Some(genres) = payload.recording.genres.as_ref() {
+            for genre in genres {
+                let count = genre.count.unwrap_or(0);
+                add(&genre.name, count);
+            }
+        }
+        if let Some(genres) = payload.release.as_ref().and_then(|release| release.genres.as_ref()) {
+            for genre in genres {
+                let count = genre.count.unwrap_or(0);
+                add(&genre.name, count);
+            }
+        }
+        for (name, _count) in &payload.recording_user_data.user_genres {
+            add(name, 1);
+        }
+        for (name, _count) in &payload.release_user_data.user_genres {
+            add(name, 1);
+        }
+    }
+
+    let (include, exclude) = parse_genre_filter(&genre_config.genres_filter);
+    let mut filtered: Vec<(String, u32)> = Vec::new();
+    for (name, count) in counts.values() {
+        if genre_name_matches(name, &include, &exclude) {
+            filtered.push((name.clone(), *count));
+        }
+    }
+    if filtered.is_empty() {
+        return Vec::new();
+    }
+    let top_count = filtered.iter().map(|(_, count)| *count).max().unwrap_or(0);
+    if top_count == 0 {
+        return Vec::new();
+    }
+    let mut by_threshold: Vec<(String, u32)> = filtered
+        .into_iter()
+        .filter(|(_, count)| {
+            let percent =
+                u32::try_from(u64::from(*count) * 100 / u64::from(top_count)).unwrap_or(u32::MAX);
+            percent >= u32::from(genre_config.min_genre_usage)
+        })
+        .collect();
+    by_threshold.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    by_threshold.truncate(genre_config.max_genres);
+    let mut names: Vec<String> =
+        by_threshold.into_iter().map(|(n, _)| titlecase_genre(&n)).collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Converts MusicBrainz payload into FFmetadata key/value map.
 #[expect(
     clippy::too_many_lines,
@@ -695,7 +885,8 @@ pub(super) async fn fetch_musicbrainz_payloads_on_with_policy(
 pub(super) fn build_ffmetadata_map(
     payload: &MusicBrainzPayload,
     write_all_tags: bool,
-) -> anyhow::Result<BTreeMap<String, String>> {
+    genre_config: &GenreConfig,
+) -> anyhow::Result<Vec<(String, String)>> {
     let mut tags = BTreeMap::new();
 
     tags.insert("title".to_string(), payload.recording.title.clone());
@@ -714,13 +905,6 @@ pub(super) fn build_ffmetadata_map(
         && !isrcs.is_empty()
     {
         tags.insert("isrc".to_string(), join_unique(isrcs.iter().map(String::as_str)));
-    }
-
-    if let Some(genres) = payload.recording.genres.as_ref() {
-        let genre_values = genres.iter().map(|genre| genre.name.as_str()).collect::<Vec<_>>();
-        if !genre_values.is_empty() {
-            tags.insert("genre".to_string(), join_unique(genre_values));
-        }
     }
 
     if let Some(release) = payload.release.as_ref() {
@@ -811,38 +995,9 @@ pub(super) fn build_ffmetadata_map(
             );
         }
     }
-    if !payload.recording_user_data.user_genres.is_empty()
-        || !payload.release_user_data.user_genres.is_empty()
-    {
-        let mut all_user_genres: Vec<String> = payload
-            .recording_user_data
-            .user_genres
-            .iter()
-            .chain(payload.release_user_data.user_genres.iter())
-            .map(|(name, _)| name.as_str().to_owned())
-            .collect();
-        all_user_genres.sort();
-        all_user_genres.dedup();
-        if !all_user_genres.is_empty() {
-            let existing = tags.get("genre").cloned().unwrap_or_default();
-            let merged = if existing.trim().is_empty() {
-                join_unique(all_user_genres.iter().map(String::as_str))
-            } else {
-                let mut parts: Vec<String> = existing
-                    .split(';')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(ToOwned::to_owned)
-                    .collect();
-                for g in all_user_genres {
-                    if !parts.iter().any(|p| p.eq_ignore_ascii_case(&g)) {
-                        parts.push(g);
-                    }
-                }
-                join_unique(parts.iter().map(String::as_str))
-            };
-            tags.insert("genre".to_string(), merged);
-        }
+    let genre_values = compute_genre_values(payload, genre_config);
+    if !genre_values.is_empty() && !genre_config.join_genres.is_empty() {
+        tags.insert("genre".to_string(), genre_values.join(&genre_config.join_genres));
     }
 
     if write_all_tags {
@@ -864,7 +1019,14 @@ pub(super) fn build_ffmetadata_map(
         insert_extended_picard_tags(&mut tags, &recording_flattened, &release_flattened);
     }
 
-    Ok(tags)
+    let mut entries: Vec<(String, String)> = tags.into_iter().collect();
+    if !genre_values.is_empty() && genre_config.join_genres.is_empty() {
+        for value in genre_values {
+            entries.push(("genre".to_string(), value));
+        }
+    }
+
+    Ok(entries)
 }
 
 /// Inserts optional Picard-compatible tags from flattened MusicBrainz payloads.
@@ -953,6 +1115,8 @@ mod tests {
             include_user_ratings: false,
             include_user_collections: false,
             include_user_tags: false,
+            use_genres: false,
+            only_my_genres: false,
         }
     }
 
@@ -1189,6 +1353,8 @@ mod tests {
             include_user_ratings: false,
             include_user_collections: false,
             include_user_tags: false,
+            use_genres: false,
+            only_my_genres: false,
         };
         let base = normalized_endpoint_base(&shape.endpoint).expect("base");
         let url = entity_url(&base, "recording", mbid, &recording_includes(&shape)).expect("url");
@@ -1204,7 +1370,7 @@ mod tests {
             .find(|(k, _)| k == "inc")
             .map(|(_, v)| v.as_str())
             .expect("inc query param");
-        assert_eq!(inc, "artists releases isrcs genres tags annotation work-level-rels");
+        assert_eq!(inc, "artists releases isrcs annotation work-level-rels");
 
         let http_shape = MusicBrainzFetchShape {
             write_all_tags: false,
@@ -1215,6 +1381,8 @@ mod tests {
             include_user_ratings: false,
             include_user_collections: false,
             include_user_tags: false,
+            use_genres: false,
+            only_my_genres: false,
         };
         let http_base = normalized_endpoint_base(&http_shape.endpoint).expect("http base");
         let http_url = entity_url(&http_base, "recording", mbid, &recording_includes(&http_shape))
@@ -1233,6 +1401,8 @@ mod tests {
             include_user_ratings: false,
             include_user_collections: false,
             include_user_tags: false,
+            use_genres: false,
+            only_my_genres: false,
         };
         let plain_shape = MusicBrainzFetchShape {
             write_all_tags: false,
@@ -1243,6 +1413,8 @@ mod tests {
             include_user_ratings: false,
             include_user_collections: false,
             include_user_tags: false,
+            use_genres: false,
+            only_my_genres: false,
         };
         let secure_key = secure_shape.cache_key(recording_mbid(), None).expect("https key");
         let plain_key = plain_shape.cache_key(recording_mbid(), None).expect("http key");
@@ -1353,6 +1525,8 @@ mod tests {
             include_user_ratings: true,
             include_user_collections: true,
             include_user_tags: true,
+            use_genres: false,
+            only_my_genres: false,
         };
         let incs = recording_includes(&shape);
         assert!(incs.contains(&"user-genres"));
@@ -1403,10 +1577,277 @@ mod tests {
                 user_collections: vec!["coll-1".to_string()],
             },
         };
-        let tags = build_ffmetadata_map(&payload, false).expect("tags");
-        assert_eq!(tags.get("~rating").map(String::as_str), Some("4"));
-        assert_eq!(tags.get("musicbrainz_collectionid").map(String::as_str), Some("coll-1"));
-        assert!(tags.get("genre").is_some_and(|g| g.contains("rock")));
-        assert!(tags.get("~usertags").is_some_and(|t| t.contains("favorite")));
+        let tags = build_ffmetadata_map(
+            &payload,
+            false,
+            &GenreConfig {
+                use_genres: true,
+                only_my_genres: false,
+                max_genres: 5,
+                min_genre_usage: 90,
+                genres_filter: "-seen live\n-favorites\n-fixme\n-owned".to_string(),
+                join_genres: String::new(),
+            },
+        )
+        .expect("tags");
+        let value = |key: &str| {
+            tags.iter().find(|(existing, _)| existing == key).map(|(_, value)| value.as_str())
+        };
+        let values = |key: &str| {
+            tags.iter()
+                .filter(|(existing, _)| existing == key)
+                .map(|(_, value)| value.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(value("~rating"), Some("4"));
+        assert_eq!(value("musicbrainz_collectionid"), Some("coll-1"));
+        assert_eq!(values("genre"), vec!["Rock"]);
+        assert!(value("~usertags").is_some_and(|t| t.contains("favorite")));
+    }
+
+    fn genre_payload(
+        recording_genres: &serde_json::Value,
+        recording_user_genres: Vec<(String, u32)>,
+        recording_user_tags: Vec<(String, u32)>,
+        release_user_genres: Vec<(String, u32)>,
+        release_user_tags: Vec<(String, u32)>,
+    ) -> MusicBrainzPayload {
+        MusicBrainzPayload {
+            recording: serde_json::from_value(serde_json::json!({
+                "id": "11111111-1111-1111-1111-111111111111",
+                "title": "Song",
+                "genres": recording_genres.clone()
+            }))
+            .expect("recording"),
+            release: None,
+            recording_user_data: MusicBrainzUserData {
+                user_genres: recording_user_genres,
+                user_tags: recording_user_tags,
+                user_rating: None,
+                user_collections: vec![],
+            },
+            release_user_data: MusicBrainzUserData {
+                user_genres: release_user_genres,
+                user_tags: release_user_tags,
+                user_rating: None,
+                user_collections: vec![],
+            },
+        }
+    }
+
+    fn genre_values(tags: &[(String, String)]) -> Vec<&str> {
+        tags.iter().filter(|(key, _)| key == "genre").map(|(_, value)| value.as_str()).collect()
+    }
+
+    #[test]
+    fn build_ffmetadata_map_omits_genre_when_use_genres_is_false() {
+        let payload = genre_payload(
+            &serde_json::json!([{ "name": "rock", "count": 10 }]),
+            vec![("electronic".to_string(), 2)],
+            vec![],
+            vec![],
+            vec![],
+        );
+        let tags = build_ffmetadata_map(
+            &payload,
+            false,
+            &GenreConfig {
+                use_genres: false,
+                only_my_genres: false,
+                max_genres: 5,
+                min_genre_usage: 90,
+                genres_filter: "-seen live\n-favorites\n-fixme\n-owned".to_string(),
+                join_genres: String::new(),
+            },
+        )
+        .expect("tags");
+        assert_eq!(genre_values(&tags), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn build_ffmetadata_map_emits_joined_genres_when_join_separator_is_set() {
+        let payload = genre_payload(
+            &serde_json::json!([
+                { "name": "rock", "count": 10 },
+                { "name": "electronic", "count": 10 }
+            ]),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
+        let tags = build_ffmetadata_map(
+            &payload,
+            false,
+            &GenreConfig {
+                use_genres: true,
+                only_my_genres: false,
+                max_genres: 5,
+                min_genre_usage: 90,
+                genres_filter: String::new(),
+                join_genres: "; ".to_string(),
+            },
+        )
+        .expect("tags");
+        assert_eq!(genre_values(&tags), vec!["Electronic; Rock"]);
+    }
+
+    #[test]
+    fn build_ffmetadata_map_emits_multi_value_genres_when_join_is_empty() {
+        let payload = genre_payload(
+            &serde_json::json!([
+                { "name": "rock", "count": 10 },
+                { "name": "electronic", "count": 10 }
+            ]),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
+        let tags = build_ffmetadata_map(
+            &payload,
+            false,
+            &GenreConfig {
+                use_genres: true,
+                only_my_genres: false,
+                max_genres: 5,
+                min_genre_usage: 90,
+                genres_filter: String::new(),
+                join_genres: String::new(),
+            },
+        )
+        .expect("tags");
+        assert_eq!(genre_values(&tags), vec!["Electronic", "Rock"]);
+    }
+
+    #[test]
+    fn build_ffmetadata_map_applies_genre_filter_min_usage_and_max() {
+        let payload = genre_payload(
+            &serde_json::json!([
+                { "name": "rock", "count": 100 },
+                { "name": "pop", "count": 95 },
+                { "name": "jazz", "count": 80 },
+                { "name": "seen live", "count": 100 }
+            ]),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
+        let tags = build_ffmetadata_map(
+            &payload,
+            false,
+            &GenreConfig {
+                use_genres: true,
+                only_my_genres: false,
+                max_genres: 1,
+                min_genre_usage: 90,
+                genres_filter: "-seen live".to_string(),
+                join_genres: String::new(),
+            },
+        )
+        .expect("tags");
+        assert_eq!(genre_values(&tags), vec!["Rock"]);
+    }
+
+    #[test]
+    fn genre_filter_escapes_literal_metacharacters_and_keeps_glob_wildcards() {
+        let (literal, _) = parse_genre_filter("+a(b)[c]\\d{2}^$\n+rock+roll\n+pop.lit");
+        let literal_match = |name: &str| genre_name_matches(name, &literal, &[]);
+        assert!(literal_match("a(b)[c]\\d{2}^$"));
+        assert!(!literal_match("abc11"));
+        assert!(literal_match("Rock+Roll"), "a literal '+' must stay literal");
+        assert!(!literal_match("rockXroll"));
+        assert!(literal_match("pop.lit"), "a literal '.' must stay literal");
+        assert!(!literal_match("popXlit"));
+
+        let (wildcards, _) = parse_genre_filter("+b?ues\n+rock*");
+        let wildcard_match = |name: &str| genre_name_matches(name, &wildcards, &[]);
+        assert!(wildcard_match("blues"), "'?' must match one character");
+        assert!(!wildcard_match("bues"));
+        assert!(wildcard_match("rockabilly"), "'*' must match any suffix");
+    }
+
+    #[test]
+    fn build_ffmetadata_map_omits_genres_when_max_genres_is_zero() {
+        let payload = genre_payload(
+            &serde_json::json!([{ "name": "rock", "count": 10 }]),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
+        let tags = build_ffmetadata_map(
+            &payload,
+            false,
+            &GenreConfig {
+                use_genres: true,
+                only_my_genres: false,
+                max_genres: 0,
+                min_genre_usage: 90,
+                genres_filter: String::new(),
+                join_genres: String::new(),
+            },
+        )
+        .expect("tags");
+        assert_eq!(genre_values(&tags), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn build_ffmetadata_map_deduplicates_genre_case_before_limit() {
+        let payload = genre_payload(
+            &serde_json::json!([
+                { "name": "rock", "count": 100 },
+                { "name": "Rock", "count": 90 },
+                { "name": "jazz", "count": 60 }
+            ]),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
+        let tags = build_ffmetadata_map(
+            &payload,
+            false,
+            &GenreConfig {
+                use_genres: true,
+                only_my_genres: false,
+                max_genres: 2,
+                min_genre_usage: 30,
+                genres_filter: String::new(),
+                join_genres: String::new(),
+            },
+        )
+        .expect("tags");
+        assert_eq!(
+            genre_values(&tags),
+            vec!["Jazz", "Rock"],
+            "case variants must share one slot before the limit is applied",
+        );
+    }
+
+    #[test]
+    fn build_ffmetadata_map_only_my_genres_uses_user_genres_and_tags_with_count_one() {
+        let payload = genre_payload(
+            &serde_json::json!([{ "name": "public", "count": 100 }]),
+            vec![("my-genre".to_string(), 7)],
+            vec![("my-tag".to_string(), 3)],
+            vec![("release-genre".to_string(), 4)],
+            vec![("release-tag".to_string(), 2)],
+        );
+        let tags = build_ffmetadata_map(
+            &payload,
+            false,
+            &GenreConfig {
+                use_genres: true,
+                only_my_genres: true,
+                max_genres: 5,
+                min_genre_usage: 90,
+                genres_filter: String::new(),
+                join_genres: String::new(),
+            },
+        )
+        .expect("tags");
+        assert_eq!(genre_values(&tags), vec!["My-Genre", "My-Tag", "Release-Genre", "Release-Tag"]);
     }
 }

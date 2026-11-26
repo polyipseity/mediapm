@@ -1154,28 +1154,33 @@ pub(super) fn cover_art_type_priority(kind: &str) -> usize {
 /// [`select_cover_art_for_tag_embedding`] so default embedding behavior stays
 /// aligned with Picard's `embed_only_one_front_image` policy.
 pub(super) fn insert_musicbrainz_image_tags(
-    tags: &mut BTreeMap<String, String>,
+    tags: &mut Vec<(String, String)>,
     images: &[SelectedCoverArt],
 ) {
+    fn set_tag(tags: &mut Vec<(String, String)>, key: &str, value: String) {
+        tags.retain(|(existing_key, _)| existing_key != key);
+        tags.push((key.to_string(), value));
+    }
+
     if images.is_empty() {
         return;
     }
 
     let primary = images.iter().find(|image| image.maintype == "front").unwrap_or(&images[0]);
 
-    tags.insert("coverart_url".to_string(), primary.url.clone());
+    set_tag(tags, "coverart_url", primary.url.clone());
     for (index, image) in images.iter().enumerate() {
-        tags.insert(format!("coverart_url_{index}"), image.url.clone());
+        set_tag(tags, &format!("coverart_url_{index}"), image.url.clone());
     }
-    tags.insert("coverart_maintype".to_string(), primary.maintype.clone());
+    set_tag(tags, "coverart_maintype", primary.maintype.clone());
 
     let all_types =
         join_unique(images.iter().flat_map(|image| image.types.iter().map(String::as_str)));
     if !all_types.trim().is_empty() {
-        tags.insert("coverart_types".to_string(), all_types);
+        set_tag(tags, "coverart_types", all_types);
     }
 
-    tags.insert("coverart_comment".to_string(), primary.comment.clone());
+    set_tag(tags, "coverart_comment", primary.comment.clone());
 }
 
 /// Selects cover-art entries for tag embedding using Picard-compatible policy.
