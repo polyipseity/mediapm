@@ -24,6 +24,20 @@ use mediapm::builtins::media_tagger::{
     MetadataSelection, run_internal_media_tagger,
 };
 
+#[derive(Clone)]
+struct CapturingLogWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for CapturingLogWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("log buffer").extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// A valid recording MBID the mock server serves and the run requests.
 const RECORDING_MBID: &str = "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae";
 /// A valid release MBID the recording's embedded release points to.
@@ -750,6 +764,16 @@ async fn a_successful_tag_run_drops_existing_global_tags_when_not_preserved() {
 
 #[tokio::test]
 async fn wanted_user_data_dropped_when_musicbrainz_login_features_disabled() {
+    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer({
+            let logs = std::sync::Arc::clone(&logs);
+            move || CapturingLogWriter(std::sync::Arc::clone(&logs))
+        })
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
     let workspace = mediapm_utils::temp::output_dir().expect("workspace");
     let musicbrainz = wiremock::MockServer::start().await;
     mount_musicbrainz(&musicbrainz).await;
@@ -780,6 +804,70 @@ async fn wanted_user_data_dropped_when_musicbrainz_login_features_disabled() {
         assert!(
             req.headers.get("authorization").is_none(),
             "dropped user-data must not send authorization"
+        );
+    }
+
+    let captured = String::from_utf8(logs.lock().expect("log buffer").clone())
+        .expect("captured logs are UTF-8");
+    for field in ["user-genres", "user-ratings", "user-collections", "user-tags"] {
+        let expected =
+            format!("dropped {field} because logged-in features for MusicBrainz are disabled");
+        assert!(
+            captured.contains(&expected),
+            "the dropped field must be named in the info log: {expected}\nlogs: {captured}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn deselected_user_data_is_silent_without_login() {
+    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer({
+            let logs = std::sync::Arc::clone(&logs);
+            move || CapturingLogWriter(std::sync::Arc::clone(&logs))
+        })
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let workspace = mediapm_utils::temp::output_dir().expect("workspace");
+    let musicbrainz = wiremock::MockServer::start().await;
+    mount_musicbrainz(&musicbrainz).await;
+    let endpoint = format!("{}/ws/2", musicbrainz.uri());
+    let mut options = hermetic_options(workspace.path(), &endpoint, DEFAULT_CAA_ENDPOINT);
+    options.enable_logged_in_features_musicbrainz = true;
+    options.runtime_root = None;
+    options.metadata_selection = MetadataSelection {
+        include_user_genres: false,
+        include_user_ratings: false,
+        include_user_collections: false,
+        include_user_tags: false,
+    };
+
+    run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
+        .await
+        .expect("deselected user data needs no login");
+
+    let captured = String::from_utf8(logs.lock().expect("log buffer").clone())
+        .expect("captured logs are UTF-8");
+    assert!(
+        !captured.contains("dropped ") && !captured.contains("logged-in features"),
+        "a caller-deselected field must not produce a dropped notice: {captured}"
+    );
+
+    for request in musicbrainz.received_requests().await.expect("requests") {
+        let url = request.url.to_string();
+        assert!(
+            !url.contains("user-genres")
+                && !url.contains("user-ratings")
+                && !url.contains("user-tags")
+                && !url.contains("user-collections"),
+            "deselected user data must not be requested: {url}"
+        );
+        assert!(
+            request.headers.get("authorization").is_none(),
+            "deselected user data must not send authorization"
         );
     }
 }
