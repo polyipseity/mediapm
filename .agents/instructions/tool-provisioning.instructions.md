@@ -1,7 +1,7 @@
 ---
-description: "Use when editing tool sync, provisioning, provider/preset dispatch, tool requirements, or cache/HTTP behavior. Covers coordinator flow, identity, 3-phase provisioning, and dispatch invariants."
+description: "Use when editing tool sync, provisioning, provider/preset dispatch, tool requirements, cache/HTTP behavior, or tagger login gates and OAuth credentials. Covers coordinator flow, identity, 3-phase provisioning, and dispatch invariants."
 name: "Tool provisioning"
-applyTo: "src/mediapm/src/conductor_bridge/sync/**/*.rs, src/mediapm/src/conductor_bridge/documents.rs, src/mediapm/src/tools/provider/**/*.rs, src/mediapm/src/tools/preset/**/*.rs, src/mediapm/src/tools/workflows/**/*.rs, src/mediapm/src/config/mod.rs, src/mediapm-conductor/src/http/**/*.rs, src/mediapm-conductor-builtins/import/src/lib.rs"
+applyTo: "src/mediapm/src/conductor_bridge/sync/**/*.rs, src/mediapm/src/conductor_bridge/documents.rs, src/mediapm/src/tools/provider/**/*.rs, src/mediapm/src/tools/preset/**/*.rs, src/mediapm/src/tools/workflows/**/*.rs, src/mediapm/src/config/mod.rs, src/mediapm/src/env_registry.rs, src/mediapm/src/auth/**/*.rs, src/mediapm/src/builtins/media_tagger/gate.rs, src/mediapm-conductor/src/http/**/*.rs, src/mediapm-conductor-builtins/import/src/lib.rs"
 ---
 
 # Tool provisioning
@@ -63,6 +63,11 @@ Merged guidance for tool sync coordination, identity, 3-phase provisioning, prov
 - Three tiers under user-level cache root (`default_mediapm_user_download_cache_root()` / `<os-cache-dir>/mediapm/cache/`): content cache `tools.json` (7d, last-use TTL, raw payload bytes keyed by URI plus resolved identity for moving targets), metadata cache `tool_metadata.json` (1d, creation-time TTL, never touch), provision cache (24h last-use, extracted binaries in workspace tools dir, not in user cache). Workspace `<runtime_root>/tools/` and user-level download cache are never interchangeable.
 - Shared HTTP clients are `OnceLock` singletons: conductor async client (30s connect, 30 min request, shared UA) and import blocking client (`fetch`, 60s/60s). Both honor `MEDIAPM_HTTP_TIMEOUT_SECONDS` (min 30s). No-redirect variant exists in conductor client. Every shared-client call site must keep HTTP client policy docstring (central client, no local `reqwest::Client`).
 - `mediapm-conductor/src/http/` is fully self-contained: no `use crate::`, no `ConductorError`, extractable by copy + Cargo.toml; errors map to `ConductorError` at call sites. `build.rs` enforces the boundary. MediaPM and tagger transport use the shared client per code policy.
+
+## Credentials and login gates
+
+- Login-gated tagger work resolves through `resolve_gate` (`src/mediapm/src/builtins/media_tagger/gate.rs`) at the point of need: `Need::None` and a disabled `enable_logged_in_features_<service>` flag never read auth state, a wanted optional field under a disabled flag is dropped with an info log, a required need under a disabled flag errors regardless of login, and an enabled flag with a wanted/required need and no login errors. There is no startup precheck and no degrade to an unauthenticated fetch.
+- OAuth client credentials come from the runtime dotenv (`MUSICBRAINZ_OAUTH_CLIENT_ID` / `MUSICBRAINZ_OAUTH_CLIENT_SECRET`); absence is a hard error naming the registration URL, never a silent no-op. Tokens live in `.mediapm/auth/musicbrainz.json`, never `state.json`, and require no schema/version bump.
 
 ## Testing and hermeticity
 

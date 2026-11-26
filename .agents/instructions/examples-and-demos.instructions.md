@@ -13,6 +13,7 @@ Every example under `src/*/examples/` has a `#[cfg(test)]` test that calls `supe
 - **Deterministic examples**: full path in tests, no CI detection, no reduced mode.
 - **Nondeterministic examples**: route selected by argv parsed once in `main`; `--online` names the real upstream. No env var selects route. No example detects CI inside `main()`.
 - **`mediapm_demo_online`**: default is offline/hermetic stub chain (mocked upstream payloads, mocked MusicBrainz). `--online` selects real providers, real tool binaries, and real MusicBrainz; no gate reaches it. The offline route runs in every gate. A release build refuses the offline stub route before watchdog/tool resolve and names `--release`.
+- The offline route also deselects the four login-only user fields (`include_user_genres`, `include_user_ratings`, `include_user_collections`, `include_user_tags`), so no gate needs MusicBrainz credentials or a token. The `--online` route leaves those fields at their defaults and is owner/manual: user data requires `mediapm auth musicbrainz login` and is never a CI claim.
 - Assertions follow route: real-tool ffprobe stream properties, untagged/tagged tag sets, ReplayGain tags, and canonical media-root name run only online. Offline reads the materialized file in process and asserts fixture facts via `mediapm_test_support::read_matroska_facts`.
 
 ## Network-bound tests

@@ -20,6 +20,10 @@ applyTo: "src/**/*.rs, **/*.ncl"
 - A state document that names no version, an unknown version, or an unparseable body aborts load; never rebuild as empty. Only a missing file rebuilds.
 - Conductor `state.conductor.json` keeps its own independent integer ladder, loaded independently from mediapm state.
 
+## Credentials outside state
+
+- MusicBrainz OAuth tokens, expiry and scopes live in `.mediapm/auth/musicbrainz.json` (atomic write, mode 0600 on Unix, gitignored), never in `state.json`. Credentials are not workflow state: adding or changing that file needs no `MEDIAPM_STATE_VERSION` bump, no migration, and no Nickel contract change.
+
 ## mediapm state shape
 
 - `MEDIAPM_STATE_VERSION = 5` is current and independent from `MEDIAPM_DOCUMENT_VERSION = 5`. V1-V4 are read-only migration paths for state; V5 is always written. V1-V4 config documents migrate to V5; `recheck_seconds` accepts `"always"`, `"never"`, or a positive integer of seconds.
