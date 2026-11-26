@@ -71,9 +71,55 @@ async fn runtime_tmp_removed_on_failed_workflow_unknown_tool() {
 
 #[tokio::test]
 async fn default_runtime_tmp_is_removed_after_a_failed_workflow() {
+    use std::path::Path;
+    use std::time::Duration;
+
+    use mediapm_cas::Hash;
     use mediapm_conductor::api::RuntimeStoragePaths;
-    use mediapm_conductor::{Conductor, RunWorkflowOptions};
-    use std::collections::BTreeMap;
+    use mediapm_conductor::{
+        Conductor, ConductorState, RunWorkflowOptions, ToolCallInstance, encode_state_json,
+    };
+    use mediapm_utils::Timestamp;
+
+    /// Reads the GC epoch a background pass published to the state file.
+    fn gc_epoch(state_file: &Path) -> u64 {
+        let bytes = std::fs::read(state_file).expect("read the conductor state file");
+        let state: ConductorState =
+            serde_json::from_slice(&bytes).expect("decode the conductor state file");
+        state.conductor_gc_ran_at.as_unix_nanos()
+    }
+
+    /// Seeds one recorded instance so every pass classifies and advances the
+    /// GC epoch: an unseeded document makes the pass abstain without one.
+    fn write_seeded_state(paths: &RuntimeStoragePaths) {
+        let key = Hash::from_content(b"the background pass needs one live seed");
+        let instance = ToolCallInstance {
+            key_version: 8,
+            attempted_key_version_nk: 8,
+            tool_call_id: "seed@v1".to_string(),
+            command_args: Vec::new(),
+            env_vars_ck: BTreeMap::new(),
+            materialized_inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            impure_nk: false,
+            invalidated_at_nk: None,
+            executed_at_nk: Timestamp::default(),
+            last_referenced_at_nk: Timestamp::default(),
+            step_ids_nk: std::collections::BTreeSet::new(),
+        };
+        let mut state = ConductorState::new_empty();
+        state
+            .step_instances
+            .insert("default".to_string(), BTreeMap::from([("s1".to_string(), key)]));
+        state.tool_call_instances.insert(key, instance);
+        let bytes = encode_state_json(&state).expect("encode the seeded state");
+        std::fs::write(&paths.state_file_path, bytes).expect("write the seeded state file");
+    }
+
+    // The loop waits this long between passes, so an unstopped conductor
+    // advances the published epoch during the post-shutdown wait below.
+    let interval_secs = 1;
+    let quiescent_wait = Duration::from_secs(3);
 
     let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
     crate::write_conductor_config(
@@ -86,8 +132,11 @@ async fn default_runtime_tmp_is_removed_after_a_failed_workflow() {
             )],
         ),
     );
-    let conductor =
-        Conductor::new(RuntimeStoragePaths::new(dir.path()), mediapm_cas::InMemoryCas::new());
+    let paths = RuntimeStoragePaths::new(dir.path());
+    let state_file = paths.state_file_path.clone();
+    write_seeded_state(&paths);
+    let conductor = Conductor::new(paths, mediapm_cas::InMemoryCas::new())
+        .with_gc_settings(86_400, interval_secs);
 
     let error = conductor
         .run_workflow("default", RunWorkflowOptions::default())
@@ -95,10 +144,35 @@ async fn default_runtime_tmp_is_removed_after_a_failed_workflow() {
         .expect_err("an unknown tool fails the workflow");
     assert!(error.to_string().contains("no-such-tool"), "error names the tool: {error}");
 
+    // A pass starts with the first workflow run and publishes its epoch to
+    // the state file; wait for that write before testing what stops it.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if state_file.exists() {
+            let epoch = gc_epoch(&state_file);
+            if epoch > 0 {
+                break;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the {interval_secs}s background pass must publish a GC epoch"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
     conductor.shutdown().await.expect("conductor shutdown");
     assert!(
         !dir.path().join("tmp").exists(),
         "the default runtime tmp root must be gone before its owner drops: {}",
         dir.path().display(),
+    );
+
+    let settled = gc_epoch(&state_file);
+    tokio::time::sleep(quiescent_wait).await;
+    assert_eq!(
+        gc_epoch(&state_file),
+        settled,
+        "shutdown must stop the {interval_secs}s background pass; the GC epoch advanced"
     );
 }
