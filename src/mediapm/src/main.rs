@@ -534,7 +534,15 @@ async fn main_cli() -> anyhow::Result<()> {
         },
         Command::Builtin { command } => match *command {
             #[cfg(feature = "media-tagger")]
-            BuiltinCommand::MediaTagger(args) => run_builtin_media_tagger(args).await,
+            BuiltinCommand::MediaTagger(args) => {
+                let root = &cli.root;
+                let paths = resolve_effective_paths_for_root(root, &rt);
+                load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
+                // The helper is the one place the direct route and its unit
+                // test resolve the tagger's auth root from the CLI overrides.
+                let runtime_root = builtin_media_tagger_runtime_root(root, &rt);
+                run_builtin_media_tagger(args, runtime_root).await
+            }
         },
         Command::Cas(args) => {
             let effective_store = MediaPmPaths::from_root(&cli.root).runtime_root.join("store");
@@ -727,13 +735,29 @@ fn default_yt_dlp_steps(
     ]
 }
 
+/// Resolves the runtime root a direct builtin invocation uses for auth state.
+///
+/// The CLI and its unit test share this resolver call so an override such as
+/// `--mediapm-dir` moves the auth root on the direct route too.
+#[cfg(all(feature = "cli", feature = "media-tagger"))]
+#[must_use]
+fn builtin_media_tagger_runtime_root(
+    root: &std::path::Path,
+    rt: &MediaRuntimeStorage,
+) -> std::path::PathBuf {
+    resolve_effective_paths_for_root(root, rt).runtime_root
+}
+
 /// Executes builtin media-tagger command invocation via `run_internal_media_tagger`.
 #[cfg(feature = "media-tagger")]
 #[expect(
     clippy::cast_possible_wrap,
     reason = "u32 option values cast to i64; wrap is impossible for the bounded input domain"
 )]
-async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Result<()> {
+async fn run_builtin_media_tagger(
+    args: InternalMediaTaggerArgs,
+    runtime_root: std::path::PathBuf,
+) -> anyhow::Result<()> {
     let env_pairs = mediapm::child_env::default_host_inherited_env_pairs();
     mediapm::builtins::media_tagger::run_internal_media_tagger(
         mediapm::builtins::media_tagger::InternalMediaTaggerOptions {
@@ -775,7 +799,7 @@ async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Resu
                 include_user_collections: args.include_user_collections,
                 include_user_tags: args.include_user_tags,
             },
-            runtime_root: None,
+            runtime_root: Some(runtime_root),
         },
         &env_pairs,
     )
@@ -1311,6 +1335,32 @@ mod tests {
         assert_eq!(
             args.caa_endpoint, "http://127.0.0.1:9/ws",
             "an explicit --caa-endpoint value must reach the options unchanged"
+        );
+    }
+
+    /// A direct builtin run must resolve its auth root from the CLI's runtime
+    /// overrides, not from an override-free default under the workspace root.
+    #[cfg(feature = "media-tagger")]
+    #[test]
+    fn builtin_media_tagger_runtime_root_honors_config_overrides() {
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
+        let rt = super::MediaRuntimeStorage {
+            paths: super::RuntimePathsConfig {
+                mediapm_dir: std::path::PathBuf::from("custom-runtime"),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let expected = super::resolve_effective_paths_for_root(dir.path(), &rt).runtime_root;
+        assert_eq!(
+            super::builtin_media_tagger_runtime_root(dir.path(), &rt),
+            expected,
+            "the direct builtin path must use effective paths, not an override-free root",
+        );
+        assert_eq!(
+            expected,
+            dir.path().join("custom-runtime"),
+            "the CLI mediapm_dir override must move the resolved runtime root",
         );
     }
 
