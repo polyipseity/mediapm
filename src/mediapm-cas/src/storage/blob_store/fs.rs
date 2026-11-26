@@ -1097,12 +1097,21 @@ mod tests {
         let delta_path = hash_to_delta_path(dir.path(), &target_hash);
         fs::create_dir_all(delta_path.parent().unwrap()).await.unwrap();
         fs::write(&delta_path, &v1).await.unwrap();
-        let stale_mtime = fs::metadata(&delta_path).await.unwrap().modified().ok();
+        let stale_instant = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&delta_path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(stale_instant))
+            .unwrap();
 
         let _raw = store.read_delta(&target_hash).await.unwrap();
 
         let fresh_mtime = store.materialized_mtime(&target_hash, BlobForm::Delta).await;
-        assert_ne!(fresh_mtime, stale_mtime, "rewrite should update the delta file mtime");
+        assert!(
+            fresh_mtime.is_some_and(|mtime| mtime > stale_instant),
+            "rewrite should record an mtime newer than the stale fixture instant, got {fresh_mtime:?}"
+        );
         assert!(
             !store.verify_evaluator.should_verify(&target_hash, fresh_mtime),
             "legacy rewrite must record the fresh mtime"
