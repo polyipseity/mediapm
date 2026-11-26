@@ -448,15 +448,14 @@ async fn an_archive_payload_is_unpacked_once() {
             run_step(&fixture, tool, step_id, step_id).await.expect("the step runs");
         let staged = sandbox.join(script_key());
         let provisioned = fixture.payload_root.join(script_key());
-        let marker = b"hardlink identity marker";
-        std::fs::write(&staged, marker).expect("the staged payload is writable");
-        assert_eq!(
-            std::fs::read(&provisioned).expect("the provisioned payload is readable"),
-            marker,
-            "step {step_id} has to link the unpacked payload rather than extract it again, so a \
-             write through the staged path has to be visible through the provisioned one",
+        // File identity is checked without writing through the link: overwriting
+        // an executable after macOS has run it invalidates the kernel's
+        // code-signature trust, and the next launch is killed with SIGKILL.
+        assert!(
+            same_file::is_same_file(&staged, &provisioned).expect("both payload paths exist"),
+            "step {step_id} has to link the unpacked payload rather than extract it again, so \
+             the staged and provisioned tools must be one file",
         );
-        std::fs::write(&staged, &stub_bytes).expect("the payload is restored");
         assert_eq!(written_output(&sandbox), ARGUMENT.as_bytes());
     }
 

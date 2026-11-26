@@ -72,6 +72,9 @@ zip = { workspace = true }
 [dev-dependencies]
 mediapm-test-support = { path = "../mediapm-test-support" }
 proptest.workspace = true
+# Hardlink identity is asserted without writing to a live executable: macOS
+# kills a previously executed binary whose bytes were overwritten in place.
+same-file.workspace = true
 # Paused-time tests: `#[tokio::test(start_paused = true)]` plus `tokio::time::advance`
 # drive the background prune interval without waiting a real tick.
 tokio = { workspace = true, features = ["test-util"] }
