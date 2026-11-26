@@ -4369,6 +4369,48 @@ mod tests {
         );
     }
 
+    /// The offline route deselects every login-only field explicitly, so a
+    /// gate run never needs MusicBrainz credentials.
+    #[test]
+    fn offline_route_deselects_login_only_fields() -> super::ExampleResult<()> {
+        let isolated = mediapm::example_isolation::IsolatedExampleRoots::with_cache();
+        let workspace_root = isolated.output_root_path();
+        super::configure_document_for_online_demo(workspace_root, Some("http://127.0.0.1:1"))?;
+
+        let document = super::load_mediapm_document(&workspace_root.join("mediapm.ncl"))?;
+        let source =
+            document.media.get(super::DEMO_MEDIA_ID).expect("the demo configures its own media id");
+        let step = source
+            .steps
+            .iter()
+            .find(|step| step.tool == super::MediaStepTool::MediaTagger)
+            .expect("the demo configures a media-tagger step");
+
+        for name in [
+            "include_user_collections",
+            "include_user_genres",
+            "include_user_ratings",
+            "include_user_tags",
+        ] {
+            assert!(
+                matches!(
+                    step.options.get(name),
+                    Some(super::TransformInputValue::String(value)) if value == "false"
+                ),
+                "{name} must be an explicit false in the offline route: {:?}",
+                step.options.get(name),
+            );
+        }
+        assert!(
+            matches!(
+                step.options.get("musicbrainz_endpoint"),
+                Some(super::TransformInputValue::String(value)) if value == "http://127.0.0.1:1"
+            ),
+            "the offline route must pin the mocked MusicBrainz endpoint",
+        );
+        Ok(())
+    }
+
     /// The online demo writes inherited env vars for every platform so a
     /// configured document can be synced from any host.
     #[test]
