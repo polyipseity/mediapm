@@ -538,9 +538,7 @@ async fn main_cli() -> anyhow::Result<()> {
                 let root = &cli.root;
                 let paths = resolve_effective_paths_for_root(root, &rt);
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
-                // The helper is the one place the direct route and its unit
-                // test resolve the tagger's auth root from the CLI overrides.
-                let runtime_root = builtin_media_tagger_runtime_root(root, &rt);
+                let runtime_root = builtin_media_tagger_runtime_root(&paths);
                 run_builtin_media_tagger(args, runtime_root).await
             }
         },
@@ -735,17 +733,12 @@ fn default_yt_dlp_steps(
     ]
 }
 
-/// Resolves the runtime root a direct builtin invocation uses for auth state.
-///
-/// The CLI and its unit test share this resolver call so an override such as
-/// `--mediapm-dir` moves the auth root on the direct route too.
+/// Extracts the runtime root a direct builtin invocation uses for auth state
+/// from paths the caller has already resolved.
 #[cfg(all(feature = "cli", feature = "media-tagger"))]
 #[must_use]
-fn builtin_media_tagger_runtime_root(
-    root: &std::path::Path,
-    rt: &MediaRuntimeStorage,
-) -> std::path::PathBuf {
-    resolve_effective_paths_for_root(root, rt).runtime_root
+fn builtin_media_tagger_runtime_root(paths: &MediaPmPaths) -> PathBuf {
+    paths.runtime_root.clone()
 }
 
 /// Executes builtin media-tagger command invocation via `run_internal_media_tagger`.
@@ -1338,8 +1331,8 @@ mod tests {
         );
     }
 
-    /// A direct builtin run must resolve its auth root from the CLI's runtime
-    /// overrides, not from an override-free default under the workspace root.
+    /// A direct builtin run must reuse its already-resolved effective paths
+    /// for auth state, not fall back to an override-free workspace root.
     #[cfg(feature = "media-tagger")]
     #[test]
     fn builtin_media_tagger_runtime_root_honors_config_overrides() {
@@ -1351,14 +1344,14 @@ mod tests {
             },
             ..Default::default()
         };
-        let expected = super::resolve_effective_paths_for_root(dir.path(), &rt).runtime_root;
+        let paths = super::resolve_effective_paths_for_root(dir.path(), &rt);
         assert_eq!(
-            super::builtin_media_tagger_runtime_root(dir.path(), &rt),
-            expected,
-            "the direct builtin path must use effective paths, not an override-free root",
+            super::builtin_media_tagger_runtime_root(&paths),
+            paths.runtime_root,
+            "the direct builtin path must reuse the resolved effective paths",
         );
         assert_eq!(
-            expected,
+            paths.runtime_root,
             dir.path().join("custom-runtime"),
             "the CLI mediapm_dir override must move the resolved runtime root",
         );
