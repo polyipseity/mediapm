@@ -395,19 +395,12 @@ async fn a_hard_linked_payload_shares_the_payload_inode() {
         run_step(&fixture, tool, "hard-link-step", "hard-link").await.expect("the step runs");
     let staged = sandbox.join(script_key());
     let provisioned = fixture.payload_root.join(script_key());
-    let marker = b"hardlink identity marker";
-    std::fs::write(&staged, marker).expect("the staged payload is writable");
-    assert_eq!(
-        std::fs::read(&provisioned).expect("the provisioned payload is readable"),
-        marker,
-        "a hard-linked payload is one file under two names, so a write through the staged path \
-         has to be visible through the provisioned one",
+    // Identity is read from the filesystem, not from a write through the link:
+    // overwriting a provisioned executable invalidates its macOS code signature.
+    assert!(
+        same_file::is_same_file(&staged, &provisioned).expect("both payload paths exist"),
+        "a hard-linked payload is one file under two names",
     );
-    std::fs::write(
-        &staged,
-        std::fs::read(mediapm_test_support::stub_tool_path()).expect("the stub is readable"),
-    )
-    .expect("the payload is restored");
     assert_eq!(written_output(&sandbox), ARGUMENT.as_bytes());
 }
 
@@ -497,15 +490,11 @@ async fn payload_staging_matrix() {
             }
             PayloadStaging::HardLink => {
                 let provisioned = fixture.payload_root.join(script_key());
-                let marker = b"hardlink identity marker";
-                std::fs::write(&staged, marker).expect("the staged payload is writable");
-                assert_eq!(
-                    std::fs::read(&provisioned).expect("the provisioned payload is readable"),
-                    marker,
-                    "hard_link shares the provisioned file, so a write through the staged path \
-                     has to be visible through the provisioned one",
+                assert!(
+                    same_file::is_same_file(&staged, &provisioned)
+                        .expect("both payload paths exist"),
+                    "hard_link shares the provisioned file",
                 );
-                std::fs::write(&staged, &stub_bytes).expect("the payload is restored");
             }
             PayloadStaging::Copy => {
                 assert_eq!(
@@ -514,13 +503,10 @@ async fn payload_staging_matrix() {
                     "copy writes the content map into the sandbox",
                 );
                 let provisioned = fixture.payload_root.join(script_key());
-                let marker = b"copy independence marker";
-                std::fs::write(&staged, marker).expect("the staged copy is writable");
-                assert_ne!(
-                    std::fs::read(&provisioned).expect("the provisioned payload is readable"),
-                    marker,
-                    "copy must not share the provisioned file, so a write through the staged \
-                     path must not reach the provisioned one",
+                assert!(
+                    !same_file::is_same_file(&staged, &provisioned)
+                        .expect("both payload paths exist"),
+                    "copy must not share the provisioned file",
                 );
             }
         }
@@ -573,20 +559,11 @@ async fn a_deps_prefixed_payload_stages_under_every_strategy() {
             ),
             PayloadStaging::HardLink => {
                 let provisioned = fixture.payload_root.join(companion_key());
-                let marker = b"hardlink identity marker";
-                std::fs::write(&staged, marker).expect("the staged payload is writable");
-                assert_eq!(
-                    std::fs::read(&provisioned).expect("the provisioned payload is readable"),
-                    marker,
-                    "a hard-linked payload is one file under two names, so a write through the \
-                     staged path has to be visible through the provisioned one",
+                assert!(
+                    same_file::is_same_file(&staged, &provisioned)
+                        .expect("both payload paths exist"),
+                    "a hard-linked payload is one file under two names",
                 );
-                std::fs::write(
-                    &staged,
-                    std::fs::read(mediapm_test_support::stub_tool_path())
-                        .expect("the stub is readable"),
-                )
-                .expect("the payload is restored");
             }
             PayloadStaging::Copy => {
                 let stub = std::fs::read(mediapm_test_support::stub_tool_path())
@@ -597,13 +574,10 @@ async fn a_deps_prefixed_payload_stages_under_every_strategy() {
                     "copy writes the companion into the sandbox",
                 );
                 let provisioned = fixture.payload_root.join(companion_key());
-                let marker = b"copy independence marker";
-                std::fs::write(&staged, marker).expect("the staged copy is writable");
-                assert_ne!(
-                    std::fs::read(&provisioned).expect("the provisioned payload is readable"),
-                    marker,
-                    "a copied payload is an independent file, so a write through the staged path \
-                     must not reach the provisioned one",
+                assert!(
+                    !same_file::is_same_file(&staged, &provisioned)
+                        .expect("both payload paths exist"),
+                    "copy must not share the provisioned file",
                 );
             }
         }
