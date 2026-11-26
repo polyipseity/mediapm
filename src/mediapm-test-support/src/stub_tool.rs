@@ -867,11 +867,12 @@ mod tests {
 
     /// A concurrent compile waits for the lock and reuses the winner's stub.
     ///
-    /// The user-level guarantee: two concurrent compiles that find no usable
-    /// fallback must not race the same artifact. Holding the compile lock makes
-    /// the next compile block; while it is held the winner's artifact can appear,
-    /// and releasing the lock lets the blocked compile re-check `compiled_from` and
-    /// return the correct target without recompiling or renaming onto it.
+    /// The user-level guarantee: two threads in one process that compile
+    /// concurrently and find no usable fallback must not race the same artifact.
+    /// Holding the compile lock makes the next compile block; while it is held the
+    /// winner's artifact can appear, and releasing the lock lets the blocked
+    /// compile re-check `compiled_from` and return the correct target without
+    /// recompiling or renaming onto it.
     #[test]
     fn a_compile_waits_for_the_lock_and_reuses_the_correct_target() {
         let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
@@ -889,11 +890,16 @@ mod tests {
         lock_file.lock().expect("the compile lock must be lockable");
 
         let compile_dir = dir.path().to_path_buf();
-        let worker = std::thread::spawn(move || compile_stub_into(&compile_dir));
-        std::thread::sleep(Duration::from_millis(250));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let worker_barrier = std::sync::Arc::clone(&barrier);
+        let worker = std::thread::spawn(move || {
+            worker_barrier.wait();
+            compile_stub_into(&compile_dir)
+        });
+        barrier.wait();
         assert!(
             !worker.is_finished(),
-            "compile_stub_into must wait while another process holds the compile lock",
+            "compile_stub_into must wait while the main thread holds the compile lock",
         );
 
         // While holding the lock, place a correct stub at the target so the
