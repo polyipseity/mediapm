@@ -345,13 +345,16 @@ async fn the_mount_provisions_a_tool_whose_payload_executable_is_the_stub() {
     );
 
     let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
-    let provisioned = dir.path().join(format!("yt-dlp{}", std::env::consts::EXE_SUFFIX));
-    assert!(
-        provisioned
-            .file_name()
-            .expect("provisioned path has a file name")
-            .to_string_lossy()
-            .ends_with(std::env::consts::EXE_SUFFIX),
+    let expected_suffix = if cfg!(windows) { ".exe" } else { "" };
+    assert_eq!(
+        std::env::consts::EXE_SUFFIX,
+        expected_suffix,
+        "the host executable suffix must match the platform the stub is compiled for",
+    );
+    let provisioned = dir.path().join(format!("yt-dlp{expected_suffix}"));
+    assert_eq!(
+        provisioned.file_name().expect("provisioned path has a file name").to_string_lossy(),
+        format!("yt-dlp{expected_suffix}"),
         "the provisioned executable name must carry the host EXE_SUFFIX",
     );
     std::fs::write(&provisioned, &payload).expect("write the provisioned payload");
