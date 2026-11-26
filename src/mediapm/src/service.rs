@@ -13,9 +13,7 @@ use mediapm_cas::{CasApi, CasMaintenanceApi, ConstraintApi, FileSystemCas, InMem
 use mediapm_conductor::cache::{Cache, CacheDomainConfig, ENTRY_TTL_SECONDS};
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
 use mediapm_conductor::provision::ProvisionedTool;
-use mediapm_conductor::runtime_env::{
-    ensure_runtime_env_files, extend_runtime_gitignore, write_env_example,
-};
+use mediapm_conductor::runtime_env::{ensure_runtime_env_files, extend_runtime_gitignore};
 use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 use mediapm_conductor::{Conductor, RuntimeStoragePaths, StepRef};
 use url::Url;
@@ -77,9 +75,55 @@ fn sync_progress_terminal(overrides: SyncProgressOverrides, no_progress: bool) -
 }
 
 /// Mediapm-specific entries appended to the conductor-managed `.gitignore`
-/// at service construction time. Keeps generated and machine-managed files
-/// out of version control.
-const MEDIAPM_EXTRA_GITIGNORE: &str = concat!("/cache/\n", "/tools/\n", "/.env.example\n");
+/// at service construction time. Keeps generated, machine-managed, and
+/// local credential files out of version control.
+const MEDIAPM_EXTRA_GITIGNORE: &str =
+    concat!("/cache/\n", "/tools/\n", "/.env.example\n", "/auth/\n");
+
+/// Reference `.env.example` content for a mediapm runtime root.
+///
+/// Names and doc comments only — never values. The file is machine-written
+/// on runtime init/refresh so operators have a copyable template for the
+/// credential and upstream env vars mediapm reads.
+const MEDIAPM_DOTENV_EXAMPLE_CONTENT: &str = concat!(
+    "# AcoustID API key — https://acoustid.org/api-key\n",
+    "ACOUSTID_API_KEY=\n",
+    "\n",
+    "# MusicBrainz OAuth — register at https://metabrainz.org/profile/applications\n",
+    "MUSICBRAINZ_OAUTH_CLIENT_ID=\n",
+    "MUSICBRAINZ_OAUTH_CLIENT_SECRET=\n",
+);
+
+/// Writes the mediapm reference `.env.example` into the runtime root.
+///
+/// The file contains names and doc comments only, never secret values. The
+/// write is change-detected so an unchanged refresh leaves the file alone.
+/// Mirroring [`mediapm_conductor::runtime_env::extend_runtime_gitignore`]'s
+/// idempotency spirit, repeated calls are deterministic.
+fn ensure_mediapm_dotenv_example(runtime_root: &std::path::Path) -> Result<(), MediaPmError> {
+    let example_path = runtime_root.join(".env.example");
+    match std::fs::read(&example_path) {
+        Ok(existing) if existing == MEDIAPM_DOTENV_EXAMPLE_CONTENT.as_bytes() => return Ok(()),
+        Ok(_) => {}
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(MediaPmError::Io {
+                operation: "reading mediapm runtime .env.example".to_string(),
+                path: example_path.clone(),
+                source,
+            });
+        }
+    }
+    mediapm_utils::fs::write_bytes_atomically(
+        &example_path,
+        MEDIAPM_DOTENV_EXAMPLE_CONTENT.as_bytes(),
+    )
+    .map_err(|source| MediaPmError::Io {
+        operation: "writing mediapm runtime .env.example".to_string(),
+        path: example_path,
+        source,
+    })
+}
 
 /// Resolves the workspace CAS store used for tool payload import and materialization.
 pub(crate) trait WorkspaceProvisioningCas:
@@ -950,6 +994,8 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             &crate::env_registry::composed_env_registry(),
         )
         .map_err(MediaPmError::Conductor)?;
+        extend_runtime_gitignore(&effective_paths.runtime_root, MEDIAPM_EXTRA_GITIGNORE)?;
+        ensure_mediapm_dotenv_example(&effective_paths.runtime_root)?;
 
         // Export the contract sources this document is validated against.
         export_config_contracts(
@@ -1210,10 +1256,7 @@ impl MediaPmService<FileSystemCas> {
             source: e,
         })?;
         extend_runtime_gitignore(&effective_paths.runtime_root, MEDIAPM_EXTRA_GITIGNORE)?;
-        write_env_example(
-            &effective_paths.runtime_root,
-            &crate::env_registry::composed_env_registry(),
-        )?;
+        ensure_mediapm_dotenv_example(&effective_paths.runtime_root)?;
 
         // Bootstrap the mediapm document so a fresh workspace has a default
         // `mediapm.ncl` on disk. Reconstructed workspaces keep their existing
@@ -1826,5 +1869,99 @@ mod tests {
                 .expect("fetched tool sync check"),
             "a fetched tool whose record has an empty content map still needs a sync"
         );
+    }
+
+    /// The mediapm .env.example is a copyable template: names and doc
+    /// comments only, never values. It must name the credentials mediapm
+    /// reads and the doc lines D6 requires.
+    #[test]
+    fn ensure_mediapm_dotenv_example_writes_names_and_doc_lines_only() {
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
+        ensure_mediapm_dotenv_example(dir.path()).expect("write .env.example");
+
+        let content =
+            std::fs::read_to_string(dir.path().join(".env.example")).expect("read .env.example");
+        for expected in [
+            "# AcoustID API key — https://acoustid.org/api-key",
+            "ACOUSTID_API_KEY=",
+            "# MusicBrainz OAuth — register at https://metabrainz.org/profile/applications",
+            "MUSICBRAINZ_OAUTH_CLIENT_ID=",
+            "MUSICBRAINZ_OAUTH_CLIENT_SECRET=",
+        ] {
+            assert!(
+                content.contains(expected),
+                "mediapm .env.example must contain {expected:?}\ncontent:\n{content}"
+            );
+        }
+
+        for line in content.lines() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((name, value)) = line.split_once('=') else {
+                panic!("non-comment line must be a KEY= assignment: {line:?}\ncontent:\n{content}");
+            };
+            assert!(
+                !name.is_empty(),
+                "env example assignment must name a key: {line:?}\ncontent:\n{content}"
+            );
+            assert!(
+                value.is_empty(),
+                "env example must never write secret values: {line:?}\ncontent:\n{content}"
+            );
+        }
+    }
+
+    /// A refresh must not churn an unchanged .env.example. The write is
+    /// change-detected, so identical bytes leave the file's mtime alone.
+    #[test]
+    fn ensure_mediapm_dotenv_example_is_change_detected() {
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
+        ensure_mediapm_dotenv_example(dir.path()).expect("first write");
+        let path = dir.path().join(".env.example");
+        let before = std::fs::metadata(&path)
+            .expect("stat after first write")
+            .modified()
+            .expect("mtime after first write");
+
+        ensure_mediapm_dotenv_example(dir.path()).expect("second write");
+
+        let after = std::fs::metadata(&path)
+            .expect("stat after second write")
+            .modified()
+            .expect("mtime after second write");
+        assert_eq!(after, before, "identical .env.example bytes must not be rewritten");
+    }
+
+    /// The runtime .gitignore must keep local credentials and generated env
+    /// files out of version control, including the auth token directory.
+    #[test]
+    fn mediapm_runtime_gitignore_covers_env_and_auth_paths() {
+        for required in ["/.env", "/.env.generated", "/.env.example", "/auth/"] {
+            assert!(
+                MEDIAPM_EXTRA_GITIGNORE.contains(required)
+                    || mediapm_conductor::runtime_env::CONDUCTOR_GITIGNORE_CONTENT
+                        .contains(required),
+                "runtime gitignore must contain {required}"
+            );
+        }
+
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
+        let runtime_root = dir.path().join(".mediapm");
+        std::fs::create_dir_all(&runtime_root).expect("create runtime root");
+        mediapm_conductor::runtime_env::extend_runtime_gitignore(
+            &runtime_root,
+            MEDIAPM_EXTRA_GITIGNORE,
+        )
+        .expect("extend runtime gitignore");
+
+        let content =
+            std::fs::read_to_string(runtime_root.join(".gitignore")).expect("read .gitignore");
+        for required in ["/.env", "/.env.generated", "/.env.example", "/auth/"] {
+            assert!(
+                content.contains(required),
+                "written runtime .gitignore must contain {required}\ncontent:\n{content}"
+            );
+        }
     }
 }
