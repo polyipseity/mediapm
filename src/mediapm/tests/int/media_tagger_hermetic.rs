@@ -821,6 +821,8 @@ async fn wanted_user_data_dropped_when_musicbrainz_login_features_disabled() {
 
 #[tokio::test]
 async fn deselected_user_data_is_silent_without_login() {
+    const POSITIVE_CONTROL: &str = "deselected-silence positive control: log capture is live";
+
     let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
@@ -830,6 +832,7 @@ async fn deselected_user_data_is_silent_without_login() {
         })
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
+    tracing::info!("{}", POSITIVE_CONTROL);
 
     let workspace = mediapm_utils::temp::output_dir().expect("workspace");
     let musicbrainz = wiremock::MockServer::start().await;
@@ -852,11 +855,17 @@ async fn deselected_user_data_is_silent_without_login() {
     let captured = String::from_utf8(logs.lock().expect("log buffer").clone())
         .expect("captured logs are UTF-8");
     assert!(
+        captured.contains(POSITIVE_CONTROL),
+        "positive control must be captured before checking silence: {captured}"
+    );
+    assert!(
         !captured.contains("dropped ") && !captured.contains("logged-in features"),
         "a caller-deselected field must not produce a dropped notice: {captured}"
     );
 
-    for request in musicbrainz.received_requests().await.expect("requests") {
+    let requests = musicbrainz.received_requests().await.expect("requests");
+    assert!(!requests.is_empty(), "musicbrainz should be queried");
+    for request in requests {
         let url = request.url.to_string();
         assert!(
             !url.contains("user-genres")
