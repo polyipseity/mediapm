@@ -1237,10 +1237,6 @@ managed tool content root for sd
           kind = "string",
           required = false,
         },
-        strict_identification = {
-          kind = "string",
-          required = false,
-        },
         write_all_images = {
           kind = "string",
           required = false,

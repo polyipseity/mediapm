@@ -446,9 +446,6 @@ pub struct InternalMediaTaggerArgs {
     /// Cache expiry in seconds.
     #[arg(long, default_value_t = DEFAULT_CACHE_EXPIRY_SECONDS as u64)]
     pub cache_expiry_seconds: u64,
-    /// Enable strict identification.
-    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
-    pub strict_identification: bool,
     /// Write all tags.
     #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
     pub write_all_tags: bool,

@@ -8,13 +8,11 @@
 //! 4. map metadata into `FFmetadata` key/value pairs,
 //! 5. persist one `FFmetadata` document for downstream apply stages.
 //!
-//! Failure policy is controlled by `strict_identification`: when enabled,
-//! unresolved identity or metadata-fetch failures abort the step; when disabled,
-//! an empty `FFmetadata` document is written so downstream apply stages may
-//! continue deterministically. Cover-art index lookups and image downloads
-//! are unconditional hard failures regardless of `strict_identification` —
-//! a failed image fetch is a missing asset, not missing metadata — with `404`
-//! as the sole exception: the archive's "no art exists" answer.
+//! Unresolved identity or metadata-fetch failures abort the step; there is no
+//! degrade-to-fallback-map success path. Cover-art index lookups and image
+//! downloads are unconditional hard failures — a failed image fetch is a missing
+//! asset, not missing metadata — with `404` as the sole exception: the archive's
+//! "no art exists" answer.
 //! AcoustID lookup itself is only attempted when no recording MBID override is
 //! supplied. Missing/empty lookup credentials are a hard error on that
 //! autodetection path; when credentials are provided, lookup/authentication
@@ -82,7 +80,6 @@ mod tests {
                 caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
                 cache_dir: None,
                 cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
-                strict_identification: false,
                 write_all_tags: true,
                 write_all_images: true,
                 save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
@@ -146,7 +143,6 @@ mod tests {
                 caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
                 cache_dir: None,
                 cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
-                strict_identification: true,
                 write_all_tags: true,
                 write_all_images: true,
                 save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
@@ -204,7 +200,6 @@ mod tests {
                 caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
                 cache_dir: None,
                 cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
-                strict_identification: false,
                 write_all_tags: true,
                 write_all_images: true,
                 save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
@@ -260,7 +255,6 @@ mod tests {
                 caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
                 cache_dir: None,
                 cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
-                strict_identification: true,
                 write_all_tags: true,
                 write_all_images: true,
                 save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
@@ -309,7 +303,6 @@ mod tests {
                 caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
                 cache_dir: None,
                 cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
-                strict_identification: false,
                 write_all_tags: true,
                 write_all_images: true,
                 save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
@@ -840,8 +833,6 @@ pub struct InternalMediaTaggerOptions {
     ///
     /// Negative values disable cache expiry and keep rows indefinitely.
     pub cache_expiry_seconds: i64,
-    /// Whether unresolved identity should fail the invocation.
-    pub strict_identification: bool,
     /// Whether to emit extended `Picard`-compatible tags from available payloads.
     pub write_all_tags: bool,
     /// Whether to add `Picard`-compatible `coverart_*` tags to metadata.
@@ -954,7 +945,7 @@ impl MbidOverride {
 ///
 /// # Errors
 ///
-/// Returns an error when metadata identification/fetching fails in strict mode,
+/// Returns an error when metadata identification or fetching fails,
 /// when fallback metadata output cannot be written, or when upstream tool/API
 /// calls fail in a way that prevents deterministic output generation.
 pub async fn run_internal_media_tagger(
@@ -1102,19 +1093,9 @@ async fn run_internal_media_tagger_impl(
     }
 
     let Some(recording_mbid) = detected_recording_mbid else {
-        if options.strict_identification {
-            bail!(
-                "could not resolve recording MBID (set --recording-mbid or provide AcoustID API key via --acoustid-api-key/{ACOUSTID_API_KEY_ENV})"
-            );
-        }
-
-        let fallback_map = if options.preserve_existing_tags {
-            fallback_ffmetadata_map(resolved_input.as_deref(), env_pairs).await
-        } else {
-            BTreeMap::new()
-        };
-        write_ffmetadata_document(&options.output_path, &fallback_map)?;
-        return Ok(());
+        bail!(
+            "could not resolve recording MBID (set --recording-mbid or provide AcoustID API key via --acoustid-api-key/{ACOUSTID_API_KEY_ENV})"
+        );
     };
 
     let metadata_payload = fetch_musicbrainz_payloads(
@@ -1139,16 +1120,7 @@ async fn run_internal_media_tagger_impl(
     let metadata_payload = match metadata_payload {
         Ok(payload) => payload,
         Err(error) => {
-            if options.strict_identification {
-                return Err(error);
-            }
-            let fallback_map = if options.preserve_existing_tags {
-                fallback_ffmetadata_map(resolved_input.as_deref(), env_pairs).await
-            } else {
-                BTreeMap::new()
-            };
-            write_ffmetadata_document(&options.output_path, &fallback_map)?;
-            return Ok(());
+            return Err(error);
         }
     };
 
@@ -1192,16 +1164,7 @@ async fn run_internal_media_tagger_impl(
     }
 
     if ffmetadata_map.is_empty() {
-        if options.strict_identification {
-            bail!("resolved metadata payload did not produce any FFmetadata entries");
-        }
-        let fallback_map = if options.preserve_existing_tags {
-            fallback_ffmetadata_map(resolved_input.as_deref(), env_pairs).await
-        } else {
-            BTreeMap::new()
-        };
-        write_ffmetadata_document(&options.output_path, &fallback_map)?;
-        return Ok(());
+        bail!("resolved metadata payload did not produce any FFmetadata entries");
     }
 
     persist_cover_art_slot_artifacts(

@@ -536,7 +536,6 @@ pub(crate) fn build_media_tagger_spec() -> ToolDefinition {
         "release_ars",
         "release_mbid",
         "save_images_to_tags",
-        "strict_identification",
         "write_all_images",
         "write_all_tags",
     ];

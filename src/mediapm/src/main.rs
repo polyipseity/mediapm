@@ -684,7 +684,6 @@ async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Resu
             caa_endpoint: args.caa_endpoint,
             cache_dir: args.cache_dir.map(std::path::PathBuf::from),
             cache_expiry_seconds: args.cache_expiry_seconds as i64,
-            strict_identification: args.strict_identification,
             write_all_tags: args.write_all_tags,
             write_all_images: args.write_all_images,
             save_images_to_tags: args.save_images_to_tags,
@@ -1177,7 +1176,6 @@ mod tests {
     fn media_tagger_boolean_option_defaults_are_preserved() {
         let args = parse_media_tagger_args(&[]).expect("baseline media-tagger args must parse");
         assert!(args.write_all_images, "absent --write-all-images must default to true");
-        assert!(args.strict_identification, "absent --strict-identification must default to true");
         assert!(args.write_all_tags, "absent --write-all-tags must default to true");
         assert!(args.save_images_to_tags, "absent --save-images-to-tags must default to true");
         assert!(args.enable_tag_saving, "absent --enable-tag-saving must default to true");

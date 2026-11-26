@@ -1630,11 +1630,7 @@ mod tests {
                     MediaStepTool::MediaTagger,
                     vec!["default"],
                     vec![("tagged", generic_output_variant("output_content"))],
-                    vec![
-                        ("strict_identification", "false"),
-                        ("ffmpeg_version", "global"),
-                        ("output_container", "mp4"),
-                    ],
+                    vec![("ffmpeg_version", "global"), ("output_container", "mp4")],
                 )],
             ),
         );
@@ -1654,7 +1650,6 @@ mod tests {
         assert_eq!(metadata_output.save, SaveMode::Full);
         assert_eq!(metadata_output.capture.to_token(), "file:metadata/output.ffmeta");
         assert_eq!(metadata.inputs.get("ffmpeg_bin").map(String::as_str), Some("ffmpeg"));
-        assert_eq!(metadata.inputs.get("strict_identification").map(String::as_str), Some("false"));
         assert!(!metadata.inputs.contains_key("ffmpeg_version"));
         assert!(!metadata.inputs.contains_key("output_container"));
 

@@ -61,21 +61,19 @@ const SANDBOX_INPUT_FILE: &str = "inputs/input.media";
 
 /// A library default the tagger's own definition spells with a literal.
 ///
-/// `strict_identification`, `write_all_tags` and `write_all_images` are the
-/// three options the builtin reads whose default has no constant of its own, so
-/// the value is stated here once instead of at each read.
-const DEFAULT_STRICT_IDENTIFICATION: bool = true;
-/// See [`DEFAULT_STRICT_IDENTIFICATION`].
+/// `write_all_tags` and `write_all_images` are the options the builtin reads
+/// whose default has no constant of its own, so the value is stated here once
+/// instead of at each read.
 const DEFAULT_WRITE_ALL_TAGS: bool = true;
-/// See [`DEFAULT_STRICT_IDENTIFICATION`].
+/// See [`DEFAULT_WRITE_ALL_TAGS`].
 const DEFAULT_WRITE_ALL_IMAGES: bool = true;
-/// See [`DEFAULT_STRICT_IDENTIFICATION`].
+/// See [`DEFAULT_WRITE_ALL_TAGS`].
 const DEFAULT_INCLUDE_USER_GENRES: bool = true;
-/// See [`DEFAULT_STRICT_IDENTIFICATION`].
+/// See [`DEFAULT_WRITE_ALL_TAGS`].
 const DEFAULT_INCLUDE_USER_RATINGS: bool = true;
-/// See [`DEFAULT_STRICT_IDENTIFICATION`].
+/// See [`DEFAULT_WRITE_ALL_TAGS`].
 const DEFAULT_INCLUDE_USER_COLLECTIONS: bool = true;
-/// See [`DEFAULT_STRICT_IDENTIFICATION`].
+/// See [`DEFAULT_WRITE_ALL_TAGS`].
 const DEFAULT_INCLUDE_USER_TAGS: bool = true;
 
 /// Step options the retired command mapping consumed and this runner does not.
@@ -221,7 +219,6 @@ fn options_from_args(
         caa_endpoint: text(args, "caa_endpoint", DEFAULT_CAA_ENDPOINT),
         cache_dir: optional_text(args, "cache_dir").map(PathBuf::from),
         cache_expiry_seconds: number(args, "cache_expiry_seconds", DEFAULT_CACHE_EXPIRY_SECONDS)?,
-        strict_identification: flag(args, "strict_identification", DEFAULT_STRICT_IDENTIFICATION)?,
         write_all_tags: flag(args, "write_all_tags", DEFAULT_WRITE_ALL_TAGS)?,
         write_all_images: flag(args, "write_all_images", DEFAULT_WRITE_ALL_IMAGES)?,
         save_images_to_tags: flag(args, "save_images_to_tags", DEFAULT_SAVE_IMAGES_TO_TAGS)?,
@@ -282,11 +279,16 @@ fn options_from_args(
 /// # Errors
 ///
 /// Returns [`ConductorError::Workflow`] naming the option and the value when
-/// the step binds one of [`RETIRED_COMMAND_OPTIONS`] or a renamed tagger option.
-/// Renamed options include their replacement and instruct the caller to migrate
-/// the document to v4; removed command-mapping options explain that no field of
-/// the host runner reads them.
+/// the step binds one of [`RETIRED_COMMAND_OPTIONS`], a renamed tagger option,
+/// or the removed `strict_identification` option. Renamed options include their
+/// replacement and instruct the caller to migrate the document to v4; removed
+/// command-mapping options explain that no field of the host runner reads them.
 fn reject_retired_command_options(args: &BTreeMap<String, String>) -> Result<(), ConductorError> {
+    if let Some(value) = args.get("strict_identification") {
+        return Err(ConductorError::Workflow(format!(
+            "media-tagger option 'strict_identification' is '{value}', but strict identification is always enforced; remove the option"
+        )));
+    }
     for key in RETIRED_COMMAND_OPTIONS {
         if let Some(value) = args.get(key) {
             return Err(ConductorError::Workflow(format!(
@@ -385,7 +387,6 @@ mod tests {
             (INPUT_CONTENT.to_string(), "staged-by-this-test".to_string()),
             ("cache_dir".to_string(), "/cache".to_string()),
             ("cache_expiry_seconds".to_string(), "120".to_string()),
-            ("strict_identification".to_string(), "false".to_string()),
             ("write_all_tags".to_string(), "false".to_string()),
             ("write_all_images".to_string(), "true".to_string()),
             ("musicbrainz_endpoint".to_string(), "http://127.0.0.1:1/ws/2".to_string()),
@@ -431,7 +432,6 @@ mod tests {
         assert_eq!(options.cache_dir.as_deref(), Some(std::path::Path::new("/cache")));
         assert_eq!(options.cache_expiry_seconds, 120);
         assert_eq!(options.cover_art_slot_count, 4);
-        assert!(!options.strict_identification, "a bound 'false' must reach the pipeline");
         assert!(!options.write_all_tags);
         assert!(options.write_all_images);
         assert!(!options.preserve_existing_tags);
@@ -462,7 +462,6 @@ mod tests {
         let options = options_from_args(&BTreeMap::new(), None, std::path::Path::new("/sandbox"))
             .expect("an empty step maps to the defaults");
 
-        assert!(options.strict_identification);
         assert!(options.write_all_tags);
         assert!(options.write_all_images);
         assert!(options.preserve_existing_tags);
@@ -558,14 +557,27 @@ mod tests {
     /// run would look successful while doing it.
     #[test]
     fn a_bound_boolean_that_is_neither_value_fails_the_step() {
-        let args = BTreeMap::from([("strict_identification".to_string(), "yes".to_string())]);
+        let args = BTreeMap::from([("write_all_tags".to_string(), "yes".to_string())]);
         let error = options_from_args(&args, None, std::path::Path::new("/sandbox"))
             .expect_err("a mistyped boolean must not be read as a value");
 
         assert!(
-            error.to_string().contains("strict_identification")
-                && error.to_string().contains("yes"),
+            error.to_string().contains("write_all_tags") && error.to_string().contains("yes"),
             "the failure must name the option and the value, got: {error}",
+        );
+    }
+
+    /// A supplied `strict_identification` option is rejected as always enforced.
+    #[test]
+    fn a_strict_identification_option_is_rejected() {
+        let args = BTreeMap::from([("strict_identification".to_string(), "false".to_string())]);
+        let error = options_from_args(&args, None, std::path::Path::new("/sandbox"))
+            .expect_err("strict_identification must be rejected");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("strict_identification") && message.contains("always enforced"),
+            "the failure must name the option and explain it is always enforced, got: {message}",
         );
     }
 

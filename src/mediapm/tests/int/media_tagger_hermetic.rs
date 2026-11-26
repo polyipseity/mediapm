@@ -53,7 +53,6 @@ fn hermetic_options(
         caa_endpoint: caa_endpoint.to_string(),
         cache_dir: Some(workspace.join("cache")),
         cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
-        strict_identification: true,
         write_all_tags: false,
         write_all_images: false,
         save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
@@ -224,9 +223,9 @@ async fn a_recording_mbid_fetches_metadata_through_the_configured_endpoint() {
 ///
 /// The ws/2 paths answer a `503` storm, so the mediapm-owned per-entity retry
 /// exhausts [`MUSICBRAINZ_FETCH_ATTEMPTS`] on the first entity fetch (the
-/// recording) and then surfaces the failure. With `strict_identification`
-/// enabled the step returns an error rather than quietly writing fallback
-/// metadata, and that error names the configured endpoint. Because the
+/// recording) and then surfaces the failure. The step returns an error rather
+/// than quietly writing fallback metadata, and that error names the configured
+/// endpoint. Because the
 /// recording never succeeds, the release entity is never fetched. The server
 /// uses a short `Retry-After` so the retry cycle stays fast; the
 /// production-shaped guard that cuts a server-supplied hour-long `Retry-After`
@@ -256,7 +255,7 @@ async fn a_musicbrainz_server_error_fails_the_step_and_names_the_endpoint() {
             .await;
     let elapsed = started.elapsed();
 
-    let error = result.expect_err("a MusicBrainz error must fail the step in strict mode");
+    let error = result.expect_err("a MusicBrainz error must fail the step");
     let rendered = format!("{error:#}");
     assert!(
         rendered.contains("MusicBrainz"),
@@ -454,7 +453,7 @@ async fn a_musicbrainz_4xx_fails_fast_without_exhausting_attempts() {
     let error =
         run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
             .await
-            .expect_err("a non-retryable 4xx must fail the step in strict mode");
+            .expect_err("a non-retryable 4xx must fail the step");
     let elapsed = started.elapsed();
 
     let rendered = format!("{error:#}");
@@ -564,7 +563,6 @@ async fn disabling_tag_saving_preserves_existing_global_tags_when_requested() {
         caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
         cache_dir: Some(workspace.path().join("cache")),
         cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
-        strict_identification: false,
         write_all_tags: false,
         write_all_images: false,
         save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
@@ -612,7 +610,6 @@ async fn disabling_tag_saving_drops_existing_global_tags_when_not_preserved() {
         caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
         cache_dir: Some(workspace.path().join("cache")),
         cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
-        strict_identification: false,
         write_all_tags: false,
         write_all_images: false,
         save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
