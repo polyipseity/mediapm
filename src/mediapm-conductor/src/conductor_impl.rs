@@ -2147,5 +2147,6 @@ mod tests {
             !state.tool_call_instances.contains_key(&v7_key),
             "old re-keyed key must be removed in the same settlement write",
         );
+        conductor.shutdown().await.expect("conductor shutdown");
     }
 }

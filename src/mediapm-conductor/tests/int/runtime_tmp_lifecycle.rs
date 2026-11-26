@@ -68,3 +68,37 @@ async fn runtime_tmp_removed_on_failed_workflow_unknown_tool() {
     );
     test.shutdown().await;
 }
+
+#[tokio::test]
+async fn default_runtime_tmp_is_removed_after_a_failed_workflow() {
+    use mediapm_conductor::api::RuntimeStoragePaths;
+    use mediapm_conductor::{Conductor, RunWorkflowOptions};
+    use std::collections::BTreeMap;
+
+    let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
+    crate::write_conductor_config(
+        dir.path(),
+        crate::doc_with_workflows(
+            BTreeMap::new(),
+            vec![crate::workflow_with_steps(
+                "default",
+                vec![crate::bare_step("s1", "no-such-tool", &[])],
+            )],
+        ),
+    );
+    let conductor =
+        Conductor::new(RuntimeStoragePaths::new(dir.path()), mediapm_cas::InMemoryCas::new());
+
+    let error = conductor
+        .run_workflow("default", RunWorkflowOptions::default())
+        .await
+        .expect_err("an unknown tool fails the workflow");
+    assert!(error.to_string().contains("no-such-tool"), "error names the tool: {error}");
+
+    conductor.shutdown().await.expect("conductor shutdown");
+    assert!(
+        !dir.path().join("tmp").exists(),
+        "the default runtime tmp root must be gone before its owner drops: {}",
+        dir.path().display(),
+    );
+}

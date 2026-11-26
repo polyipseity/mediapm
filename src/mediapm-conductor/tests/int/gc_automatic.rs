@@ -423,6 +423,7 @@ async fn an_abstaining_pass_freezes_until_the_declared_workflow_runs() {
         "once judged, a record past its TTL must be evicted"
     );
     assert!(!fixture.holds(aged_blob).await, "the evicted record's blob goes with it");
+    fixture.conductor.shutdown().await.expect("shutdown");
 }
 
 /// Bytes no declaration names are reclaimed, and the next import repairs them.
@@ -494,4 +495,5 @@ async fn staged_bytes_without_a_declaration_are_reclaimed_and_repaired() {
         fixture.holds(staged).await,
         "declared bytes must stay rooted through the pass after their declaration"
     );
+    fixture.conductor.shutdown().await.expect("shutdown");
 }
