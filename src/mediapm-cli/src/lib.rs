@@ -488,6 +488,24 @@ pub struct InternalMediaTaggerArgs {
     /// Release relationship processing.
     #[arg(long, action = clap::ArgAction::Set, default_value_t = DEFAULT_RELEASE_ARS)]
     pub release_ars: bool,
+    /// Allow `MusicBrainz` login-gated features when credentials are available.
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+    pub enable_logged_in_features_musicbrainz: bool,
+    /// Allow `AcoustID` login-gated features when credentials are available.
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+    pub enable_logged_in_features_acoustid: bool,
+    /// Include `MusicBrainz` user genres when available.
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+    pub include_user_genres: bool,
+    /// Include `MusicBrainz` user ratings when available.
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+    pub include_user_ratings: bool,
+    /// Include `MusicBrainz` user collections when available.
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+    pub include_user_collections: bool,
+    /// Include `MusicBrainz` user tags when available.
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+    pub include_user_tags: bool,
     /// Cover art slot count.
     #[arg(long, default_value_t = DEFAULT_COVER_ART_SLOT_COUNT)]
     pub cover_art_slot_count: usize,

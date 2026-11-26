@@ -17,10 +17,11 @@ use mediapm::builtins::media_tagger::{
     DEFAULT_ACOUSTID_ENDPOINT, DEFAULT_CA_PROVIDERS, DEFAULT_CAA_APPROVED_ONLY,
     DEFAULT_CAA_ENDPOINT, DEFAULT_CAA_IMAGE_SIZE, DEFAULT_CAA_IMAGE_TYPES,
     DEFAULT_CACHE_EXPIRY_SECONDS, DEFAULT_COVER_ART_SLOT_COUNT, DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
+    DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID, DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
     DEFAULT_ENABLE_TAG_SAVING, DEFAULT_PRESERVE_EXISTING_IMAGES,
     DEFAULT_PRESERVE_EXISTING_STREAM_TAGS, DEFAULT_PRESERVE_EXISTING_TAGS, DEFAULT_RELEASE_ARS,
     DEFAULT_SAVE_IMAGES_TO_TAGS, InternalMediaTaggerOptions, MUSICBRAINZ_FETCH_ATTEMPTS,
-    run_internal_media_tagger,
+    MetadataSelection, run_internal_media_tagger,
 };
 
 /// A valid recording MBID the mock server serves and the run requests.
@@ -69,6 +70,9 @@ fn hermetic_options(
         release_ars: DEFAULT_RELEASE_ARS,
         recording_mbid: Some(RECORDING_MBID.to_string()),
         release_mbid: None,
+        enable_logged_in_features_musicbrainz: DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
+        enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
+        metadata_selection: MetadataSelection::default(),
     }
 }
 
@@ -577,6 +581,9 @@ async fn disabling_tag_saving_preserves_existing_global_tags_when_requested() {
         release_ars: DEFAULT_RELEASE_ARS,
         recording_mbid: Some("none".to_string()),
         release_mbid: None,
+        enable_logged_in_features_musicbrainz: DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
+        enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
+        metadata_selection: MetadataSelection::default(),
     };
 
     run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
@@ -622,6 +629,9 @@ async fn disabling_tag_saving_drops_existing_global_tags_when_not_preserved() {
         release_ars: DEFAULT_RELEASE_ARS,
         recording_mbid: Some("none".to_string()),
         release_mbid: None,
+        enable_logged_in_features_musicbrainz: DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
+        enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
+        metadata_selection: MetadataSelection::default(),
     };
 
     run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())

@@ -701,6 +701,14 @@ async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Resu
             cover_art_slot_count: args.cover_art_slot_count,
             recording_mbid: args.recording_mbid,
             release_mbid: args.release_mbid,
+            enable_logged_in_features_musicbrainz: args.enable_logged_in_features_musicbrainz,
+            enable_logged_in_features_acoustid: args.enable_logged_in_features_acoustid,
+            metadata_selection: mediapm::builtins::media_tagger::MetadataSelection {
+                include_user_genres: args.include_user_genres,
+                include_user_ratings: args.include_user_ratings,
+                include_user_collections: args.include_user_collections,
+                include_user_tags: args.include_user_tags,
+            },
         },
         &env_pairs,
     )
@@ -1191,6 +1199,21 @@ mod tests {
             args.preserve_existing_stream_tags,
             "absent --preserve-existing-stream-tags must default to true"
         );
+        assert!(
+            args.enable_logged_in_features_musicbrainz,
+            "absent --enable-logged-in-features-musicbrainz must default to true"
+        );
+        assert!(
+            args.enable_logged_in_features_acoustid,
+            "absent --enable-logged-in-features-acoustid must default to true"
+        );
+        assert!(args.include_user_genres, "absent --include-user-genres must default to true");
+        assert!(args.include_user_ratings, "absent --include-user-ratings must default to true");
+        assert!(
+            args.include_user_collections,
+            "absent --include-user-collections must default to true"
+        );
+        assert!(args.include_user_tags, "absent --include-user-tags must default to true");
     }
 
     /// Protects the accepted CLI break: a boolean option is a value argument,

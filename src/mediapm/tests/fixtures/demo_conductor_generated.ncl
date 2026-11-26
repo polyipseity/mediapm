@@ -1165,6 +1165,14 @@ managed tool content root for sd
           kind = "string",
           required = false,
         },
+        enable_logged_in_features_acoustid = {
+          kind = "string",
+          required = false,
+        },
+        enable_logged_in_features_musicbrainz = {
+          kind = "string",
+          required = false,
+        },
         enable_tag_saving = {
           kind = "string",
           required = false,
@@ -1174,6 +1182,22 @@ managed tool content root for sd
           required = false,
         },
         ffmpeg_version = {
+          kind = "string",
+          required = false,
+        },
+        include_user_collections = {
+          kind = "string",
+          required = false,
+        },
+        include_user_genres = {
+          kind = "string",
+          required = false,
+        },
+        include_user_ratings = {
+          kind = "string",
+          required = false,
+        },
+        include_user_tags = {
           kind = "string",
           required = false,
         },

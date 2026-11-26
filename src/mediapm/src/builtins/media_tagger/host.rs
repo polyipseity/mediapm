@@ -45,9 +45,11 @@ use super::{
     DEFAULT_ACOUSTID_ENDPOINT, DEFAULT_CA_PROVIDERS, DEFAULT_CAA_APPROVED_ONLY,
     DEFAULT_CAA_ENDPOINT, DEFAULT_CAA_IMAGE_SIZE, DEFAULT_CAA_IMAGE_TYPES,
     DEFAULT_CACHE_EXPIRY_SECONDS, DEFAULT_COVER_ART_SLOT_COUNT, DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
+    DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID, DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
     DEFAULT_ENABLE_TAG_SAVING, DEFAULT_MUSICBRAINZ_ENDPOINT, DEFAULT_PRESERVE_EXISTING_IMAGES,
     DEFAULT_PRESERVE_EXISTING_STREAM_TAGS, DEFAULT_PRESERVE_EXISTING_TAGS, DEFAULT_RELEASE_ARS,
-    DEFAULT_SAVE_IMAGES_TO_TAGS, InternalMediaTaggerOptions, run_internal_media_tagger,
+    DEFAULT_SAVE_IMAGES_TO_TAGS, InternalMediaTaggerOptions, MetadataSelection,
+    run_internal_media_tagger,
 };
 
 /// The sandbox file the step's `content` input is staged at.
@@ -67,6 +69,14 @@ const DEFAULT_STRICT_IDENTIFICATION: bool = true;
 const DEFAULT_WRITE_ALL_TAGS: bool = true;
 /// See [`DEFAULT_STRICT_IDENTIFICATION`].
 const DEFAULT_WRITE_ALL_IMAGES: bool = true;
+/// See [`DEFAULT_STRICT_IDENTIFICATION`].
+const DEFAULT_INCLUDE_USER_GENRES: bool = true;
+/// See [`DEFAULT_STRICT_IDENTIFICATION`].
+const DEFAULT_INCLUDE_USER_RATINGS: bool = true;
+/// See [`DEFAULT_STRICT_IDENTIFICATION`].
+const DEFAULT_INCLUDE_USER_COLLECTIONS: bool = true;
+/// See [`DEFAULT_STRICT_IDENTIFICATION`].
+const DEFAULT_INCLUDE_USER_TAGS: bool = true;
 
 /// Step options the retired command mapping consumed and this runner does not.
 ///
@@ -244,6 +254,26 @@ fn options_from_args(
         release_ars: flag(args, "release_ars", DEFAULT_RELEASE_ARS)?,
         recording_mbid: optional_text(args, "recording_mbid"),
         release_mbid: optional_text(args, "release_mbid"),
+        enable_logged_in_features_musicbrainz: flag(
+            args,
+            "enable_logged_in_features_musicbrainz",
+            DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
+        )?,
+        enable_logged_in_features_acoustid: flag(
+            args,
+            "enable_logged_in_features_acoustid",
+            DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
+        )?,
+        metadata_selection: MetadataSelection {
+            include_user_genres: flag(args, "include_user_genres", DEFAULT_INCLUDE_USER_GENRES)?,
+            include_user_ratings: flag(args, "include_user_ratings", DEFAULT_INCLUDE_USER_RATINGS)?,
+            include_user_collections: flag(
+                args,
+                "include_user_collections",
+                DEFAULT_INCLUDE_USER_COLLECTIONS,
+            )?,
+            include_user_tags: flag(args, "include_user_tags", DEFAULT_INCLUDE_USER_TAGS)?,
+        },
     })
 }
 
@@ -361,6 +391,12 @@ mod tests {
             ("musicbrainz_endpoint".to_string(), "http://127.0.0.1:1/ws/2".to_string()),
             ("cover_art_slot_count".to_string(), "4".to_string()),
             ("recording_mbid".to_string(), "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae".to_string()),
+            ("enable_logged_in_features_musicbrainz".to_string(), "false".to_string()),
+            ("enable_logged_in_features_acoustid".to_string(), "false".to_string()),
+            ("include_user_genres".to_string(), "false".to_string()),
+            ("include_user_ratings".to_string(), "false".to_string()),
+            ("include_user_collections".to_string(), "false".to_string()),
+            ("include_user_tags".to_string(), "false".to_string()),
             // A step option the pipeline has no field for: it must be ignored,
             // not rejected.
             ("ffmpeg_bin".to_string(), "/usr/bin/ffmpeg".to_string()),
@@ -403,6 +439,18 @@ mod tests {
         assert!(!options.preserve_existing_images);
         assert_eq!(options.musicbrainz_endpoint, "http://127.0.0.1:1/ws/2");
         assert_eq!(options.recording_mbid.as_deref(), Some("8f3471b5-7e6a-48da-86a9-c1c07a0f47ae"),);
+        assert!(
+            !options.enable_logged_in_features_musicbrainz,
+            "a bound 'false' must reach enable_logged_in_features_musicbrainz"
+        );
+        assert!(
+            !options.enable_logged_in_features_acoustid,
+            "a bound 'false' must reach enable_logged_in_features_acoustid"
+        );
+        assert!(!options.metadata_selection.include_user_genres);
+        assert!(!options.metadata_selection.include_user_ratings);
+        assert!(!options.metadata_selection.include_user_collections);
+        assert!(!options.metadata_selection.include_user_tags);
     }
 
     /// An option the step does not bind gets the library default.
@@ -427,6 +475,12 @@ mod tests {
         assert_eq!(options.cover_art_slot_count, super::DEFAULT_COVER_ART_SLOT_COUNT);
         assert_eq!(options.acoustid_api_key, None);
         assert_eq!(options.recording_mbid, None);
+        assert!(options.enable_logged_in_features_musicbrainz);
+        assert!(options.enable_logged_in_features_acoustid);
+        assert!(options.metadata_selection.include_user_genres);
+        assert!(options.metadata_selection.include_user_ratings);
+        assert!(options.metadata_selection.include_user_collections);
+        assert!(options.metadata_selection.include_user_tags);
         // The assertions above compare against the same constants the readers
         // take their defaults from, so they hold even if one of those constants
         // is wrong. These are the literals: the cache expiry, the slot count and

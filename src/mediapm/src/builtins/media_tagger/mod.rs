@@ -37,6 +37,7 @@ use tokio::process::Command;
 mod acoustid;
 mod cover_art;
 mod ffmetadata;
+mod gate;
 pub(crate) mod host;
 mod musicbrainz;
 mod util;
@@ -45,7 +46,6 @@ mod util;
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::builtins::media_tagger::acoustid::require_acoustid_api_key_for_lookup;
     use crate::builtins::media_tagger::cover_art::{
         COVER_ART_PHASE_BUDGET, CacheExpiryPolicy, CoverArtArchiveImage, CoverArtArchiveResponse,
         MediaTaggerHttpCache, SelectedCoverArt, insert_musicbrainz_image_tags,
@@ -99,6 +99,10 @@ mod tests {
                 cover_art_slot_count: 8,
                 recording_mbid: None,
                 release_mbid: None,
+                enable_logged_in_features_musicbrainz:
+                    DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
+                enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
+                metadata_selection: MetadataSelection::default(),
             },
             &test_env_pairs(),
         )
@@ -106,8 +110,10 @@ mod tests {
 
         let error = result.expect_err("missing key on autodetect path must fail");
         assert!(
-            error.to_string().contains("AcoustID lookup requires a non-empty API key"),
-            "expected strict missing-key failure but got: {error:#}"
+            error.to_string().contains(
+                "AcoustID identification is required but no AcoustID API key is available"
+            ),
+            "expected gate-aware missing-key failure but got: {error:#}"
         );
         assert!(
             !error.to_string().contains("decoding media for fingerprinting"),
@@ -120,19 +126,63 @@ mod tests {
         );
     }
 
-    /// Protects helper behavior that enforces explicit key presence for
-    /// autodetection lookups.
-    #[test]
-    fn require_acoustid_api_key_for_lookup_enforces_non_empty_key() {
-        let missing = require_acoustid_api_key_for_lookup(None).expect_err("missing key must fail");
-        assert!(
-            missing.to_string().contains("AcoustID lookup requires a non-empty API key"),
-            "expected missing-key diagnostic"
-        );
+    /// Protects the AcoustID gate: when logged-in features are disabled, a
+    /// required AcoustID lookup fails with the disabled message before any
+    /// decode or key lookup happens.
+    #[tokio::test]
+    async fn run_internal_media_tagger_fails_when_acoustid_feature_is_disabled_for_autodetect() {
+        let workspace = mediapm_utils::temp::output_dir().expect("tempdir");
+        let input_path = workspace.path().join("input.mp3");
+        let output_path = workspace.path().join("output.ffmetadata");
+        std::fs::write(&input_path, b"dummy-bytes").expect("write input media stub");
 
-        let provided = require_acoustid_api_key_for_lookup(Some("demo-key".to_string()))
-            .expect("non-empty key should pass");
-        assert_eq!(provided, "demo-key");
+        let result = run_internal_media_tagger(
+            InternalMediaTaggerOptions {
+                input_path: Some(input_path),
+                output_path: output_path.clone(),
+                acoustid_api_key: Some("demo-key".to_string()),
+                acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
+                musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
+                caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
+                cache_dir: None,
+                cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
+                strict_identification: true,
+                write_all_tags: true,
+                write_all_images: true,
+                save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
+                embed_only_one_front_image: DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
+                ca_providers: DEFAULT_CA_PROVIDERS.to_string(),
+                caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
+                caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
+                caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
+                preserve_existing_images: DEFAULT_PRESERVE_EXISTING_IMAGES,
+                preserve_existing_tags: DEFAULT_PRESERVE_EXISTING_TAGS,
+                preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
+                enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
+                release_ars: DEFAULT_RELEASE_ARS,
+                cover_art_slot_count: 8,
+                recording_mbid: None,
+                release_mbid: None,
+                enable_logged_in_features_musicbrainz:
+                    DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
+                enable_logged_in_features_acoustid: false,
+                metadata_selection: MetadataSelection::default(),
+            },
+            &test_env_pairs(),
+        )
+        .await;
+
+        let error = result.expect_err("disabled acoustid feature must fail autodetect");
+        assert!(
+            error.to_string().contains(
+                "AcoustID identification is required but logged-in features for AcoustID are disabled (--enable-logged-in-features-acoustid=false)"
+            ),
+            "expected disabled-feature failure but got: {error:#}"
+        );
+        assert!(
+            !error.to_string().contains("decoding media for fingerprinting"),
+            "disabled-feature gate should fail before decode path"
+        );
     }
 
     /// Protects behavior that when credentials are supplied, the
@@ -171,6 +221,10 @@ mod tests {
                 cover_art_slot_count: 8,
                 recording_mbid: None,
                 release_mbid: None,
+                enable_logged_in_features_musicbrainz:
+                    DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
+                enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
+                metadata_selection: MetadataSelection::default(),
             },
             &test_env_pairs(),
         )
@@ -223,6 +277,10 @@ mod tests {
                 cover_art_slot_count: 8,
                 recording_mbid: Some("none".to_string()),
                 release_mbid: None,
+                enable_logged_in_features_musicbrainz:
+                    DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
+                enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
+                metadata_selection: MetadataSelection::default(),
             },
             &test_env_pairs(),
         )
@@ -268,6 +326,10 @@ mod tests {
                 cover_art_slot_count: 8,
                 recording_mbid: Some("auto".to_string()),
                 release_mbid: Some("auto".to_string()),
+                enable_logged_in_features_musicbrainz:
+                    DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
+                enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
+                metadata_selection: MetadataSelection::default(),
             },
             &test_env_pairs(),
         )
@@ -583,8 +645,7 @@ mod tests {
 }
 
 use self::acoustid::{
-    decode_and_fingerprint_audio, lookup_acoustid_match, require_acoustid_api_key_for_lookup,
-    resolve_acoustid_api_key,
+    decode_and_fingerprint_audio, lookup_acoustid_match, resolve_acoustid_api_key,
 };
 use self::cover_art::{
     COVER_ART_PHASE_BUDGET, CacheExpiryPolicy, MediaTaggerHttpCache, collect_musicbrainz_cover_art,
@@ -592,6 +653,7 @@ use self::cover_art::{
     select_cover_art_for_tag_embedding,
 };
 use self::ffmetadata::parse_ffmetadata_global_map;
+use self::gate::{AuthState, GateLabels, GateOutcome, Need, resolve_gate};
 /// How many attempts one recording+release pair fetch makes.
 ///
 /// Re-exported because the bound is part of the step's contract: a test asserts
@@ -684,6 +746,10 @@ pub const DEFAULT_ENABLE_TAG_SAVING: bool = true;
 pub const DEFAULT_RELEASE_ARS: bool = true;
 /// Default media-tagger HTTP cache expiry budget in seconds (one day).
 pub const DEFAULT_CACHE_EXPIRY_SECONDS: i64 = 24 * 60 * 60;
+/// Managed default for allowing MusicBrainz login-gated features.
+pub const DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ: bool = true;
+/// Managed default for allowing AcoustID login-gated features.
+pub const DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID: bool = true;
 /// Cache-index format marker for media-tagger JSON metadata rows.
 const MEDIA_TAGGER_CACHE_INDEX_VERSION: u32 = 1;
 /// Default media-tagger metadata index file name under cache root.
@@ -703,6 +769,34 @@ pub(crate) fn cover_art_slot_image_member_name(slot_index: usize) -> String {
 #[must_use]
 pub(crate) fn cover_art_slot_flag_member_name(slot_index: usize) -> String {
     format!("coverart-slot-{slot_index}.flag")
+}
+
+/// Login-gated MusicBrainz metadata fields the tagger may include.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the four independent user-metadata include flags map directly to the plan's per-field selection contract"
+)]
+pub struct MetadataSelection {
+    /// Include user-specific genres from MusicBrainz.
+    pub include_user_genres: bool,
+    /// Include user-specific ratings from MusicBrainz.
+    pub include_user_ratings: bool,
+    /// Include user-specific collections from MusicBrainz.
+    pub include_user_collections: bool,
+    /// Include user-specific tags from MusicBrainz.
+    pub include_user_tags: bool,
+}
+
+impl Default for MetadataSelection {
+    fn default() -> Self {
+        Self {
+            include_user_genres: true,
+            include_user_ratings: true,
+            include_user_collections: true,
+            include_user_tags: true,
+        }
+    }
 }
 
 /// Runtime options for one internal media-tagger invocation.
@@ -803,6 +897,12 @@ pub struct InternalMediaTaggerOptions {
     /// - `none` => treat as unspecified release MBID and disable AcoustID
     ///   autodetection entirely.
     pub release_mbid: Option<String>,
+    /// Whether the run may depend on a MusicBrainz login for user-data fields.
+    pub enable_logged_in_features_musicbrainz: bool,
+    /// Whether the run may depend on an AcoustID API key for identification.
+    pub enable_logged_in_features_acoustid: bool,
+    /// Which login-gated MusicBrainz metadata fields to include.
+    pub metadata_selection: MetadataSelection,
 }
 
 /// Normalized MBID override mode from runtime input text.
@@ -937,15 +1037,38 @@ async fn run_internal_media_tagger_impl(
     let mut detected_release_mbid = release_override.explicit_value();
 
     if !disable_autodetect && detected_recording_mbid.is_none() {
+        let acoustid_api_key = std::cell::Cell::new(None::<String>);
+        let acoustid_gate_outcome = resolve_gate(
+            options.enable_logged_in_features_acoustid,
+            Need::Required("AcoustID identification"),
+            GateLabels {
+                service: "AcoustID",
+                disabled_flag: "--enable-logged-in-features-acoustid",
+                missing_login_hint: "no AcoustID API key is available (set --acoustid-api-key or ACOUSTID_API_KEY)",
+            },
+            || {
+                let key = resolve_acoustid_api_key(options.acoustid_api_key.as_deref());
+                let state = if key.is_some() { AuthState::LoggedIn } else { AuthState::LoggedOut };
+                acoustid_api_key.set(key);
+                state
+            },
+        );
+        let acoustid_api_key = match acoustid_gate_outcome {
+            GateOutcome::Use => acoustid_api_key
+                .into_inner()
+                .context("AcoustID gate returned Use but no API key was captured")?,
+            GateOutcome::Dropped { .. } => {
+                unreachable!("required AcoustID gate cannot produce a dropped outcome")
+            }
+            GateOutcome::Fail { message } => bail!("{message}"),
+        };
+
         let Some(resolved_input) = resolved_input.as_ref() else {
             bail!(
                 "input media is required when --recording-mbid is not provided (fingerprint autodetection path)"
             );
         };
 
-        let acoustid_api_key = require_acoustid_api_key_for_lookup(resolve_acoustid_api_key(
-            options.acoustid_api_key.as_deref(),
-        ))?;
         let fingerprint_payload = decode_and_fingerprint_audio(resolved_input, env_pairs)
             .await
             .context("decoding media for fingerprinting")?;
