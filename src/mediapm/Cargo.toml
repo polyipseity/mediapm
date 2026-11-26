@@ -48,6 +48,9 @@ anyhow = { workspace = true, optional = true }
 async-trait = { workspace = true, optional = true }
 blake3.workspace = true
 bytes.workspace = true
+sha2.workspace = true
+base64.workspace = true
+rand = { workspace = true, features = ["std", "std_rng"] }
 chromaprint-next = { workspace = true, optional = true }
 clap = { workspace = true, features = ["derive", "std"], optional = true }
 clap_complete = { workspace = true, optional = true }

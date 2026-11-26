@@ -16,7 +16,7 @@
 //! reads.
 
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 /// The recording MBID a tagging step binds to skip the fingerprint lookup.
 pub const RECORDING_MBID: &str = "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae";
@@ -107,6 +107,80 @@ impl MockMusicBrainz {
     pub fn server(&self) -> &MockServer {
         &self.server
     }
+
+    /// Mounts a minimal OAuth authorize endpoint that redirects to `redirect_uri`
+    /// with the given `code` and the request's `state`.
+    pub async fn mount_oauth_authorize_redirect(&self, code: &str) {
+        Mock::given(method("GET"))
+            .and(path("/oauth2/authorize"))
+            .respond_with(OAuthAuthorizeRedirect { code: code.to_owned() })
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Mounts an OAuth token endpoint returning a fixed token response.
+    pub async fn mount_oauth_token(
+        &self,
+        access_token: &str,
+        refresh_token: Option<&str>,
+        expires_in: u64,
+        scope: &str,
+    ) {
+        let mut body = serde_json::json!({
+            "access_token": access_token,
+            "expires_in": expires_in,
+            "scope": scope,
+            "token_type": "Bearer",
+        });
+        if let Some(rt) = refresh_token {
+            body["refresh_token"] = serde_json::Value::String(rt.to_owned());
+        }
+        Mock::given(method("POST"))
+            .and(path("/oauth2/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Mounts an OAuth revoke endpoint that returns 200.
+    pub async fn mount_oauth_revoke(&self) {
+        Mock::given(method("POST"))
+            .and(path("/oauth2/revoke"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&self.server)
+            .await;
+    }
+}
+
+/// Wiremock responder that redirects OAuth authorize requests back to the
+/// requesting `redirect_uri` with a fixed code and the original state.
+struct OAuthAuthorizeRedirect {
+    code: String,
+}
+
+impl Respond for OAuthAuthorizeRedirect {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let url = request.url.clone();
+        let mut redirect_uri = None;
+        let mut state = None;
+        for (k, v) in url.query_pairs() {
+            if k == "redirect_uri" {
+                redirect_uri = Some(v.into_owned());
+            } else if k == "state" {
+                state = Some(v.into_owned());
+            }
+        }
+        let Some(redirect_uri) = redirect_uri else {
+            return ResponseTemplate::new(400).set_body_string("missing redirect_uri");
+        };
+        let sep = if redirect_uri.contains('?') { '&' } else { '?' };
+        let mut location = format!("{redirect_uri}{sep}code={}", urlencoding_simple(&self.code));
+        if let Some(state) = state {
+            location.push_str("&state=");
+            location.push_str(&urlencoding_simple(&state));
+        }
+        ResponseTemplate::new(302).insert_header("Location", location.as_str())
+    }
 }
 
 /// The artist credit both payloads carry.
@@ -135,6 +209,23 @@ fn recording_payload() -> serde_json::Value {
             {"id": RELEASE_MBID, "title": RELEASE_TITLE, "first-release-date": RELEASE_DATE}
         ]
     })
+}
+
+fn urlencoding_simple(s: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(char::from(b));
+            }
+            _ => {
+                out.push('%');
+                let _ = write!(out, "{b:02X}");
+            }
+        }
+    }
+    out
 }
 
 /// The release payload in the ws/2 kebab-case shape the tagger parses.

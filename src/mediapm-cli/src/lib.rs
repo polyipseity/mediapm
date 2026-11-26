@@ -168,6 +168,12 @@ pub enum Command {
     Cas(PassthroughArgs),
     /// Passthrough to the conductor CLI.
     Conductor(PassthroughArgs),
+    /// Authentication commands for upstream services.
+    Auth {
+        /// Auth subcommand selector.
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
     /// Generates shell completion scripts for the `mediapm` CLI.
     Completions {
         /// Target shell for completion script generation.
@@ -400,6 +406,28 @@ pub enum GlobalToolCacheCommand {
     Prune,
     /// Clear the global tool cache entirely.
     Clear,
+}
+
+/// Authentication commands for upstream services.
+#[derive(Debug, Subcommand)]
+pub enum AuthCommand {
+    /// `MusicBrainz` OAuth authentication.
+    Musicbrainz {
+        /// `MusicBrainz` auth subcommand selector.
+        #[command(subcommand)]
+        command: MusicbrainzAuthCommand,
+    },
+}
+
+/// `MusicBrainz` OAuth subcommands.
+#[derive(Debug, Subcommand)]
+pub enum MusicbrainzAuthCommand {
+    /// Log in to `MusicBrainz` via OAuth (opens a browser).
+    Login,
+    /// Show `MusicBrainz` OAuth login status.
+    Status,
+    /// Log out of `MusicBrainz` and revoke the stored token.
+    Logout,
 }
 
 /// Builtin command implementations exposed by the `mediapm` executable.

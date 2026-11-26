@@ -35,8 +35,9 @@ use mediapm_cli::BuiltinCommand;
 use mediapm_cli::InternalMediaTaggerArgs;
 #[cfg(feature = "cli")]
 use mediapm_cli::{
-    Cli, Command, GlobalCommand, GlobalToolCacheCommand, HierarchyCommand, HierarchyPresetArg,
-    MediaAddPreset, MediaCommand, RecheckPolicyArgs, SyncArgs, ToolCommand,
+    AuthCommand, Cli, Command, GlobalCommand, GlobalToolCacheCommand, HierarchyCommand,
+    HierarchyPresetArg, MediaAddPreset, MediaCommand, MusicbrainzAuthCommand, RecheckPolicyArgs,
+    SyncArgs, ToolCommand,
 };
 #[cfg(feature = "cli")]
 use url::Url;
@@ -542,6 +543,66 @@ async fn main_cli() -> anyhow::Result<()> {
         Command::Conductor(args) => {
             let effective_paths = MediaPmPaths::from_root(&cli.root);
             passthrough_conductor(&args.args, &effective_paths).await
+        }
+        Command::Auth { command } => {
+            let root = &cli.root;
+            let paths = resolve_effective_paths_for_root(root, &rt);
+            load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
+            let runtime_root = paths.runtime_root.clone();
+            match command {
+                AuthCommand::Musicbrainz { command } => match command {
+                    MusicbrainzAuthCommand::Login => {
+                        let config = mediapm::auth::musicbrainz::MusicBrainzOAuthConfig::from_env()
+                            .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        let auth = mediapm::auth::musicbrainz::login_musicbrainz(
+                            &runtime_root,
+                            &config,
+                            mediapm::auth::musicbrainz::open_browser,
+                        )
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        println!(
+                            "logged in to MusicBrainz; scopes: {}",
+                            if auth.scopes.is_empty() {
+                                "(none)".to_string()
+                            } else {
+                                auth.scopes.join(" ")
+                            }
+                        );
+                        Ok(())
+                    }
+                    MusicbrainzAuthCommand::Status => {
+                        let status = mediapm::auth::musicbrainz::auth_status(&runtime_root)
+                            .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        println!("{status}");
+                        Ok(())
+                    }
+                    MusicbrainzAuthCommand::Logout => {
+                        let config =
+                            mediapm::auth::musicbrainz::MusicBrainzOAuthConfig::from_env().ok();
+                        let auth_path =
+                            mediapm::auth::musicbrainz::musicbrainz_auth_file_path(&runtime_root);
+                        let had_auth = auth_path.exists();
+                        if had_auth && config.is_none() {
+                            eprintln!(
+                                "warning: MUSICBRAINZ_OAUTH_CLIENT_ID/SECRET missing; skipping server revocation and deleting local auth file"
+                            );
+                        }
+                        let removed = mediapm::auth::musicbrainz::logout_musicbrainz(
+                            &runtime_root,
+                            config.as_ref(),
+                        )
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        if removed {
+                            println!("logged out of MusicBrainz");
+                        } else {
+                            println!("not logged in to MusicBrainz");
+                        }
+                        Ok(())
+                    }
+                },
+            }
         }
         Command::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "mediapm", &mut std::io::stdout());

@@ -11,6 +11,7 @@
 //!   `mediapm.conductor.generated.ncl` (both configurable),
 //! - realized state: `.mediapm/state.json` by default (configurable).
 
+pub mod auth;
 pub mod builtins;
 // The seam between the extracted CLI definition and this library. See the
 // module docs for why the two conversions cannot live with the definition.
