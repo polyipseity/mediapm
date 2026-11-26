@@ -896,82 +896,53 @@ pub(super) fn select_highest_quality_cover_url(image: &CoverArtArchiveImage) -> 
     select_highest_quality_cover_url_with_preference(image, CaaImageSizePreference::Full)
 }
 
-/// Returns one normalized highest-quality URL for one CAA image entry,
-/// honoring one parsed size preference.
+/// Returns one normalized cover-art URL for one CAA image entry.
+///
+/// Mirrors Picard's `caa_url_fallback_list`: for a bounded size request the
+/// largest available thumbnail no wider than the request wins, with `large`
+/// and `small` accepted as aliases for the 500px and 250px keys. No larger
+/// thumbnail is a fallback; if none qualifies Picard uses the original URL.
 #[must_use]
 fn select_highest_quality_cover_url_with_preference(
     image: &CoverArtArchiveImage,
     preference: CaaImageSizePreference,
 ) -> Option<String> {
-    let mut candidates = Vec::new();
-
-    if let Some(original) = normalize_optional_text(image.image.as_deref()) {
-        candidates.push((i32::MAX, original));
-    }
-
-    for (key, value) in &image.thumbnails {
-        let Some(normalized_url) = normalize_optional_text(Some(value)) else {
-            continue;
-        };
-
-        let quality_score = key.trim().parse::<i32>().unwrap_or_else(|_| {
-            if key.eq_ignore_ascii_case("large") {
-                1_200
-            } else if key.eq_ignore_ascii_case("small") {
-                250
-            } else {
-                0
-            }
-        });
-
-        candidates.push((quality_score, normalized_url));
-    }
-
-    if candidates.is_empty() {
-        return None;
-    }
-
-    let pick_exact_key = |keys: &[&str]| {
+    let original = normalize_optional_text(image.image.as_deref());
+    let pick_thumbnail = |keys: &[&str]| {
         keys.iter().find_map(|key| {
             image.thumbnails.get(*key).and_then(|value| normalize_optional_text(Some(value)))
         })
     };
+    // Only relevant when an entry has no original URL at all.
+    let highest_quality_thumbnail = || {
+        image
+            .thumbnails
+            .iter()
+            .filter_map(|(key, value)| {
+                let quality = key.trim().parse::<i32>().unwrap_or_else(|_| {
+                    if key.eq_ignore_ascii_case("large") {
+                        500
+                    } else if key.eq_ignore_ascii_case("small") {
+                        250
+                    } else {
+                        0
+                    }
+                });
+                normalize_optional_text(Some(value)).map(|url| (quality, url))
+            })
+            .max_by(|(left_quality, left_url), (right_quality, right_url)| {
+                left_quality.cmp(right_quality).then_with(|| left_url.cmp(right_url))
+            })
+            .map(|(_, url)| url)
+    };
 
     match preference {
-        CaaImageSizePreference::Full => candidates
-            .into_iter()
-            .max_by(|(left_score, left_url), (right_score, right_url)| {
-                left_score.cmp(right_score).then_with(|| left_url.cmp(right_url))
-            })
-            .map(|(_, url)| url),
-        CaaImageSizePreference::Large => pick_exact_key(&["1200", "large"]).or_else(|| {
-            candidates
-                .into_iter()
-                .max_by(|(left_score, left_url), (right_score, right_url)| {
-                    left_score.cmp(right_score).then_with(|| left_url.cmp(right_url))
-                })
-                .map(|(_, url)| url)
-        }),
-        CaaImageSizePreference::Medium => pick_exact_key(&["500"])
-            .or_else(|| pick_exact_key(&["1200", "large", "250", "small"]))
-            .or_else(|| {
-                candidates
-                    .into_iter()
-                    .max_by(|(left_score, left_url), (right_score, right_url)| {
-                        left_score.cmp(right_score).then_with(|| left_url.cmp(right_url))
-                    })
-                    .map(|(_, url)| url)
-            }),
-        CaaImageSizePreference::Small => pick_exact_key(&["250", "small"])
-            .or_else(|| pick_exact_key(&["500", "1200", "large"]))
-            .or_else(|| {
-                candidates
-                    .into_iter()
-                    .max_by(|(left_score, left_url), (right_score, right_url)| {
-                        left_score.cmp(right_score).then_with(|| left_url.cmp(right_url))
-                    })
-                    .map(|(_, url)| url)
-            }),
+        CaaImageSizePreference::Full => original.or_else(highest_quality_thumbnail),
+        CaaImageSizePreference::Large => pick_thumbnail(&["1200"]).or(original),
+        CaaImageSizePreference::Medium => pick_thumbnail(&["500", "large"])
+            .or_else(|| pick_thumbnail(&["250", "small"]))
+            .or(original),
+        CaaImageSizePreference::Small => pick_thumbnail(&["250", "small"]).or(original),
     }
 }
 
@@ -1900,6 +1871,76 @@ mod tests {
         );
     }
 
+    /// Picard picks the largest thumbnail no wider than the request and uses
+    /// the original URL when no thumbnail qualifies; it never falls upward.
+    #[test]
+    fn thumbnail_selection_never_falls_upward() {
+        let image: CoverArtArchiveImage = serde_json::from_str(
+            r#"{"image":"https://example.test/original","thumbnails":{"250":"https://example.test/250","500":"https://example.test/500","1200":"https://example.test/1200"}}"#,
+        )
+        .expect("image with every thumbnail");
+        for (preference, expected) in [
+            (CaaImageSizePreference::Full, "https://example.test/original"),
+            (CaaImageSizePreference::Large, "https://example.test/1200"),
+            (CaaImageSizePreference::Medium, "https://example.test/500"),
+            (CaaImageSizePreference::Small, "https://example.test/250"),
+        ] {
+            assert_eq!(
+                select_highest_quality_cover_url_with_preference(&image, preference).as_deref(),
+                Some(expected),
+                "wrong URL for {preference:?}"
+            );
+        }
+
+        let small_only: CoverArtArchiveImage = serde_json::from_str(
+            r#"{"image":"https://example.test/original","thumbnails":{"250":"https://example.test/250"}}"#,
+        )
+        .expect("image with only a 250px thumbnail");
+        assert_eq!(
+            select_highest_quality_cover_url_with_preference(
+                &small_only,
+                CaaImageSizePreference::Medium,
+            )
+            .as_deref(),
+            Some("https://example.test/250"),
+            "a 500px request falls back to the largest smaller thumbnail"
+        );
+
+        let large_only: CoverArtArchiveImage = serde_json::from_str(
+            r#"{"image":"https://example.test/large-only-original","thumbnails":{"1200":"https://example.test/1200"}}"#,
+        )
+        .expect("image with only a 1200px thumbnail");
+        for preference in [CaaImageSizePreference::Medium, CaaImageSizePreference::Small] {
+            assert_eq!(
+                select_highest_quality_cover_url_with_preference(&large_only, preference)
+                    .as_deref(),
+                Some("https://example.test/large-only-original"),
+                "a thumbnail above the request must not be used for {preference:?}"
+            );
+        }
+
+        let aliases: CoverArtArchiveImage = serde_json::from_str(
+            r#"{"image":"https://example.test/original","thumbnails":{"large":"https://example.test/large-alias","small":"https://example.test/small-alias"}}"#,
+        )
+        .expect("image with Picard's thumbnail aliases");
+        assert_eq!(
+            select_highest_quality_cover_url_with_preference(
+                &aliases,
+                CaaImageSizePreference::Medium
+            )
+            .as_deref(),
+            Some("https://example.test/large-alias")
+        );
+        assert_eq!(
+            select_highest_quality_cover_url_with_preference(
+                &aliases,
+                CaaImageSizePreference::Small
+            )
+            .as_deref(),
+            Some("https://example.test/small-alias")
+        );
+    }
+
     /// One cached raw archive response serves every filter combination.
     ///
     /// The cache stores the archive's answer, not our selection, so changing
@@ -1942,8 +1983,8 @@ mod tests {
         .expect("approved front under strict filters");
         assert_eq!(
             strict.iter().map(|entry| entry.url.as_str()).collect::<Vec<_>>(),
-            vec!["https://example.test/front-1200.jpg"],
-            "the strict filter keeps only the approved front at its preferred size"
+            vec!["https://example.test/front-250.jpg"],
+            "a 500px request falls down to 250px, never up to the 1200px thumbnail"
         );
 
         let everything = parse_caa_image_types_expression("all").expect("all types");
@@ -2394,5 +2435,89 @@ mod tests {
             1,
             "one live row remains after eviction"
         );
+    }
+
+    /// Guards cover-art selection against vendored Picard's CAA provider.
+    ///
+    /// Both sides read the same image descriptors and fixture config: approved
+    /// filtering, type allow/deny matching, size fallback, priority order and
+    /// the one-front embedding subset all have to agree.
+    #[test]
+    fn picard_parity_matches_cover_art_selection_policy() {
+        use std::fs;
+        use std::path::Path;
+
+        use mediapm_test_support::{PicardCoverArt, run_picard_parity_gate};
+
+        let contract = run_picard_parity_gate().expect("vendored Picard parity driver");
+        let fixtures =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/picard-parity/fixtures");
+        let config: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(fixtures.join("config.json")).expect("read config fixture"),
+        )
+        .expect("parse config fixture");
+        let images: CoverArtArchiveResponse = serde_json::from_str(
+            &fs::read_to_string(fixtures.join("cover_art_images.json"))
+                .expect("read cover-art fixture"),
+        )
+        .expect("parse cover-art fixture");
+
+        let bool_flag = |name: &str| {
+            config
+                .get(name)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or_else(|| panic!("config fixture needs boolean {name}"))
+        };
+        let names = |name: &str| {
+            config[name]
+                .as_array()
+                .unwrap_or_else(|| panic!("config fixture needs list {name}"))
+                .iter()
+                .map(|value| value.as_str().expect("type name").to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        let mut expression = names("included_types").join(",");
+        for excluded in names("excluded_types") {
+            expression.push_str(",-");
+            expression.push_str(&excluded);
+        }
+        let allowed = parse_caa_image_types_expression(&expression).expect("allowed types");
+        // Picard's config stores the width as a number; mediapm's selector takes text.
+        let image_size = config["caa_image_size"]
+            .as_u64()
+            .map(|width| width.to_string())
+            .or_else(|| config["caa_image_size"].as_str().map(str::to_owned))
+            .expect("config fixture needs caa_image_size");
+        let size = parse_caa_image_size_preference(&image_size).expect("image size");
+        let mut selected =
+            select_cover_art_images(&images, &allowed, size, bool_flag("caa_approved_only"));
+        selected.sort_by(|left, right| {
+            cover_art_type_priority(&left.maintype)
+                .cmp(&cover_art_type_priority(&right.maintype))
+                .then_with(|| left.comment.cmp(&right.comment))
+                .then_with(|| left.url.cmp(&right.url))
+        });
+
+        let describe = |image: &SelectedCoverArt| PicardCoverArt {
+            url: image.url.clone(),
+            maintype: image.maintype.clone(),
+            types: image.types.clone(),
+            comment: image.comment.clone(),
+        };
+        let actual: Vec<PicardCoverArt> = selected.iter().map(describe).collect();
+        assert_eq!(actual, contract.cover_art, "cover-art selection differs");
+        assert!(
+            contract.cover_art.iter().any(|image| {
+                image.comment == "only a 1200px thumbnail"
+                    && image.url == "https://caa.example/release/large-only-original"
+            }),
+            "the 1200px-only fixture must exercise the original-URL fallback under a 500px request"
+        );
+
+        let embedded =
+            select_cover_art_for_tag_embedding(&selected, bool_flag("embed_only_one_front_image"));
+        let actual_embedded: Vec<PicardCoverArt> = embedded.iter().map(describe).collect();
+        assert_eq!(actual_embedded, contract.embedded, "one-front subset differs");
     }
 }

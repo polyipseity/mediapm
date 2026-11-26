@@ -1,0 +1,1045 @@
+# Picard, the next-generation MusicBrainz tagger
+#
+# Copyright (C) 2017 David Mandelberg
+# Copyright (C) 2017-2018 Sambhav Kothari
+# Copyright (C) 2017-2023, 2025-2026 Laurent Monin
+# Copyright (C) 2018-2023, 2026 Philipp Wolfer
+# Copyright (C) 2019 Michael Wiencek
+# Copyright (C) 2020 dukeyin
+# Copyright (C) 2020, 2023, 2025 David Kellner
+# Copyright (C) 2021 Vladislav Karbovskii
+# Copyright (C) 2021, 2025 Bob Swift
+# Copyright (C) 2024 Rakim Middya
+# Copyright (C) 2025 Khoa Nguyen
+# Copyright (C) 2026 Anton Kesy
+# Copyright (C) 2026 Deepak Tiwari
+# Copyright (C) 2026 pranavsource1
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, see <https://www.gnu.org/licenses/>.
+
+
+from collections import defaultdict
+from collections.abc import (
+    Callable,
+    Iterable,
+    Iterator,
+)
+from dataclasses import dataclass
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    TypeAlias,
+)
+
+from picard import log
+from picard.config import (
+    Config,
+    get_config,
+)
+from picard.const import (
+    ALIAS_TYPE_ARTIST_NAME_ID,
+    ALIAS_TYPE_LEGAL_NAME_ID,
+    ALIAS_TYPE_RECORDING_NAME_ID,
+    RELEASE_FORMATS,
+)
+from picard.options import StandardizeArtistNames
+from picard.util import (
+    format_time,
+    linear_combination_of_weights,
+    parse_amazon_url,
+    translate_from_sortname,
+)
+from picard.util.script_detector_weighted import detect_script_weighted
+
+
+if TYPE_CHECKING:
+    from picard.album import Album
+    from picard.item import MetadataItem
+    from picard.metadata import Metadata
+    from picard.releasegroup import ReleaseGroup
+    from picard.track import Track
+
+
+_ARTIST_REL_TYPES = {
+    'arranger': 'arranger',
+    'audio': 'engineer',
+    'chorus master': 'performer:chorus master',
+    'composer': 'composer',
+    'concertmaster': 'performer:concertmaster',
+    'conductor': 'conductor',
+    'engineer': 'engineer',
+    'instrument arranger': 'arranger',
+    'librettist': 'lyricist',
+    'live sound': 'engineer',
+    'lyricist': 'lyricist',
+    # 'mastering': 'engineer',
+    'mix-DJ': 'djmixer',
+    'mix': 'mixer',
+    'orchestrator': 'arranger',
+    'performing orchestra': 'performer:orchestra',
+    'producer': 'producer',
+    # 'recording': 'engineer',
+    'remixer': 'remixer',
+    'sound': 'engineer',
+    'audio director': 'director',
+    'video director': 'director',
+    'vocal arranger': 'arranger',
+    'writer': 'writer',
+}
+
+_TRACK_TO_METADATA = {
+    'number': '~musicbrainz_tracknumber',
+    'position': 'tracknumber',
+}
+
+_MEDIUM_TO_METADATA = {
+    'format': 'media',
+    'position': 'discnumber',
+    'title': 'discsubtitle',
+}
+
+_RECORDING_TO_METADATA = {
+    'disambiguation': '~recordingcomment',
+    'first-release-date': '~recording_firstreleasedate',
+}
+
+_RELEASE_TO_METADATA = {
+    'annotation': '~releaseannotation',
+    'asin': 'asin',
+    'barcode': 'barcode',
+    'country': 'releasecountry',
+    'date': 'date',
+    'disambiguation': '~releasecomment',
+    'title': 'album',
+}
+
+_ARTIST_TO_METADATA = {
+    'disambiguation': '~artistcomment',
+    'gender': 'gender',
+    'name': 'name',
+    'type': 'type',
+}
+
+_RELEASE_GROUP_TO_METADATA = {
+    'disambiguation': '~releasegroupcomment',
+    'first-release-date': '~releasegroup_firstreleasedate',
+    'title': '~releasegroup',
+}
+
+_PREFIX_ATTRS = {'guest', 'additional', 'minor', 'solo'}
+_BLANK_SPECIAL_RELTYPES = {'instrument': 'instruments', 'vocal': 'vocals'}
+
+
+Node: TypeAlias = dict[str, Any]
+
+
+@dataclass
+class Alias:
+    """Represents an alias (alternative name) for an entity, including the name and sort name."""
+
+    name: str
+    sort_name: str
+
+
+@dataclass
+class ArtistCreditInfo:
+    """Artist credit info, including the combined name and all individual artist names and countries."""
+
+    name: str
+    sort_name: str
+    names: list[str]
+    sort_names: list[str]
+    countries: list[str]
+    comments: list[str]
+
+
+@dataclass
+class AliasMatch:
+    """Combines an alias with a matching score when selecting the best matching alias for an entity."""
+
+    score: float
+    alias: Alias
+
+
+@dataclass
+class RelFuncContext:
+    """Give context for a RelFunc."""
+
+    config: Config
+    entity: str | None
+    instrumental: bool
+    standardize_names_mode: StandardizeArtistNames
+    use_instrument_credits: bool
+    use_vocal_credits: bool
+    metadata_was_cleared: dict[str, bool]
+    per_medium_metadata: 'defaultdict[int, Metadata]'
+
+
+@dataclass
+class RelFunc:
+    """Encapsulates a relation function with a clear_metadata_first flag."""
+
+    func: 'Callable[[Node, Metadata, RelFuncContext], None]'
+    clear_metadata_first: bool = False
+
+
+def _parse_attributes(attrs: Iterable[str], reltype: str, attr_credits: dict[str, str]) -> str:
+    prefixes = []
+    nouns = []
+    for attr in attrs:
+        if attr in attr_credits:
+            attr = attr_credits[attr]
+        if attr in _PREFIX_ATTRS:
+            prefixes.append(attr)
+        else:
+            nouns.append(attr)
+    if len(nouns) > 1:
+        result = "%s and %s" % (", ".join(nouns[:-1]), nouns[-1:][0])
+    elif len(nouns) == 1:
+        result = nouns[0]
+    else:
+        result = _BLANK_SPECIAL_RELTYPES.get(reltype, "")
+    prefix = " ".join(prefixes)
+    return " ".join([prefix, result]).strip()
+
+
+def _relation_attributes(relation: Node) -> tuple[str, ...]:
+    try:
+        return tuple(relation['attributes'])
+    except KeyError:
+        return tuple()
+
+
+def _relations_to_metadata_target_type_artist(relation: Node, m: 'Metadata', context: RelFuncContext) -> None:
+    artist = relation['artist']
+    translated_alias = _translate_artist_node(artist, config=context.config)
+    has_translation = translated_alias.name != artist['name']
+    artist_name = translated_alias.name
+    artist_sort_name = translated_alias.sort_name
+    if not has_translation and 'target-credit' in relation:
+        credited_as = relation['target-credit']
+        use_credited_as = not should_standardize_artist_name(context.standardize_names_mode, credited_as, artist)
+        if credited_as and use_credited_as and credited_as != artist['name']:
+            artist_name = credited_as
+            artist_sort_name = _select_sort_name_from_aliases(artist, credited_as, config=context.config)
+    reltype = relation['type']
+    attribs = _relation_attributes(relation)
+    if reltype in {'vocal', 'instrument', 'performer'}:
+        if (reltype == 'instrument' and context.use_instrument_credits) or (
+            reltype == 'vocal' and context.use_vocal_credits
+        ):
+            attr_credits = relation.get('attribute-credits', {})
+        else:
+            attr_credits = {}
+        name = 'performer:' + _parse_attributes(attribs, reltype, attr_credits)
+    elif reltype == 'mix-DJ' and attribs:
+        for attr in attribs:
+            if attr.startswith('medium'):
+                try:
+                    medium_no = int(attr.split()[1])
+                    context.per_medium_metadata[medium_no].add_unique('djmixer', artist_name)
+                except ValueError:
+                    log.warning('Invalid medium number in mix-DJ attribute: %s', attr)
+        return
+    else:
+        try:
+            name = _ARTIST_REL_TYPES[reltype]
+        except KeyError:
+            return
+    if context.instrumental and name == 'lyricist':
+        return
+    m.add_unique(name, artist_name)
+    artist_id = artist.get('id')
+    if name == 'composer':
+        m.add_unique('composersort', artist_sort_name)
+        if artist_id:
+            m.add_unique('musicbrainz_composerid', artist_id)
+    elif name == 'lyricist':
+        m.add_unique('~lyricistsort', artist_sort_name)
+    elif name == 'writer':
+        m.add_unique('~writersort', artist_sort_name)
+
+
+def _relations_to_metadata_target_type_work(relation: Node, m: 'Metadata', context: RelFuncContext) -> None:
+    if relation['type'] == 'performance':
+        performance_attributes = _relation_attributes(relation)
+        for attribute in performance_attributes:
+            m.add_unique('~performance_attributes', attribute)
+        instrumental = 'instrumental' in performance_attributes
+        work_to_metadata(relation['work'], m, instrumental)
+
+
+def _relations_to_metadata_target_type_url(relation: Node, m: 'Metadata', context: RelFuncContext) -> None:
+    if relation['type'] == 'amazon asin' and 'asin' not in m:
+        amz = parse_amazon_url(relation['url']['resource'])
+        if amz is not None:
+            m['asin'] = amz['asin']
+    elif relation['type'] == 'license':
+        url = relation['url']['resource']
+        m.add('license', url)
+
+
+def _relations_to_metadata_target_type_series(relation: Node, m: 'Metadata', context: RelFuncContext) -> None:
+    if relation['type'] == 'part of':
+        entity = context.entity
+        series = relation['series']
+        var_prefix = f'~{entity}_' if entity else '~'
+        name = f'{var_prefix}series'
+        mbid = f'{var_prefix}seriesid'
+        comment = f'{var_prefix}seriescomment'
+        number = f'{var_prefix}seriesnumber'
+        if not context.metadata_was_cleared['series']:
+            # Clear related metadata first to prevent accumulation
+            # of identical value, see PICARD-2700 issue
+            m.unset(name)
+            m.unset(mbid)
+            m.unset(comment)
+            m.unset(number)
+            # That's to ensure it is done only once
+            context.metadata_was_cleared['series'] = True
+        m.add(name, series['name'])
+        m.add(mbid, series['id'])
+        m.add(comment, series['disambiguation'])
+        m.add(number, relation['attribute-values'].get('number', ''))
+
+
+def _relations_to_metadata_target_type_label(relation: Node, m: 'Metadata', context: RelFuncContext) -> None:
+    if relation['type'] == 'broadcast' and 'begin' in relation:
+        m['~broadcast_date'] = relation['begin']
+
+
+_RELATIONS_TO_METADATA_TARGET_TYPE_FUNC = {
+    'artist': RelFunc(func=_relations_to_metadata_target_type_artist),
+    'label': RelFunc(func=_relations_to_metadata_target_type_label),
+    'series': RelFunc(
+        func=_relations_to_metadata_target_type_series,
+        clear_metadata_first=True,
+    ),
+    'url': RelFunc(func=_relations_to_metadata_target_type_url),
+    'work': RelFunc(func=_relations_to_metadata_target_type_work),
+}
+
+
+def _relations_to_metadata(
+    relations: list[Node],
+    m: 'Metadata',
+    instrumental: bool = False,
+    config: Config | None = None,
+    entity: str | None = None,
+) -> RelFuncContext:
+    from picard.metadata import Metadata  # inline import to avoid circular imports
+
+    config = config or get_config()
+    context = RelFuncContext(
+        config=config,
+        entity=entity,
+        instrumental=instrumental,
+        standardize_names_mode=config.setting['standardize_artist_names'],
+        use_instrument_credits=not config.setting['standardize_instruments'],
+        use_vocal_credits=not config.setting['standardize_vocals'],
+        metadata_was_cleared=dict(),
+        per_medium_metadata=defaultdict(Metadata),
+    )
+    for relation in relations:
+        target = relation['target-type']
+        if target in _RELATIONS_TO_METADATA_TARGET_TYPE_FUNC:
+            relfunc = _RELATIONS_TO_METADATA_TARGET_TYPE_FUNC[target]
+            if target not in context.metadata_was_cleared:
+                context.metadata_was_cleared[target] = not relfunc.clear_metadata_first
+            relfunc.func(relation, m, context)
+    return context
+
+
+def _locales_from_aliases(aliases: list[Node]) -> dict[str, AliasMatch]:
+    def check_higher_score(locale_dict: dict[str, AliasMatch], locale: str, score: float) -> bool:
+        return locale not in locale_dict or score > locale_dict[locale].score
+
+    locales = {}
+    for alias in aliases:
+        if not alias.get('primary'):
+            continue
+        full_locale = alias.get('locale')
+        if not full_locale:
+            continue
+        root_locale = full_locale.split('_')[0]
+        full_parts = []
+        root_parts = []
+        score = 0.8
+        full_parts.append((score, 5))
+        if '_' in full_locale:
+            score = 0.4
+        root_parts.append((score, 5))
+        type_id = alias.get('type-id')
+        if type_id in {ALIAS_TYPE_ARTIST_NAME_ID, ALIAS_TYPE_RECORDING_NAME_ID}:
+            score = 0.8
+        elif type_id == ALIAS_TYPE_LEGAL_NAME_ID:
+            score = 0.5
+        else:
+            # as 2014/09/19, only entity names or artist legal names should have the
+            # Primary flag
+            score = 0.0
+        full_parts.append((score, 5))
+        root_parts.append((score, 5))
+        comb = linear_combination_of_weights(full_parts)
+        if check_higher_score(locales, full_locale, comb):
+            locales[full_locale] = AliasMatch(comb, Alias(alias['name'], alias['sort-name']))
+        comb = linear_combination_of_weights(root_parts)
+        if check_higher_score(locales, root_locale, comb):
+            locales[root_locale] = AliasMatch(comb, Alias(alias['name'], alias['sort-name']))
+
+    return locales
+
+
+def _first_alias_match_in_order(order: Iterable[str], mapping: dict[str, AliasMatch]) -> Alias | None:
+    """
+    Return the value for the first key in ``order`` that exists in ``mapping``.
+
+    Parameters
+    ----------
+    order : list[str]
+        Keys to check in priority order.
+    mapping : dict[str, str]
+        Mapping from key to value to search.
+
+    Returns
+    -------
+    Alias or None
+        The value corresponding to the first matching key; otherwise ``None``.
+    """
+    for key in order:
+        if value := mapping.get(key):
+            return value.alias
+    return None
+
+
+def _find_localized_alias_name(aliases: list[Node] | None, preferred_locales: list[str]) -> Alias | None:
+    """
+    Select a localized alias by preferred locales for non-artist entities.
+
+    The selection prefers an exact locale match first (e.g., ``en_US``),
+    then falls back to a root language match (e.g., ``en``).
+
+    Parameters
+    ----------
+    aliases : list[Node] or None
+        Alias entries as provided by the web service, each containing at
+        least ``name`` and ``locale``.
+    preferred_locales : list[str]
+        Ordered list of preferred locales (e.g., ``["en_US", "en"]``).
+
+    Returns
+    -------
+    Alias or None
+        The localized alias name if a match is found; otherwise ``None``.
+    """
+    if not aliases:
+        return None
+
+    locales = _locales_from_aliases(aliases)
+
+    # 1) Exact preferred locale match
+    name = _first_alias_match_in_order(preferred_locales, locales)
+    if name:
+        return name
+
+    # 2) Fallback to preferred languages root locale
+    root_order = (locale.split('_')[0] for locale in preferred_locales if '_' in locale)
+    return _first_alias_match_in_order(root_order, locales)
+
+
+def _is_script_exception_enabled(config: Config) -> bool:
+    """
+    Check whether script-exception matching is enabled.
+
+    Parameters
+    ----------
+    config : Config
+        Configuration object with a ``setting`` mapping.
+
+    Returns
+    -------
+    bool
+        ``True`` if ``translate_artist_names_script_exception`` is enabled,
+        otherwise ``False``.
+    """
+    return config.setting['translate_artist_names_script_exception']
+
+
+def _get_script_exceptions(config: Config) -> list[tuple[str, int]]:
+    """
+    Get configured script-exception thresholds.
+
+    Parameters
+    ----------
+    config : Config
+        Configuration object with a ``setting`` mapping.
+
+    Returns
+    -------
+    list[tuple[str, int]]
+        A list of pairs ``(script_id, threshold_percent)``.
+    """
+    return config.setting['script_exceptions']
+
+
+def _log_detected_scripts(text: str, detected: dict[str, float]) -> None:
+    """
+    Log the detected script distribution for the provided text.
+
+    Parameters
+    ----------
+    text : str
+        The text that was analyzed.
+    detected : dict[str, float]
+        Mapping of ``script_id`` to detected proportion (0.0-1.0).
+    """
+    if detected:
+        parts = "; ".join(f"{script_id} ({detected[script_id] * 100:.1f}%)" for script_id in detected)
+    else:
+        parts = "None"
+    log.debug('Script alpha characters found in "%s": %s', text, parts)
+
+
+def _matches_script_exception(detected: dict[str, float], exceptions: list[tuple[str, int]]) -> bool:
+    """
+    Determine if any configured script meets its match threshold.
+
+    Parameters
+    ----------
+    detected : dict[str, float]
+        Mapping of ``script_id`` to detected proportion (0.0–1.0).
+    exceptions : list[tuple[str, int]]
+        List of pairs ``(script_id, threshold_percent)``.
+
+    Returns
+    -------
+    bool
+        ``True`` if at least one exception script meets or exceeds its
+        configured threshold, otherwise ``False``.
+    """
+    for script_id, script_weighting in exceptions:
+        percentage = detected.get(script_id)
+        if percentage is None:
+            continue
+        if percentage >= (script_weighting / 100):
+            return True
+    return False
+
+
+def _log_selected_scripts_match(exceptions: list[tuple[str, int]], matched: bool) -> None:
+    """
+    Log whether any selected scripts matched the detected distribution.
+
+    Parameters
+    ----------
+    exceptions : list[tuple[str, int]]
+        List of pairs ``(script_id, threshold_percent)`` used for matching.
+    matched : bool
+        Whether a match was found.
+    """
+    details = "; ".join(f"{scr[0]} ({scr[1]}%)" for scr in exceptions)
+    prefix = "Match" if matched else "No match"
+    log.debug("%s found in selected scripts: %s", prefix, details)
+
+
+def _should_skip_translation_due_to_scripts(text: str | None, config: Config | None = None) -> bool:
+    """
+    Determine whether translation should be skipped based on script exceptions.
+
+    Parameters
+    ----------
+    text : str or None
+        The input text whose writing system scripts will be detected.
+    config : Config, optional
+        Configuration object providing settings, by default ``None``. If
+        ``None``, the global configuration from ``get_config()`` is used.
+
+    Returns
+    -------
+    bool
+        ``True`` if translation should be skipped because the text matches a
+        selected script at or above the configured threshold; otherwise
+        ``False``.
+    """
+    config = config or get_config()
+    if not text or not _is_script_exception_enabled(config):
+        return False
+
+    detected = detect_script_weighted(text)
+    _log_detected_scripts(text, detected)
+    if not detected:
+        return False
+
+    exceptions = _get_script_exceptions(config)
+    if not exceptions:
+        log.warning("No scripts selected for translation exception match check.")
+        return False
+
+    matched = _matches_script_exception(detected, exceptions)
+    _log_selected_scripts_match(exceptions, matched)
+    return matched
+
+
+def _translate_artist_node(node: Node, config: Config | None = None) -> Alias:
+    config = config or get_config()
+    if config.setting['translate_artist_names'] and not _should_skip_translation_due_to_scripts(
+        node['name'], config=config
+    ):
+        # Prepare dictionaries of available locale aliases
+        if 'aliases' in node:
+            translated_alias = _find_localized_alias_name(node['aliases'], config.setting['translation_locales'])
+            if translated_alias:
+                return translated_alias
+
+        # No matches found in available alias locales
+        sort_name = node['sort-name']
+        if config.setting['translate_from_sortname']:
+            translated_name = translate_from_sortname(node['name'] or '', sort_name)
+        else:
+            translated_name = node['name']
+    else:
+        translated_name, sort_name = node['name'], node['sort-name']
+    return Alias(translated_name or '', sort_name or '')
+
+
+def _select_sort_name_from_aliases(node: Node, name: str, config: Config | None = None) -> str:
+    """Find a sort name matching the given credited name in the artist's aliases.
+
+    If translation is enabled, prefers an alias whose locale matches the
+    configured translation locales.  Falls back to the artist's default
+    sort-name, or the credited name itself if sort-name is empty.
+    """
+    if name == node['name'] and node['sort-name']:
+        return node['sort-name']
+
+    if 'aliases' in node:
+        config = config or get_config()
+        candidates = [alias for alias in node['aliases'] if alias['name'] == name and alias['sort-name']]
+
+        # If translation is enabled, use alias from preferred locales first
+        if config.setting['translate_artist_names']:
+            if alias := _find_localized_alias_name(candidates, config.setting['translation_locales']):
+                return alias.sort_name
+
+        # Otherwise, use the first candidate (if any)
+        if candidates:
+            return candidates[0]['sort-name']
+
+    # Fallback: use the artist's own sort-name, or the credited name if empty
+    return node['sort-name'] or name
+
+
+def artist_credit_from_node(node: list[Node]) -> ArtistCreditInfo:
+    artist_name = ''
+    artist_sort_name = ''
+    artist_names = []
+    artist_sort_names = []
+    artist_countries = []
+    artist_comments = []
+
+    config = get_config()
+    standardize_names_mode = config.setting['standardize_artist_names']
+
+    for artist_info in node:
+        use_credited_as = not should_standardize_artist_name(
+            standardize_names_mode, artist_info['name'], artist_info['artist']
+        )
+        artist = artist_info['artist']
+        if artist and 'id' in artist and artist['id']:
+            # Add artist's country code if specified, otherwise 'XX' (Unknown Country)
+            artist_countries.append(artist['country'] if 'country' in artist and artist['country'] else 'XX')
+            artist_comments.append(artist.get('disambiguation', ''))
+        translated_alias = _translate_artist_node(artist, config=config)
+        has_translation = translated_alias.name != artist['name']
+
+        if not has_translation and use_credited_as and 'name' in artist_info:
+            name = artist_info['name']
+            sort_name = _select_sort_name_from_aliases(artist, name, config=config)
+        else:
+            name = translated_alias.name
+            sort_name = translated_alias.sort_name
+        artist_name += name
+        artist_sort_name += sort_name or ''
+        if 'joinphrase' in artist_info:
+            artist_name += artist_info['joinphrase'] or ''
+            artist_sort_name += artist_info['joinphrase'] or ''
+
+        if config.setting['always_standardize_multivalue_artist']:
+            plural_name = translated_alias.name
+            plural_sort_name = translated_alias.sort_name
+        else:
+            plural_name = name
+            plural_sort_name = sort_name
+        artist_names.append(plural_name)
+        artist_sort_names.append(plural_sort_name or '')
+
+    return ArtistCreditInfo(
+        artist_name, artist_sort_name, artist_names, artist_sort_names, artist_countries, artist_comments
+    )
+
+
+def should_standardize_artist_name(mode: StandardizeArtistNames, credited_name: str, artist: Node) -> bool:
+    if mode == StandardizeArtistNames.NONE:
+        return False
+
+    if mode == StandardizeArtistNames.ALL:
+        return True
+
+    # Only standardize if the artist credit is not considered a name change,
+    # i.e. if the artist name is not an alias that has been ended.
+    for alias in artist.get('aliases', []):
+        if (
+            alias.get('type-id', None) in {ALIAS_TYPE_ARTIST_NAME_ID, None}
+            and alias.get('ended', False)
+            and (credited_name in {alias['name'], alias['sort-name']})
+        ):
+            return False
+
+    return True
+
+
+def artist_credit_to_metadata(node: list[Node], m: 'Metadata', release: bool = False) -> None:
+    ids = [n['artist']['id'] for n in node]
+    credits = artist_credit_from_node(node)
+    if release:
+        m['musicbrainz_albumartistid'] = ids
+        m['albumartist'] = credits.name
+        m['albumartists'] = credits.names
+        m['albumartistsort'] = credits.sort_name
+        m['~albumartists'] = credits.names
+        m['~albumartists_sort'] = credits.sort_names
+        m['~albumartists_countries'] = credits.countries
+        m['~albumartists_comments'] = credits.comments
+        m['~albumartistcomment'] = credits.comments[0] if len(credits.comments) == 1 else ''
+    else:
+        m['musicbrainz_artistid'] = ids
+        m['artist'] = credits.name
+        m['artistsort'] = credits.sort_name
+        m['artists'] = credits.names
+        m['~artists_sort'] = credits.sort_names
+        m['~artists_countries'] = credits.countries
+        m['~artists_comments'] = credits.comments
+        m['~artistcomment'] = credits.comments[0] if len(credits.comments) == 1 else ''
+
+
+def _release_event_iter(node: Node) -> Iterator[Node]:
+    if 'release-events' in node:
+        yield from node['release-events']
+
+
+def _country_from_release_event(release_event: Node) -> str | None:
+    try:
+        return release_event['area']['iso-3166-1-codes'][0]
+    # TypeError in case object is None
+    except (KeyError, IndexError, TypeError):
+        pass
+    return None
+
+
+def countries_from_node(node: Node) -> list[str]:
+    countries = []
+    for release_event in _release_event_iter(node):
+        country_code = _country_from_release_event(release_event)
+        if country_code:
+            countries.append(country_code)
+    return sorted(countries)
+
+
+def release_dates_and_countries_from_node(node: Node) -> tuple[list[str], list[str]]:
+    dates = []
+    countries = []
+    for release_event in _release_event_iter(node):
+        dates.append(release_event['date'] or '')
+        country_code = _country_from_release_event(release_event)
+        if country_code:
+            countries.append(country_code)
+    return dates, countries
+
+
+def label_info_from_node(node: list[Node]) -> tuple[list[str], list[str]]:
+    labels = []
+    catalog_numbers = []
+    for label_info in node:
+        if 'label' in label_info and label_info['label'] and 'name' in label_info['label']:
+            label = label_info['label']['name']
+            if label and label not in labels:
+                labels.append(label)
+        if 'catalog-number' in label_info:
+            cat_num = label_info['catalog-number']
+            if cat_num and cat_num not in catalog_numbers:
+                catalog_numbers.append(cat_num)
+    return (labels, catalog_numbers)
+
+
+def media_formats_from_node(node: list[Node]) -> str:
+    formats_count = {}
+    formats_order = []
+    for medium in node:
+        text = medium.get('format', "(unknown)") or "(unknown)"
+        if text in formats_count:
+            formats_count[text] += 1
+        else:
+            formats_count[text] = 1
+            formats_order.append(text)
+    formats = []
+    for medium_format in formats_order:
+        count = formats_count[medium_format]
+        medium_format = RELEASE_FORMATS.get(medium_format, medium_format)
+        if count > 1:
+            medium_format = str(count) + "×" + medium_format
+        formats.append(medium_format)
+    return " + ".join(formats)
+
+
+def _node_skip_empty_iter(node: Node) -> Iterator[tuple[str, Any]]:
+    for key, value in node.items():
+        if value or value == 0:
+            yield key, value
+
+
+def track_to_metadata(node: Node, track: 'Track') -> None:
+    m = track.metadata
+    recording_to_metadata(node['recording'], m, track, node.get('title'))
+    m.add_unique('musicbrainz_trackid', node['id'])
+    # overwrite with data we have on the track
+    for key, value in _node_skip_empty_iter(node):
+        if key in _TRACK_TO_METADATA:
+            m[_TRACK_TO_METADATA[key]] = value
+        elif key == 'length' and value:
+            m.length = value
+        elif key == 'artist-credit':
+            artist_credit_to_metadata(value, m)
+    if m.length:
+        m['~length'] = format_time(m.length)
+
+
+def recording_to_metadata(
+    node: Node, m: 'Metadata', track: 'Track | None' = None, track_title: str | None = None
+) -> None:
+    m.length = 0
+    m.add_unique('musicbrainz_recordingid', node['id'])
+    config = get_config()
+    for key, value in _node_skip_empty_iter(node):
+        if key in _RECORDING_TO_METADATA:
+            m[_RECORDING_TO_METADATA[key]] = value
+        elif key == 'user-rating':
+            m['~rating'] = value['value']
+        elif key == 'length':
+            m.length = value
+        elif key == 'artist-credit':
+            artist_credit_to_metadata(value, m)
+            # set tags from artists
+            if track:
+                for credit in value:
+                    artist = credit['artist']
+                    artist_obj = track.append_track_artist(artist['id'])
+                    add_genres_from_node(artist, artist_obj)
+        elif key == 'relations':
+            _relations_to_metadata(value, m, config=config, entity='recording')
+        elif key == 'isrcs':
+            add_isrcs_to_metadata(value, m)
+        elif key == 'video' and value:
+            m['~video'] = '1'
+    add_genres_from_node(node, track)
+    # Translate recording title from recording aliases if enabled, unless script exception applies
+    recording_title = node.get('title')
+    if config.setting['translate_track_titles']:
+        alias = _find_localized_alias_name(node.get('aliases'), config.setting['translation_locales'])
+        if alias:
+            if not _should_skip_translation_due_to_scripts(recording_title, config=config):
+                recording_title = alias.name
+            if track_title and not _should_skip_translation_due_to_scripts(track_title, config=config):
+                track_title = alias.name
+
+    m['title'] = track_title or recording_title
+    if recording_title:
+        m['~recordingtitle'] = recording_title
+    if m.length:
+        m['~length'] = format_time(m.length)
+
+
+def work_to_metadata(work: Node, m: 'Metadata', instrumental: bool = False) -> None:
+    m.add_unique('musicbrainz_workid', work['id'])
+    if instrumental:
+        m.add_unique('language', 'zxx')  # no lyrics
+    elif 'languages' in work:
+        for language in work['languages']:
+            m.add_unique('language', language)
+    elif 'language' in work:
+        m.add_unique('language', work['language'])
+    if 'title' in work:
+        m.add_unique('work', work['title'])
+    if 'disambiguation' in work:
+        m.add_unique('~workcomment', work['disambiguation'])
+    if 'relations' in work:
+        _relations_to_metadata(work['relations'], m, instrumental, entity='work')
+    if 'iswcs' in work:
+        add_iswcs_to_metadata(work['iswcs'], m)
+
+
+def medium_to_metadata(node: Node, m: 'Metadata') -> None:
+    for key, value in _node_skip_empty_iter(node):
+        if key in _MEDIUM_TO_METADATA:
+            m[_MEDIUM_TO_METADATA[key]] = value
+    totaltracks = node.get('track-count', 0)
+    if node.get('pregap'):
+        totaltracks += 1
+    if totaltracks:
+        m['totaltracks'] = totaltracks
+
+
+def artist_to_metadata(node: Node, m: 'Metadata') -> None:
+    """Make metadata dict from a JSON 'artist' node."""
+    m.add_unique('musicbrainz_artistid', node['id'])
+    for key, value in _node_skip_empty_iter(node):
+        if key in _ARTIST_TO_METADATA:
+            m[_ARTIST_TO_METADATA[key]] = value
+        elif key == 'area':
+            m['area'] = value['name']
+        elif key == 'life-span':
+            if 'begin' in value:
+                m['begindate'] = value['begin']
+            if 'ended' in value:
+                ended = value['ended']
+                if ended and 'end' in value:
+                    m['enddate'] = value['end']
+        elif key == 'begin-area':
+            m['beginarea'] = value['name']
+        elif key == 'end-area':
+            m['endarea'] = value['name']
+
+
+def release_to_metadata(node: Node, m: 'Metadata', album: 'Album | None' = None) -> None:
+    """Make metadata dict from a JSON 'release' node."""
+    config = get_config()
+    m.add_unique('musicbrainz_albumid', node['id'])
+    for key, value in _node_skip_empty_iter(node):
+        if key in _RELEASE_TO_METADATA:
+            m[_RELEASE_TO_METADATA[key]] = value
+        elif key == 'status':
+            m['releasestatus'] = value.lower()
+        elif key == 'artist-credit':
+            artist_credit_to_metadata(value, m, release=True)
+            # set tags from artists
+            if album is not None:
+                for credit in value:
+                    artist = credit['artist']
+                    artist_obj = album.append_album_artist(artist['id'])
+                    add_genres_from_node(artist, artist_obj)
+        elif key == 'relations' and config.setting['release_ars']:
+            context = _relations_to_metadata(value, m, config=config, entity='release')
+            if album:
+                album.per_medium_metadata = context.per_medium_metadata
+        elif key == 'label-info':
+            m['label'], m['catalognumber'] = label_info_from_node(value)
+        elif key == 'text-representation':
+            if 'language' in value:
+                m['~releaselanguage'] = value['language']
+            if 'script' in value:
+                m['script'] = value['script']
+    m['~releasecountries'] = release_countries = countries_from_node(node)
+    # The MB web service returns the first release country in the country tag.
+    # If the user has configured preferred release countries, use the first one
+    # if it is one in the complete list of release countries.
+    for country in config.setting['preferred_release_countries']:
+        if country in release_countries:
+            m['releasecountry'] = country
+            break
+    # Translate album title from release aliases if enabled, unless script exception applies
+    if config.setting['translate_album_titles']:
+        if not _should_skip_translation_due_to_scripts(node.get('title'), config=config):
+            alias = _find_localized_alias_name(node.get('aliases'), config.setting['translation_locales'])
+            if alias:
+                m['album'] = alias.name
+    add_genres_from_node(node, album)
+
+
+def release_group_to_metadata(node: Node, m: 'Metadata', release_group: 'ReleaseGroup | None' = None) -> None:
+    """Make metadata dict from a JSON 'release-group' node taken from inside a 'release' node."""
+    config = get_config()
+    m.add_unique('musicbrainz_releasegroupid', node['id'])
+    for key, value in _node_skip_empty_iter(node):
+        if key in _RELEASE_GROUP_TO_METADATA:
+            m[_RELEASE_GROUP_TO_METADATA[key]] = value
+        elif key == 'primary-type':
+            m['~primaryreleasetype'] = value.lower()
+        elif key == 'secondary-types':
+            add_secondary_release_types(value, m)
+        elif key == 'relations' and config.setting['release_ars']:
+            _relations_to_metadata(value, m, config=config, entity='releasegroup')
+    add_genres_from_node(node, release_group)
+    if m['~releasegroup_firstreleasedate']:
+        m['originaldate'] = m['~releasegroup_firstreleasedate']
+        m['originalyear'] = m['originaldate'][:4]
+    m['releasetype'] = m.getall('~primaryreleasetype') + m.getall('~secondaryreleasetype')
+
+
+def add_secondary_release_types(node: list[str], m: 'Metadata') -> None:
+    for secondary_type in node:
+        m.add_unique('~secondaryreleasetype', secondary_type.lower())
+
+
+def add_genres_from_node(node: Node, obj: 'MetadataItem | None') -> None:
+    if obj is None:
+        return
+    if 'tags' in node:
+        add_tags(node['tags'], obj)
+    if 'user-tags' in node:
+        add_user_tags(node['user-tags'], obj)
+    if 'genres' in node:
+        add_genres(node['genres'], obj)
+    if 'user-genres' in node:
+        add_user_genres(node['user-genres'], obj)
+
+
+def add_genres(node: list[Node], obj: 'MetadataItem') -> None:
+    for tag in node:
+        obj.add_genre(tag['name'], tag['count'])
+
+
+def add_user_genres(node: list[Node], obj: 'MetadataItem') -> None:
+    for tag in node:
+        obj.add_genre(tag['name'], 1)
+
+
+def add_tags(node: list[Node], obj: 'MetadataItem') -> None:
+    for tag in node:
+        obj.add_folksonomy_tag(tag['name'], tag['count'])
+
+
+def add_user_tags(node: list[Node], obj: 'MetadataItem') -> None:
+    for tag in node:
+        obj.add_folksonomy_tag(tag['name'], 1)
+
+
+def add_isrcs_to_metadata(node: list[str], metadata: 'Metadata') -> None:
+    for isrc in node:
+        metadata.add('isrc', isrc)
+
+
+def add_iswcs_to_metadata(node: list[str], metadata: 'Metadata') -> None:
+    for iswc in node:
+        metadata.add('~iswc', iswc)
+
+
+def get_score(node: Node) -> float:
+    """Returns the score attribute for a node.
+    The score is expected to be an integer between 0 and 100, it is returned as
+    a value between 0.0 and 1.0. If there is no score attribute or it has an
+    invalid value 1.0 will be returned.
+    """
+    try:
+        return int(node.get('score', 100)) / 100
+    except (TypeError, ValueError):
+        return 1.0

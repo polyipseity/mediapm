@@ -746,6 +746,11 @@ pub fn open_browser(url: &str) -> Result<(), MusicBrainzAuthError> {
         c.arg(url);
         c
     };
+    // The launcher is a runtime child too: give it only the host platform's
+    // inherited names (which include the desktop/display variables it needs),
+    // never the ambient credentials of the `mediapm` process.
+    let env_pairs = crate::child_env::default_host_inherited_env_pairs();
+    crate::child_env::apply_std(&mut cmd, &env_pairs);
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

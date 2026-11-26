@@ -1,0 +1,74 @@
+{
+  "images": [
+    {
+      "image": "https://caa.example/release/front-a-original",
+      "thumbnails": {
+        "250": "https://caa.example/release/front-a-250",
+        "500": "https://caa.example/release/front-a-500",
+        "1200": "https://caa.example/release/front-a-1200"
+      },
+      "types": ["Front", "Booklet"],
+      "comment": "first front",
+      "approved": true,
+      "front": true
+    },
+    {
+      "image": "https://caa.example/release/back-original",
+      "thumbnails": {},
+      "types": ["Back"],
+      "comment": "back without thumbnails",
+      "approved": true,
+      "front": false
+    },
+    {
+      "image": "https://caa.example/release/medium-original",
+      "thumbnails": {
+        "250": "https://caa.example/release/medium-250"
+      },
+      "types": ["Medium"],
+      "comment": "medium with only small thumbnail",
+      "approved": true,
+      "front": false
+    },
+    {
+      "image": "https://caa.example/release/unapproved-original",
+      "thumbnails": {
+        "500": "https://caa.example/release/unapproved-500"
+      },
+      "types": ["Front"],
+      "comment": "unapproved front",
+      "approved": false,
+      "front": true
+    },
+    {
+      "image": "https://caa.example/release/watermark-original",
+      "thumbnails": {
+        "500": "https://caa.example/release/watermark-500"
+      },
+      "types": ["Watermark"],
+      "comment": "excluded watermark",
+      "approved": true,
+      "front": false
+    },
+    {
+      "image": "https://caa.example/release/front-b-original",
+      "thumbnails": {
+        "500": "https://caa.example/release/front-b-500"
+      },
+      "types": ["Front", "Booklet"],
+      "comment": "second front",
+      "approved": true,
+      "front": true
+    },
+    {
+      "image": "https://caa.example/release/large-only-original",
+      "thumbnails": {
+        "1200": "https://caa.example/release/large-only-1200"
+      },
+      "types": ["Back"],
+      "comment": "only a 1200px thumbnail",
+      "approved": true,
+      "front": false
+    }
+  ]
+}

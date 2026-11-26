@@ -7,7 +7,7 @@
       "step-1-ffmpeg": "blake3:eaf1af8b96a815f33f4f8a8cbc3cae2127865942402ae25772f5cabb5834dd41",
       "step-2-0-rsgain-audio-to-audio": "blake3:4967971bb104c24bb8b4eb5cdf34a3e5ce47bc1a9734a95cab1d5801197592eb",
       "step-3-0-media-tagger-audio-to-audio-apply": "blake3:bf42f25770d36eabbbeb5f27e763f3c75f38185b0596cd59a7904dd87698361f",
-      "step-3-0-media-tagger-audio-to-audio-metadata": "blake3:6901af2285f2990716303bf747bd214c54d5cb890b697289e8f296133ef7874a"
+      "step-3-0-media-tagger-audio-to-audio-metadata": "blake3:58226f280fa4dbf8e1bb0f982aafb9aef08b4b8892757034eb56c636d0aa0f14"
     }
   },
   "tool_call_instances": {
@@ -111,7 +111,7 @@
         }
       ]
     },
-    "blake3:6901af2285f2990716303bf747bd214c54d5cb890b697289e8f296133ef7874a": {
+    "blake3:58226f280fa4dbf8e1bb0f982aafb9aef08b4b8892757034eb56c636d0aa0f14": {
       "key_version": 7,
       "attempted_key_version_nk": 7,
       "tool_call_id": "media-tagger",

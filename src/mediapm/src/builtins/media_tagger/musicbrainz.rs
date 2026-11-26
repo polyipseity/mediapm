@@ -1850,4 +1850,136 @@ mod tests {
         .expect("tags");
         assert_eq!(genre_values(&tags), vec!["My-Genre", "My-Tag", "Release-Genre", "Release-Tag"]);
     }
+
+    /// Guards the touched tag keys and both `inc` sets against vendored Picard.
+    ///
+    /// The Python driver executes Picard's own source for the same fixture and
+    /// configuration; this test builds mediapm's mapping from the same input
+    /// and compares canonical key/value lists, with the joined `; ` fields
+    /// split into their values on this side.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one parity test builds the fixture, mapping, and inc shape before comparing them"
+    )]
+    #[test]
+    fn picard_parity_matches_touched_tags_and_inc_sets() {
+        use std::collections::BTreeSet;
+        use std::fs;
+        use std::path::Path;
+
+        use mediapm_test_support::run_picard_parity_gate;
+
+        let contract = run_picard_parity_gate().expect("vendored Picard parity driver");
+        let fixtures =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/picard-parity/fixtures");
+        let config: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(fixtures.join("config.json")).expect("read config fixture"),
+        )
+        .expect("parse config fixture");
+        let node: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(fixtures.join("mb_node.json")).expect("read MB fixture"),
+        )
+        .expect("parse MB fixture");
+
+        let bool_flag = |name: &str| {
+            config
+                .get(name)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or_else(|| panic!("config fixture needs boolean {name}"))
+        };
+        let str_flag = |name: &str| {
+            config
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_else(|| panic!("config fixture needs string {name}"))
+        };
+        let number_flag = |name: &str| {
+            config
+                .get(name)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_else(|| panic!("config fixture needs number {name}"))
+        };
+
+        let recording: Recording =
+            serde_json::from_value(node["recording"].clone()).expect("recording entity");
+        let release: Release =
+            serde_json::from_value(node["release"].clone()).expect("release entity");
+        let payload = MusicBrainzPayload {
+            recording,
+            release: Some(release),
+            recording_user_data: extract_user_data(&node["recording"]),
+            release_user_data: extract_user_data(&node["release"]),
+        };
+        let genre_config = GenreConfig {
+            use_genres: bool_flag("use_genres"),
+            only_my_genres: bool_flag("only_my_genres"),
+            max_genres: usize::try_from(number_flag("max_genres")).expect("max genres"),
+            min_genre_usage: u8::try_from(number_flag("min_genre_usage")).expect("min usage"),
+            genres_filter: str_flag("genres_filter").to_owned(),
+            join_genres: str_flag("join_genres").to_owned(),
+        };
+        let tags = build_ffmetadata_map(&payload, bool_flag("write_all_tags"), &genre_config)
+            .expect("tags");
+
+        let mut actual_tags: Vec<Vec<String>> = Vec::new();
+        for key in ["genre", "~usertags", "~rating", "musicbrainz_collectionid"] {
+            let values: Vec<String> = tags
+                .iter()
+                .filter(|(tag_key, _)| tag_key == key)
+                .flat_map(|(_, value)| {
+                    if key == "~usertags" || key == "musicbrainz_collectionid" {
+                        value.split("; ").map(str::to_owned).collect::<Vec<_>>()
+                    } else {
+                        vec![value.clone()]
+                    }
+                })
+                .collect();
+            if !values.is_empty() {
+                actual_tags.push(std::iter::once(key.to_owned()).chain(values).collect());
+            }
+        }
+        actual_tags.sort();
+        let expected_tags: Vec<Vec<String>> = contract
+            .tags
+            .iter()
+            .map(|tag| std::iter::once(tag.key.clone()).chain(tag.values.iter().cloned()).collect())
+            .collect();
+        assert_eq!(actual_tags, expected_tags, "touched tag keys and values differ");
+
+        let shape = MusicBrainzFetchShape {
+            write_all_tags: bool_flag("write_all_tags"),
+            release_ars: bool_flag("release_ars"),
+            endpoint: "https://musicbrainz.org/ws/2/".to_owned(),
+            include_user_genres: bool_flag("enable_user_genres")
+                || (genre_config.use_genres && genre_config.only_my_genres),
+            include_user_ratings: bool_flag("enable_ratings"),
+            include_user_collections: bool_flag("enable_user_collections"),
+            include_user_tags: bool_flag("enable_user_tags")
+                || (genre_config.use_genres && genre_config.only_my_genres),
+            use_genres: genre_config.use_genres,
+            only_my_genres: genre_config.only_my_genres,
+        };
+        let allowed: BTreeSet<String> = config["inc_contract_tokens"]
+            .as_array()
+            .expect("inc token list")
+            .iter()
+            .map(|token| token.as_str().expect("inc token").to_owned())
+            .collect();
+        assert_eq!(contract.inc.len(), 2, "both entity inc sets must be present");
+        for entry in &contract.inc {
+            let tokens = match entry.entity.as_str() {
+                "recording" => recording_includes(&shape),
+                "release" => release_includes(&shape),
+                other => panic!("unknown inc entity {other}"),
+            };
+            let mut actual: Vec<String> = tokens
+                .into_iter()
+                .filter(|token| allowed.contains(*token))
+                .map(str::to_owned)
+                .collect();
+            actual.sort();
+            actual.dedup();
+            assert_eq!(actual, entry.values, "{} inc set differs", entry.entity);
+        }
+    }
 }

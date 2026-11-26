@@ -1,11 +1,15 @@
 //! Repository hygiene gates that run after the test suite.
 //!
-//! Both gates answer one question: did the suite leave the tree in a state
-//! the next person can work with. They used to exist twice, once in
-//! `run-all-tests.sh` and once in `run-all-tests.ps1`; keeping them here
+//! The janitor and tempdir gates answer one question: did the suite leave the
+//! tree in a state the next person can work with. They used to exist twice,
+//! once in `run-all-tests.sh` and once in `run-all-tests.ps1`; keeping them here
 //! removes the parity requirement instead of maintaining it.
+//!
+//! The Picard gate answers a different question: did the media tagger's
+//! touched behavior stay identical to the vendored Picard 3.0.4 source.
 
 pub mod janitor;
+pub mod picard;
 pub mod tempdir;
 
 /// A managed temp tree for the gate tests, shared so both gate test

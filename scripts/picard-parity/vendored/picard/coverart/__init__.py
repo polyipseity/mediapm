@@ -1,0 +1,369 @@
+# Picard, the next-generation MusicBrainz tagger
+#
+# Copyright (C) 2007 Oliver Charles
+# Copyright (C) 2007, 2010-2011 Lukáš Lalinský
+# Copyright (C) 2007-2011, 2019-2026 Philipp Wolfer
+# Copyright (C) 2011 Michael Wiencek
+# Copyright (C) 2011-2012 Wieland Hoffmann
+# Copyright (C) 2013-2015, 2018-2021, 2023-2026 Laurent Monin
+# Copyright (C) 2016-2017 Sambhav Kothari
+# Copyright (C) 2024 Giorgio Fontanive
+# Copyright (C) 2026 Bryan Roessler
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, see <https://www.gnu.org/licenses/>.
+
+
+from collections.abc import Generator
+from functools import partial
+import traceback
+
+from picard import (
+    log,
+    tagger_instance,
+)
+from picard.album import Album
+from picard.album_requests import TaskType
+from picard.config import get_config
+from picard.coverart.image import (
+    CoverArtImage,
+    CoverArtImageError,
+    CoverArtImageIOError,
+)
+from picard.coverart.processing import (
+    CoverArtImageProcessing,
+    run_image_filters,
+)
+from picard.coverart.providers import (
+    CoverArtProvider,
+    cover_art_providers,
+)
+from picard.coverart.setters import (
+    CoverArtSetter,
+    CoverArtSetterMode,
+)
+from picard.debug_opts import DebugOpt
+from picard.extension_points.metadata import register_album_metadata_processor
+from picard.i18n import N_
+from picard.metadata import Metadata
+from picard.util import (
+    imageinfo,
+    resolve_fs_path,
+    thread,
+)
+
+
+class CoverArt:
+    def __init__(self, album: Album, metadata: Metadata, release: dict):
+        self._queue_new()
+        self.album: Album = album
+        self.metadata: Metadata = metadata
+        self.release = release  # not used in this class, but used by providers
+        self.front_image_found: bool = False
+        self.image_processing = CoverArtImageProcessing(album)
+        self._queue_generator: Generator[None, None, None] | None = None
+
+    def __repr__(self):
+        return "%s for %r" % (self.__class__.__name__, self.album)
+
+    _COVERART_SELECTION_SETTINGS = (
+        'ca_providers',
+        'embed_only_one_front_image',
+        'save_only_one_front_image',
+        'save_images_to_tags',
+        'save_images_to_files',
+        'save_images_overwrite',
+        'remove_images_from_tags',
+        'cover_image_filename',
+        'image_type_as_filename',
+        'filter_cover_by_size',
+        'cover_minimum_width',
+        'cover_minimum_height',
+        'dont_replace_with_smaller_cover',
+        'dont_replace_cover_of_types',
+        'dont_replace_included_types',
+        'caa_approved_only',
+        'caa_image_size',
+        'caa_restrict_image_types',
+        'caa_image_types',
+        'caa_image_types_to_omit',
+    )
+
+    def retrieve(self):
+        """Retrieve available cover art images for the release"""
+        config = get_config()
+        if config.setting['save_images_to_tags'] or config.setting['save_images_to_files']:
+            log.debug_if(
+                DebugOpt.COVERART,
+                msg_func=lambda: (
+                    "Cover art selection settings for %s: %s"
+                    % (
+                        self.album,
+                        ', '.join(f"{k}={config.setting[k]!r}" for k in self._COVERART_SELECTION_SETTINGS),
+                    )
+                ),
+            )
+            self.providers = cover_art_providers()
+            self._queue_generator = self._start_queue()
+            self.next_in_queue()
+        else:
+            log.debug("Cover art disabled by user options.")
+
+    def next_in_queue(self):
+        """Run the next item in the queue.
+        Async cover art providers should call this once they have finished processing.
+        """
+        if not self._queue_generator:
+            log.error(f'CoverArt.next_in_queue called for {self.album} without active queue generator')
+            return
+
+        try:
+            next(self._queue_generator)
+        except StopIteration:
+            self._queue_generator = None
+            self.image_processing.wait_for_processing()
+
+    def _all_images_satisfied(self, config=None) -> bool:
+        """Check if all configured image needs have been met.
+
+        Returns True if no more images need to be downloaded, considering
+        both embedding and external file settings symmetrically.
+        """
+        if not self.front_image_found:
+            return False
+        if config is None:
+            config = get_config()
+        need_more_for_tags = config.setting['save_images_to_tags'] and not config.setting['embed_only_one_front_image']
+        need_more_for_files = config.setting['save_images_to_files'] and not config.setting['save_only_one_front_image']
+        return not need_more_for_tags and not need_more_for_files
+
+    def _start_queue(self) -> Generator[None, None, None]:
+        """Creates a generator that processes all cover art providers.
+        The generator will yield if async providers are loading data, otherwise
+        it iterates over queued images and processes them.
+        """
+        config = get_config()
+
+        while True:
+            if self.album.id not in self.album.tagger.albums:
+                # album removed
+                log.debug(f'Cover art processing aborted, {self.album} got removed')
+                return
+
+            if self._all_images_satisfied(config):
+                return
+
+            while self._queue_empty():
+                try:
+                    queue_state = self._requeue()
+                    if queue_state == CoverArtProvider.QueueState.WAIT:
+                        yield
+                except StopIteration:
+                    # Cover art processing complete - no need to finalize,
+                    # album already finalized when critical requests completed
+                    return
+
+            # We still have some items to try!
+            image = self._queue_get()
+            if not image.support_types and self.front_image_found:
+                # we already have one front image, no need to try other type-less
+                # sources
+                log.debug("Skipping %r, one front image is already available", image)
+                continue
+            else:
+                try:
+                    state = self._handle_queued_image(image)
+                    if state == CoverArtProvider.QueueState.WAIT:
+                        yield
+                except CoverArtImageIOError as error:
+                    # It doesn't make sense to store/download more images if we can't
+                    # save them in the temporary folder, abort.
+                    log.error(f'Cover art image IO error, {self.album}, {image}: {error}')
+                    return
+
+    def _requeue(self) -> CoverArtProvider.QueueState:
+        # requeue from next provider
+        provider = next(self.providers)
+        result = CoverArtProvider.QueueState._STARTED
+        try:
+            instance = provider.provider_class(self)
+            if provider.enabled and instance.enabled():
+                log.debug("Trying cover art provider %s …", provider.name)
+                result = instance.queue_images()
+            else:
+                log.debug_if(DebugOpt.COVERART, "Skipping cover art provider %s …", provider.name)
+        except BaseException:
+            log.error(traceback.format_exc())
+            raise
+        return result
+
+    def _handle_queued_image(self, image: CoverArtImage) -> CoverArtProvider.QueueState:
+        # image has already data loaded
+        if image.datahash:
+            info = imageinfo.ImageInfo(
+                width=image.width,
+                height=image.height,
+                datalen=image.datalength,
+                mime=image.mimetype,
+                extension=image.extension,
+            )
+            self._process_image_data(image, image.data, info)
+            return CoverArtProvider.QueueState.WAIT
+        # local files, load image data from filesystem
+        elif image.url and image.url.scheme() == 'file':
+            try:
+                path = resolve_fs_path(image.url.toLocalFile())
+                with open(path, 'rb') as file:
+                    data = file.read()
+                    image_info = imageinfo.identify(data)
+                    self._process_image_data(image, data, image_info)
+                return CoverArtProvider.QueueState.WAIT
+            except imageinfo.IdentificationError as e:
+                log.error("Couldn't identify image file %r: %s", path, e)
+                return CoverArtProvider.QueueState.FINISHED
+            except OSError as exc:
+                (errnum, errmsg) = exc.args
+                log.error("Failed to read %r: %s (%d)", path, errmsg, errnum)
+                return CoverArtProvider.QueueState.FINISHED
+        # download image from the web
+        elif image.url:
+            self._message(
+                N_('Downloading cover art of type "%(type)s" for %(albumid)s from %(host)s …'),
+                {
+                    'type': image.types_as_string(),
+                    'albumid': self.album.id,
+                    'host': image.url.host(),
+                },
+                echo=None,
+            )
+            log.debug("Downloading %r", image)
+            task_id = f'coverart_{id(image)}'
+
+            def create_request():
+                return self.album.tagger.webservice.download_url(
+                    url=image.url,
+                    handler=partial(self._coverart_downloaded, image),
+                    priority=True,
+                )
+
+            self.album.add_task(
+                task_id,
+                TaskType.OPTIONAL,
+                f'Cover art download: {image.types_as_string(translate=False)}',
+                request_factory=create_request,
+            )
+            return CoverArtProvider.QueueState.WAIT
+        else:
+            # We should never end here
+            raise CoverArtImageError(f'Cannot handle image {image!r}, no image data and no URL')
+
+    def _process_image_data(self, image: CoverArtImage, data, image_info):
+        # Skip image if it gets filtered
+        if image.can_be_filtered and not run_image_filters(data, image_info, self.album, image):
+            log.debug_if(DebugOpt.COVERART, "Image filtered out: %r", image)
+            thread.to_main(self.next_in_queue)
+            return
+
+        self.album.add_task(
+            f'coverart_processing_{id(image)}',
+            TaskType.OPTIONAL,
+            f'Cover art processing: {image}',
+        )
+        self.image_processing.run_image_processors(image, data, image_info, self._finish_process_image_data)
+
+    def _finish_process_image_data(self, image: CoverArtImage, error):
+        if error:
+            self.album.error_append("Coverart processing_error: %s" % error)
+        self.album.complete_task(f'coverart_processing_{id(image)}')
+        self._set_metadata(image)
+
+        # next_in_queue must not be called directly but passed to main loop.
+        # Otherwise the already executing generator function will be called twice.
+        thread.to_main(self.next_in_queue)
+
+    def _set_metadata(self, image: CoverArtImage):
+        if image.can_be_saved_to_metadata:
+            log.debug("Storing to metadata: %r", image)
+            setter = CoverArtSetter(CoverArtSetterMode.REPLACE, image, self.album, update_orig=True)
+            setter.set_coverart()
+            # If the image already was a front image,
+            # there might still be some other non-CAA front
+            # images in the queue - ignore them.
+            if not self.front_image_found:
+                self.front_image_found = image.is_front_image()
+        else:
+            log.debug("Not storing to metadata: %r", image)
+
+    def _coverart_downloaded(self, image: CoverArtImage, data, http, error):
+        """Handle finished download, save it to metadata"""
+        task_id = f'coverart_{id(image)}'
+        self.album.complete_task(task_id)
+
+        if error:
+            self.album.error_append("Coverart error: %s" % http.errorString())
+        elif len(data) < 1000:
+            log.warning("Not enough data, skipping %s", image)
+        else:
+            self._message(
+                N_('Cover art of type "%(type)s" downloaded for %(albumid)s from %(host)s'),
+                {
+                    'type': image.types_as_string(),
+                    'albumid': self.album.id,
+                    'host': image.url.host() if image.url else '',
+                },
+                echo=None,
+            )
+            try:
+                image_info = imageinfo.identify(data)
+                # next_in_queue will be called by _process_image_data
+                self._process_image_data(image, data, image_info)
+                return
+            except imageinfo.IdentificationError as e:
+                log.warning("Couldn't identify image %r: %s", image, e)
+                return
+
+        self.next_in_queue()
+
+    def queue_put(self, image: CoverArtImage):
+        """Add an image to queue"""
+        log.debug("Queuing cover art image %r", image)
+        self.__queue.append(image)
+
+    def _queue_get(self) -> CoverArtImage:
+        """Get next image and remove it from queue"""
+        return self.__queue.pop(0)
+
+    def _queue_empty(self):
+        """Returns True if the queue is empty"""
+        return not self.__queue
+
+    def _queue_new(self):
+        """Initialize the queue"""
+        self.__queue: list[CoverArtImage] = []
+
+    def _message(self, *args, **kwargs):
+        """Display message to status bar"""
+        tagger = tagger_instance()
+        tagger.window.set_statusbar_message(*args, **kwargs)
+
+
+def _retrieve_coverart(album, metadata, release):
+    """Gets all cover art URLs from the metadata and then attempts to
+    download the album art."""
+
+    coverart = CoverArt(album, metadata, release)
+    log.debug("New %r", coverart)
+    coverart.retrieve()
+
+
+register_album_metadata_processor(_retrieve_coverart)

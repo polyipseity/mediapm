@@ -74,6 +74,7 @@ pub mod media_fixture;
 pub mod mock_musicbrainz;
 pub mod mock_upstream;
 pub mod normalize;
+pub mod picard_contract;
 pub mod seams;
 pub mod stub_media;
 pub mod stub_payload;
@@ -82,6 +83,10 @@ pub mod stub_tool;
 pub use media_fixture::{MatroskaFacts, media_fixture_path, read_matroska_facts};
 pub use mock_musicbrainz::MockMusicBrainz;
 pub use mock_upstream::MockUpstream;
+pub use picard_contract::{
+    MISSING_PYTHON_MESSAGE, PicardContract, PicardCoverArt, PicardInc, PicardTag,
+    run_picard_parity_gate,
+};
 pub use seams::{
     ALL_SEAMS, GITHUB_API_BASE, GITHUB_DOWNLOAD_BASE, JELLYFIN_BASE, MARTIN_RIEDL_BASE, SeamGuard,
     env_lock, lock_process_env, seam_pairs,

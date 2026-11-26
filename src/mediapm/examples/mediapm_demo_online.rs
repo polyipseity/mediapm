@@ -1213,7 +1213,8 @@ fn configure_document_for_online_demo(
     // The tagging step's backend. Offline the option names the mock's loopback
     // endpoint, which is the only way the in-process builtin reaches a local
     // server; online the option is absent and the tagger's default endpoint
-    // applies.
+    // applies. Offline also deselects every login-only user field, so the run
+    // needs no MusicBrainz credentials even though those fields default to on.
     let mut media_tagger_options = BTreeMap::from([
         (
             "recording_mbid".to_string(),
@@ -1228,6 +1229,15 @@ fn configure_document_for_online_demo(
             "musicbrainz_endpoint".to_string(),
             TransformInputValue::String(endpoint.to_string()),
         );
+        for name in [
+            "include_user_collections",
+            "include_user_genres",
+            "include_user_ratings",
+            "include_user_tags",
+        ] {
+            media_tagger_options
+                .insert(name.to_string(), TransformInputValue::String("false".to_string()));
+        }
     }
 
     let steps = vec![

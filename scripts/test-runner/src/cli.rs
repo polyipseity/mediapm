@@ -30,11 +30,13 @@ pub struct Cli {
 /// The four things the runner can do.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Run the test suite, then the tempdir and janitor gates.
+    /// Run the test suite, then the Picard gate, then the tempdir and janitor
+    /// gates.
     ///
-    /// The tempdir gate runs first because it is a pure in-process scan, so a
-    /// naming violation is reported without spending a subprocess on a tree
-    /// that is already wrong.
+    /// Picard runs first because it guards the vendored parity contract before
+    /// any host-tree checks. The tempdir gate follows as a pure in-process
+    /// scan, so a naming violation is reported without spending a subprocess
+    /// on a tree that is already wrong.
     Test(Selection),
     /// Run doctests, then the rustdoc link gate.
     Doc(Selection),
@@ -328,5 +330,14 @@ mod tests {
             panic!("expected platform");
         };
         assert!(args.print);
+    }
+
+    /// Keeps the `test` help text truthful about the Picard gate it runs.
+    #[test]
+    fn test_help_names_the_picard_gate() {
+        let error = Cli::try_parse_from(["test-runner", "test", "--help"])
+            .expect_err("--help is a clap display error");
+        let help = error.to_string();
+        assert!(help.contains("Picard"), "help should name the gate: {help}");
     }
 }

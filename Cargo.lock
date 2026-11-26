@@ -2204,10 +2204,12 @@ dependencies = [
 name = "mediapm-test-support"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "flate2",
  "mediapm-utils",
  "parking_lot",
  "reqwest",
+ "serde",
  "serde_json",
  "tar",
  "tokio",
@@ -3869,6 +3871,7 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

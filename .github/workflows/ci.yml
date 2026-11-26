@@ -63,6 +63,13 @@ jobs:
           shared-key: ci-build
           cache-on-failure: true
 
+      # The Picard parity gate runs a Python 3.10+ driver in both legs. Windows
+      # runners do not reliably expose `python`, so install it before tests.
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.10'
+
       # R3: run cheap static checks before expensive test/build steps so obvious
       # failures stop the job early. rumdl runs before fmt-check (approved change).
       #

@@ -1,0 +1,61 @@
+{
+  "files": [
+    {
+      "path": "picard/mbjson.py",
+      "sha256": "fdb92f0a99a754c23bb896c7a3d1ead6aecae8672d453edef25cb2d2a636e4db",
+      "source_url": "https://raw.githubusercontent.com/metabrainz/picard/release-3.0.4/picard/mbjson.py"
+    },
+    {
+      "path": "picard/item.py",
+      "sha256": "60f3431463b5b4151fcdc5528f4f230496c82c1114b2fd3557df34280d4ae146",
+      "source_url": "https://raw.githubusercontent.com/metabrainz/picard/release-3.0.4/picard/item.py"
+    },
+    {
+      "path": "picard/album.py",
+      "sha256": "27f00055f416eba4ae801f38954130dc8c37aa72b5a9880bae6dc71d3a1d64cf",
+      "source_url": "https://raw.githubusercontent.com/metabrainz/picard/release-3.0.4/picard/album.py"
+    },
+    {
+      "path": "picard/track.py",
+      "sha256": "69ce6e4d7992e8866379a931e69ba2575f7484cb999fd317962e991a12fca490",
+      "source_url": "https://raw.githubusercontent.com/metabrainz/picard/release-3.0.4/picard/track.py"
+    },
+    {
+      "path": "picard/util/__init__.py",
+      "sha256": "43482ac37c16440330ce37d87a1e9a0dc2b3fdbc4e5fd1620f140bdc0019482c",
+      "source_url": "https://raw.githubusercontent.com/metabrainz/picard/release-3.0.4/picard/util/__init__.py"
+    },
+    {
+      "path": "picard/util/imagelist.py",
+      "sha256": "199048847cbcce66c75c156a48fb56bb91d331d4fb191444c0378045f431e177",
+      "source_url": "https://raw.githubusercontent.com/metabrainz/picard/release-3.0.4/picard/util/imagelist.py"
+    },
+    {
+      "path": "picard/coverart/providers/caa.py",
+      "sha256": "61012184642db058f1effd71a7d69997e4105ce95cfe8f001e1d91ca59cd458b",
+      "source_url": "https://raw.githubusercontent.com/metabrainz/picard/release-3.0.4/picard/coverart/providers/caa.py"
+    },
+    {
+      "path": "picard/coverart/image.py",
+      "sha256": "c7679b46ab823a4dfe0a2d79389a6bfc04811c1361a0911e0d5a34f4507b74b8",
+      "source_url": "https://raw.githubusercontent.com/metabrainz/picard/release-3.0.4/picard/coverart/image.py"
+    },
+    {
+      "path": "picard/coverart/__init__.py",
+      "sha256": "9b59e18f250314f169c7e0e03cc83acb5ec4c6a449356facbe1442965924ffb3",
+      "source_url": "https://raw.githubusercontent.com/metabrainz/picard/release-3.0.4/picard/coverart/__init__.py"
+    },
+    {
+      "path": "picard/collection.py",
+      "sha256": "ef601b8fc46ea78b713be5f398abd4ae12034e67127f68b4909da8a0d00d03ef",
+      "source_url": "https://raw.githubusercontent.com/metabrainz/picard/release-3.0.4/picard/collection.py"
+    },
+    {
+      "path": "COPYING.txt",
+      "sha256": "edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6",
+      "source_url": "https://raw.githubusercontent.com/metabrainz/picard/release-3.0.4/COPYING.txt"
+    }
+  ],
+  "primary_source": "https://raw.githubusercontent.com/metabrainz/picard/release-3.0.4/",
+  "version": "3.0.4"
+}

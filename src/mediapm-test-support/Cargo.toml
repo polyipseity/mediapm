@@ -24,6 +24,7 @@ workspace = true
 # mock's server is part of this crate's public surface. It still cannot reach a
 # shipped binary: this crate is only ever a dev-dependency of its consumers.
 wiremock = "0.6"
+anyhow.workspace = true
 flate2.workspace = true
 # The env-var registry table (`env_registry.rs`) is non-test code and uses the
 # shared `EnvVarEntry` type. The type lives in mediapm-utils, not
@@ -31,6 +32,7 @@ flate2.workspace = true
 # which would close the dev-dependency cycle.
 mediapm-utils.workspace = true
 parking_lot.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tar.workspace = true
 tokio.workspace = true
