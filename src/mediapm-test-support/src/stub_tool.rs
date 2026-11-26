@@ -87,6 +87,16 @@ const STUB_TOOL_SOURCE: &str = include_str!("bin/mediapm-stub-tool.rs");
 /// the hash is examined.
 const SOURCE_FINGERPRINT_SUFFIX: &str = ".source-fingerprint";
 
+/// Suffix of the cross-process lock that serializes stub compilation beside an
+/// artifact.
+///
+/// Like the source-fingerprint record, the lock's path is derived by appending
+/// this suffix to the executable's whole OS string, so the lock lives beside the
+/// file it protects and no name-splitting is needed. The same hyphenated prefix
+/// rule that keeps the record out of [`hashed_candidates`] keeps this file out of
+/// the search too.
+const COMPILE_LOCK_SUFFIX: &str = ".compile-lock";
+
 /// How long a candidate may take to answer before it is judged not the stub.
 ///
 /// The stub prints a usage line and exits, so a candidate still running this long
@@ -122,21 +132,21 @@ static COMPILE_INVOCATION: AtomicU64 = AtomicU64::new(0);
 
 /// Compiles the stub into `directory` and returns the executable's path.
 ///
-/// Each compile works in a directory of its own, and the finished executable is
-/// moved into place by rename, so two callers that both find no stub neither
-/// observe each other's half-written binary nor collide while building it:
-/// `rustc` names its codegen objects after the crate rather than after the `-o`
-/// path, so two compiles sharing an output directory sign the same object names
-/// and the loser fails to link. The work directory sits under `directory` instead
-/// of in the system temporary directory because a rename cannot cross
-/// filesystems, and the move into place must be atomic.
+/// Compilation is serialized across processes by an exclusive lock on a
+/// `<target>.compile-lock` file beside the artifact, so two callers that find no
+/// usable stub do not race the same fallback: the process that acquires the lock
+/// first writes the executable and its source-fingerprint record, and a loser
+/// that acquires the lock afterwards re-checks [`compiled_from`] and returns the
+/// existing path without recompiling.
 ///
-/// The name of that directory carries the process id **and** a per-call counter
-/// (`COMPILE_INVOCATION`) because the id alone does not separate two compiles:
-/// a test binary runs its tests as threads of one process, so two tests can enter
-/// this function at the same instant under the same pid and would then share the
-/// directory the cleanup removes — one thread deleting the objects, or the staged
-/// executable, of another still running its link.
+/// Each compile works in a directory of its own, and the finished executable is
+/// moved into place from a unique staging path, so the build neither observes
+/// another build's half-written binary nor collides while building it: `rustc`
+/// names its codegen objects after the crate rather than after the `-o` path, so
+/// two compiles sharing an output directory sign the same object names and the
+/// loser fails to link. The work directory sits under `directory` instead of in
+/// the system temporary directory because a rename cannot cross filesystems, and
+/// the move into place must be atomic.
 ///
 /// The compile writes the source's fingerprint to the record beside the
 /// executable, because nothing else tracks this file's input: Cargo does not know
@@ -147,12 +157,10 @@ static COMPILE_INVOCATION: AtomicU64 = AtomicU64::new(0);
 /// trust the older file, while an interrupted compile leaves a record that does
 /// not match and is rebuilt.
 ///
-/// The move into place tolerates one failure. Windows refuses to replace a file
-/// another process is executing, and a failed move is then not a lost build: the
-/// file already at the destination answers what the move wanted, because another
-/// compile in this run wrote it from the same source. `compiled_from` is what
-/// separates that case from a move that left no build of this source behind,
-/// which still panics.
+/// A target that is already correct is never renamed onto. On Windows that matters
+/// because renaming onto a live executable fails with access denied; the lock
+/// plus the re-check means a loser returns the correct existing path, and a winner
+/// that finds the target already correct skips the rename entirely.
 ///
 /// The compiler is the one already running these tests: `rustc` is resolved from
 /// `PATH`, and that resolution relies on the environment Cargo sets for a test
@@ -162,16 +170,35 @@ static COMPILE_INVOCATION: AtomicU64 = AtomicU64::new(0);
 ///
 /// # Panics
 ///
-/// Panics when the work directory, the source or the record cannot be written,
-/// when `rustc` cannot be spawned or rejects the source, or when the executable
-/// cannot be moved into place **and** the destination holds no build of this
-/// source. Every one of those leaves no runnable executable, and a path that does
-/// not run is exactly the vacuous pass the locator exists to prevent.
+/// Panics when the lock, the work directory, the source or the record cannot be
+/// written, when `rustc` cannot be spawned or rejects the source, or when the
+/// executable cannot be moved into place and the destination holds no build of
+/// this source. Every one of those leaves no runnable executable, and a path that
+/// does not run is exactly the vacuous pass the locator exists to prevent.
 #[must_use]
 fn compile_stub_into(directory: &Path) -> PathBuf {
     let file_name = format!("{STUB_TOOL_BIN_NAME}{}", std::env::consts::EXE_SUFFIX);
     let target = directory.join(&file_name);
     let record = record_path(&target);
+    let lock = lock_path(&target);
+
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock)
+        .unwrap_or_else(|error| {
+            panic!("the stub compile lock must be writable at {}: {error}", lock.display())
+        });
+    lock_file.lock().unwrap_or_else(|error| {
+        panic!("the stub compile lock must be acquirable at {}: {error}", lock.display())
+    });
+
+    if target.is_file() && compiled_from(&target, STUB_TOOL_SOURCE) {
+        return target;
+    }
+
     let invocation = COMPILE_INVOCATION.fetch_add(1, Ordering::Relaxed);
     let build =
         directory.join(format!("{file_name}.mediapm-build-{}-{invocation}", std::process::id()));
@@ -191,27 +218,56 @@ fn compile_stub_into(directory: &Path) -> PathBuf {
         .output()
         .unwrap_or_else(|error| panic!("rustc must be on PATH for a Cargo test run: {error}"));
     if !output.status.success() {
-        // The work directory holds nothing worth keeping once the compile has
-        // failed, and leaving it behind would put the compiler's objects in
-        // `target/` for a run that never produced an executable.
         let _ = std::fs::remove_dir_all(&build);
         panic!("compiling the stub failed: {}", String::from_utf8_lossy(&output.stderr));
     }
-    if let Err(error) = std::fs::rename(&staged, &target) {
-        // A sharing violation on Windows is the expected failure here: the file at
-        // `target` is the one a concurrent compile staged and another process is
-        // executing. The destination is right when the record beside it names this
-        // source, which only that compile's own move-then-record sequence writes.
-        if !compiled_from(&target, STUB_TOOL_SOURCE) {
-            let _ = std::fs::remove_dir_all(&build);
-            panic!("the staged stub must move into place at {}: {error}", target.display());
-        }
+
+    if !(target.is_file() && compiled_from(&target, STUB_TOOL_SOURCE)) {
+        move_staged_into_place(&staged, &target, &build, &file_name, invocation);
     }
+
     std::fs::write(&record, source_fingerprint(STUB_TOOL_SOURCE)).unwrap_or_else(|error| {
         panic!("the fallback's source record must be writable at {}: {error}", record.display())
     });
     let _ = std::fs::remove_dir_all(&build);
     target
+}
+
+/// Moves the compiled stub from `staged` into `target`.
+///
+/// The caller skips this when the target is already correct. When the target
+/// exists but is not correct, Windows cannot rename onto it safely if it is a
+/// live executable, so the existing target is first moved aside to a unique name
+/// beside it and the staged executable is then renamed into place. On other
+/// platforms the rename replaces the target atomically.
+fn move_staged_into_place(
+    staged: &Path,
+    target: &Path,
+    build: &Path,
+    file_name: &str,
+    invocation: u64,
+) {
+    if target.exists() && cfg!(windows) {
+        let aside = target.with_file_name(format!(
+            "{file_name}.mediapm-replaced-{}-{invocation}",
+            std::process::id()
+        ));
+        if let Err(error) = std::fs::rename(target, &aside) {
+            let _ = std::fs::remove_dir_all(build);
+            panic!(
+                "the stale stub must move aside before replacement at {}: {error}",
+                target.display()
+            );
+        }
+        if let Err(error) = std::fs::rename(staged, target) {
+            let _ = std::fs::remove_dir_all(build);
+            panic!("the staged stub must move into place at {}: {error}", target.display());
+        }
+        let _ = std::fs::remove_file(aside);
+    } else if let Err(error) = std::fs::rename(staged, target) {
+        let _ = std::fs::remove_dir_all(build);
+        panic!("the staged stub must move into place at {}: {error}", target.display());
+    }
 }
 
 /// Path of the record beside `executable` that says which source built it.
@@ -222,6 +278,17 @@ fn record_path(executable: &Path) -> PathBuf {
     let mut record = executable.as_os_str().to_os_string();
     record.push(SOURCE_FINGERPRINT_SUFFIX);
     PathBuf::from(record)
+}
+
+/// Path of the cross-process compile lock beside `executable`.
+///
+/// The lock lives beside the file it protects, so the file that is
+/// compiled and the lock that serializes its compilation share a directory and
+/// are found the same way.
+fn lock_path(executable: &Path) -> PathBuf {
+    let mut lock = executable.as_os_str().to_os_string();
+    lock.push(COMPILE_LOCK_SUFFIX);
+    PathBuf::from(lock)
 }
 
 /// Fingerprint of `source`, the value recorded beside a compiled fallback.
@@ -769,6 +836,80 @@ mod tests {
              artifact its record calls stale instead of rebuilding it",
             answer.display(),
             std::fs::read_to_string(&record).unwrap_or_default().trim(),
+        );
+    }
+
+    /// A missing executable with a matching record is rebuilt, not trusted.
+    ///
+    /// The user-level guarantee: the source-fingerprint record is a claim about an
+    /// executable that exists. If the executable is gone but the record remains — a
+    /// partial replacement, an interrupted move, or a manual deletion — the locator
+    /// must rebuild the stub rather than returning a nonexistent path.
+    #[test]
+    fn a_missing_executable_with_a_matching_record_is_rebuilt() {
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
+        let file_name = format!("{STUB_TOOL_BIN_NAME}{}", std::env::consts::EXE_SUFFIX);
+        let target = dir.path().join(&file_name);
+        std::fs::write(record_path(&target), source_fingerprint(STUB_TOOL_SOURCE))
+            .expect("the matching source record must be writable");
+        assert!(!target.exists(), "the test must start with no executable at the target");
+
+        let path = compile_stub_into(dir.path());
+
+        assert_eq!(path, target, "the compile must return the fallback target path");
+        assert!(target.is_file(), "the rebuilt stub must exist at the target path");
+        assert!(behaves_like_the_stub(&path), "the rebuilt stub must be runnable");
+        assert!(
+            compiled_from(&path, STUB_TOOL_SOURCE),
+            "the rebuilt stub must record the source it was built from",
+        );
+    }
+
+    /// A concurrent compile waits for the lock and reuses the winner's stub.
+    ///
+    /// The user-level guarantee: two concurrent compiles that find no usable
+    /// fallback must not race the same artifact. Holding the compile lock makes
+    /// the next compile block; while it is held the winner's artifact can appear,
+    /// and releasing the lock lets the blocked compile re-check `compiled_from` and
+    /// return the correct target without recompiling or renaming onto it.
+    #[test]
+    fn a_compile_waits_for_the_lock_and_reuses_the_correct_target() {
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
+        let file_name = format!("{STUB_TOOL_BIN_NAME}{}", std::env::consts::EXE_SUFFIX);
+        let target = dir.path().join(&file_name);
+        let lock = lock_path(&target);
+
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock)
+            .expect("the compile lock must be creatable");
+        lock_file.lock().expect("the compile lock must be lockable");
+
+        let compile_dir = dir.path().to_path_buf();
+        let worker = std::thread::spawn(move || compile_stub_into(&compile_dir));
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(
+            !worker.is_finished(),
+            "compile_stub_into must wait while another process holds the compile lock",
+        );
+
+        // While holding the lock, place a correct stub at the target so the
+        // worker's re-check sees a winner and returns without recompiling.
+        std::fs::copy(stub_tool_path(), &target).expect("copy a correct stub into place");
+        std::fs::write(record_path(&target), source_fingerprint(STUB_TOOL_SOURCE))
+            .expect("write the matching source record");
+
+        drop(lock_file);
+
+        let path = worker.join().expect("the blocked compile must finish after lock release");
+        assert_eq!(path, target, "the compile must return the fallback target path");
+        assert!(behaves_like_the_stub(&path), "the returned stub must be runnable");
+        assert!(
+            compiled_from(&path, STUB_TOOL_SOURCE),
+            "the compile must record the source it built from",
         );
     }
 
