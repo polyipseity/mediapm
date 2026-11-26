@@ -177,6 +177,16 @@ static COMPILE_INVOCATION: AtomicU64 = AtomicU64::new(0);
 /// does not run is exactly the vacuous pass the locator exists to prevent.
 #[must_use]
 fn compile_stub_into(directory: &Path) -> PathBuf {
+    compile_stub_into_with_lock_seam(directory, || {})
+}
+
+/// [`compile_stub_into`] with a hook run immediately before the compile lock is
+/// acquired.
+///
+/// The hook is a no-op for every caller except the lock-wait test, which uses it
+/// to prove a competing compiler has reached the lock instead of merely having
+/// been scheduled.
+fn compile_stub_into_with_lock_seam(directory: &Path, before_lock: impl FnOnce()) -> PathBuf {
     let file_name = format!("{STUB_TOOL_BIN_NAME}{}", std::env::consts::EXE_SUFFIX);
     let target = directory.join(&file_name);
     let record = record_path(&target);
@@ -191,6 +201,7 @@ fn compile_stub_into(directory: &Path) -> PathBuf {
         .unwrap_or_else(|error| {
             panic!("the stub compile lock must be writable at {}: {error}", lock.display())
         });
+    before_lock();
     lock_file.lock().unwrap_or_else(|error| {
         panic!("the stub compile lock must be acquirable at {}: {error}", lock.display())
     });
@@ -889,14 +900,16 @@ mod tests {
             .expect("the compile lock must be creatable");
         lock_file.lock().expect("the compile lock must be lockable");
 
+        let (lock_seam_tx, lock_seam_rx) = std::sync::mpsc::channel();
         let compile_dir = dir.path().to_path_buf();
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let worker_barrier = std::sync::Arc::clone(&barrier);
         let worker = std::thread::spawn(move || {
-            worker_barrier.wait();
-            compile_stub_into(&compile_dir)
+            compile_stub_into_with_lock_seam(&compile_dir, || {
+                lock_seam_tx.send(()).expect("the main thread must await the lock seam");
+            })
         });
-        barrier.wait();
+        lock_seam_rx
+            .recv()
+            .expect("the worker must reach the compile lock while the main thread holds it");
         assert!(
             !worker.is_finished(),
             "compile_stub_into must wait while the main thread holds the compile lock",
