@@ -1209,6 +1209,11 @@ impl MediaPmService<FileSystemCas> {
             path: effective_paths.runtime_root.clone(),
             source: e,
         })?;
+        ensure_runtime_env_files(
+            &effective_paths.runtime_root,
+            &crate::env_registry::composed_env_registry(),
+        )
+        .map_err(MediaPmError::Conductor)?;
         extend_runtime_gitignore(&effective_paths.runtime_root, MEDIAPM_EXTRA_GITIGNORE)?;
 
         // Bootstrap the mediapm document so a fresh workspace has a default
@@ -1825,6 +1830,28 @@ mod tests {
         );
     }
 
+    /// Checks the registry-owned example shape: every credential name is
+    /// documented, and no live line assigns a value. Commented `# NAME=value`
+    /// lines are the writer's reference format, so only non-comment lines are
+    /// held to the empty-value rule.
+    fn assert_credential_example_has_names_without_values(example: &str) {
+        for name in
+            ["ACOUSTID_API_KEY", "MUSICBRAINZ_OAUTH_CLIENT_ID", "MUSICBRAINZ_OAUTH_CLIENT_SECRET"]
+        {
+            assert!(example.contains(name), "the example must list {name}: {example}");
+        }
+        for line in example.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            assert!(
+                line.split_once('=').is_some_and(|(_, value)| value.trim().is_empty()),
+                "the example must never carry a live value: {line}\n{example}"
+            );
+        }
+    }
+
     /// The registry writer must document mediapm's credential names without
     /// carrying any credential values into the reference file.
     #[test]
@@ -1838,15 +1865,19 @@ mod tests {
 
         let example = std::fs::read_to_string(dir.path().join(".env.example"))
             .expect("read the registry-written example");
-        for name in
-            ["ACOUSTID_API_KEY", "MUSICBRAINZ_OAUTH_CLIENT_ID", "MUSICBRAINZ_OAUTH_CLIENT_SECRET"]
-        {
-            assert!(example.contains(name), "the example must list {name}: {example}");
-        }
-        assert!(
-            !example.contains("secret-value") && !example.contains("client-id-value"),
-            "the example must never carry values",
-        );
+        assert_credential_example_has_names_without_values(&example);
+    }
+
+    /// Service construction must publish the registry-owned example before
+    /// any refresh: a fresh workspace has no other writer to supply it.
+    #[tokio::test]
+    async fn construction_writes_the_registry_owned_env_example() {
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
+        MediaPmService::new_fs_at(dir.path()).await.expect("service opens");
+
+        let example = std::fs::read_to_string(dir.path().join(".mediapm").join(".env.example"))
+            .expect("read the construction-written example");
+        assert_credential_example_has_names_without_values(&example);
     }
 
     /// Re-ensuring after an external edit repairs the example to exactly the
