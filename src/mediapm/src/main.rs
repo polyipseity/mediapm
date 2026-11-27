@@ -539,8 +539,7 @@ async fn main_cli() -> anyhow::Result<()> {
                 let root = &cli.root;
                 let paths = resolve_effective_paths_for_root(root, &rt);
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
-                let auth_file = paths.auth_file.clone();
-                run_builtin_media_tagger(args, auth_file).await
+                run_builtin_media_tagger(args, &paths).await
             }
         },
         Command::Cas(args) => {
@@ -731,62 +730,70 @@ fn default_yt_dlp_steps(
     ]
 }
 
-/// Executes builtin media-tagger command invocation via `run_internal_media_tagger`.
+/// Builds builtin tagger options from the CLI arguments and the resolved
+/// effective paths, so the direct route and its regression test share one
+/// auth-file wiring point.
 #[cfg(feature = "media-tagger")]
 #[expect(
     clippy::cast_possible_wrap,
     reason = "u32 option values cast to i64; wrap is impossible for the bounded input domain"
 )]
+fn builtin_media_tagger_options(
+    args: InternalMediaTaggerArgs,
+    paths: &mediapm::MediaPmPaths,
+) -> mediapm::builtins::media_tagger::InternalMediaTaggerOptions {
+    mediapm::builtins::media_tagger::InternalMediaTaggerOptions {
+        input_path: Some(std::path::PathBuf::from(args.input)),
+        output_path: std::path::PathBuf::from(args.output),
+        acoustid_api_key: args.acoustid_api_key,
+        acoustid_endpoint: args.acoustid_endpoint,
+        musicbrainz_endpoint: args.musicbrainz_endpoint,
+        caa_endpoint: args.caa_endpoint,
+        cache_dir: args.cache_dir.map(std::path::PathBuf::from),
+        cache_expiry_seconds: args.cache_expiry_seconds as i64,
+        write_all_tags: args.write_all_tags,
+        write_all_images: args.write_all_images,
+        save_images_to_tags: args.save_images_to_tags,
+        embed_only_one_front_image: args.embed_only_one_front_image,
+        ca_providers: args.ca_providers,
+        caa_image_types: args.caa_image_types,
+        caa_image_size: args.caa_image_size,
+        caa_approved_only: args.caa_approved_only,
+        preserve_existing_images: args.preserve_existing_images,
+        preserve_existing_tags: args.preserve_existing_tags,
+        preserve_existing_stream_tags: args.preserve_existing_stream_tags,
+        enable_tag_saving: args.enable_tag_saving,
+        release_ars: args.release_ars,
+        use_genres: args.use_genres,
+        only_my_genres: args.only_my_genres,
+        max_genres: args.max_genres,
+        min_genre_usage: args.min_genre_usage,
+        genres_filter: args.genres_filter,
+        join_genres: args.join_genres,
+        cover_art_slot_count: args.cover_art_slot_count,
+        recording_mbid: args.recording_mbid,
+        release_mbid: args.release_mbid,
+        enable_logged_in_features_musicbrainz: args.enable_logged_in_features_musicbrainz,
+        enable_logged_in_features_acoustid: args.enable_logged_in_features_acoustid,
+        metadata_selection: mediapm::builtins::media_tagger::MetadataSelection {
+            include_user_genres: args.include_user_genres,
+            include_user_ratings: args.include_user_ratings,
+            include_user_collections: args.include_user_collections,
+            include_user_tags: args.include_user_tags,
+        },
+        auth_file: Some(paths.auth_file.clone()),
+    }
+}
+
+/// Executes builtin media-tagger command invocation via `run_internal_media_tagger`.
+#[cfg(feature = "media-tagger")]
 async fn run_builtin_media_tagger(
     args: InternalMediaTaggerArgs,
-    auth_file: std::path::PathBuf,
+    paths: &mediapm::MediaPmPaths,
 ) -> anyhow::Result<()> {
     let env_pairs = mediapm::child_env::default_host_inherited_env_pairs();
-    mediapm::builtins::media_tagger::run_internal_media_tagger(
-        mediapm::builtins::media_tagger::InternalMediaTaggerOptions {
-            input_path: Some(std::path::PathBuf::from(args.input)),
-            output_path: std::path::PathBuf::from(args.output),
-            acoustid_api_key: args.acoustid_api_key,
-            acoustid_endpoint: args.acoustid_endpoint,
-            musicbrainz_endpoint: args.musicbrainz_endpoint,
-            caa_endpoint: args.caa_endpoint,
-            cache_dir: args.cache_dir.map(std::path::PathBuf::from),
-            cache_expiry_seconds: args.cache_expiry_seconds as i64,
-            write_all_tags: args.write_all_tags,
-            write_all_images: args.write_all_images,
-            save_images_to_tags: args.save_images_to_tags,
-            embed_only_one_front_image: args.embed_only_one_front_image,
-            ca_providers: args.ca_providers,
-            caa_image_types: args.caa_image_types,
-            caa_image_size: args.caa_image_size,
-            caa_approved_only: args.caa_approved_only,
-            preserve_existing_images: args.preserve_existing_images,
-            preserve_existing_tags: args.preserve_existing_tags,
-            preserve_existing_stream_tags: args.preserve_existing_stream_tags,
-            enable_tag_saving: args.enable_tag_saving,
-            release_ars: args.release_ars,
-            use_genres: args.use_genres,
-            only_my_genres: args.only_my_genres,
-            max_genres: args.max_genres,
-            min_genre_usage: args.min_genre_usage,
-            genres_filter: args.genres_filter,
-            join_genres: args.join_genres,
-            cover_art_slot_count: args.cover_art_slot_count,
-            recording_mbid: args.recording_mbid,
-            release_mbid: args.release_mbid,
-            enable_logged_in_features_musicbrainz: args.enable_logged_in_features_musicbrainz,
-            enable_logged_in_features_acoustid: args.enable_logged_in_features_acoustid,
-            metadata_selection: mediapm::builtins::media_tagger::MetadataSelection {
-                include_user_genres: args.include_user_genres,
-                include_user_ratings: args.include_user_ratings,
-                include_user_collections: args.include_user_collections,
-                include_user_tags: args.include_user_tags,
-            },
-            auth_file: Some(auth_file),
-        },
-        &env_pairs,
-    )
-    .await
+    let options = builtin_media_tagger_options(args, paths);
+    mediapm::builtins::media_tagger::run_internal_media_tagger(options, &env_pairs).await
 }
 
 /// Executes CAS CLI passthrough in-process.
@@ -1252,6 +1259,52 @@ mod tests {
             },
             other => panic!("expected builtin route, got {other:?}"),
         }
+    }
+
+    /// A direct builtin run must carry the configured runtime-root/path
+    /// override into the builtin tagger's auth-file option.
+    #[cfg(feature = "media-tagger")]
+    #[test]
+    fn builtin_media_tagger_auth_file_honors_config_overrides() {
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
+
+        let runtime_root_rt = super::MediaRuntimeStorage {
+            paths: super::RuntimePathsConfig {
+                mediapm_dir: PathBuf::from("custom-runtime"),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let paths = super::resolve_effective_paths_for_root(dir.path(), &runtime_root_rt);
+        let options = super::builtin_media_tagger_options(
+            parse_media_tagger_args(&[]).expect("baseline media-tagger args must parse"),
+            &paths,
+        );
+        assert_eq!(
+            paths.auth_file,
+            dir.path().join("custom-runtime").join("auth.json"),
+            "the CLI mediapm_dir override must move the resolved auth file"
+        );
+        assert_eq!(options.auth_file.as_deref(), Some(paths.auth_file.as_path()));
+
+        let explicit_rt = super::MediaRuntimeStorage {
+            paths: super::RuntimePathsConfig {
+                auth_file: PathBuf::from("credentials/custom.auth.json"),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let explicit_paths = super::resolve_effective_paths_for_root(dir.path(), &explicit_rt);
+        let explicit_options = super::builtin_media_tagger_options(
+            parse_media_tagger_args(&[]).expect("baseline media-tagger args must parse"),
+            &explicit_paths,
+        );
+        assert_eq!(
+            explicit_paths.auth_file,
+            dir.path().join("credentials/custom.auth.json"),
+            "the auth-file path override must reach effective paths"
+        );
+        assert_eq!(explicit_options.auth_file.as_deref(), Some(explicit_paths.auth_file.as_path()));
     }
 
     /// Protects the CLI contract that a media-tagger boolean option accepts

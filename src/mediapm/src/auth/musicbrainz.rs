@@ -492,12 +492,14 @@ async fn login_with_base(
 }
 
 /// Logs out: revokes the stored token unless `--offline`, then removes the
-/// `MusicBrainz` record from the unified auth file.
+/// `MusicBrainz` record from the unified auth file. A failed revocation keeps
+/// the record so the caller can retry or pass `--offline`.
 ///
 /// # Errors
 ///
 /// Returns [`AuthError`] when revocation is impossible without stored
-/// credentials or the auth file cannot be read, decoded, or saved.
+/// credentials, revocation fails, or the auth file cannot be read, decoded,
+/// or saved.
 pub async fn logout(auth_file: &Path, offline: bool) -> Result<AuthOutcome, AuthError> {
     logout_with_base(auth_file, offline, DEFAULT_MUSICBRAINZ_OAUTH_BASE_URL).await
 }
@@ -529,7 +531,14 @@ async fn logout_with_base(
         client_secret: credential.client_secret,
     };
     let revoked = token.refresh_token.as_deref().unwrap_or(&token.access_token).to_owned();
-    let _ = revoke_token(&config, &revoked).await;
+    // The underlying error can carry request context, so report a fixed
+    // message and keep the record for a retry or an explicit offline removal.
+    revoke_token(&config, &revoked).await.map_err(|_| {
+        AuthError::Service(
+            "MusicBrainz revocation failed; local record kept for retry or use --offline to remove it"
+                .to_owned(),
+        )
+    })?;
     remove_service(auth_file, AuthServiceId::Musicbrainz.as_str())?;
     Ok(AuthOutcome { message: "MusicBrainz: revoked token and removed local record".to_owned() })
 }
@@ -737,12 +746,15 @@ async fn perform_oauth_login(
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::ffi::OsString;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
     use crate::auth::error::AuthError;
     use crate::auth::prompt::SecretPrompt;
     use crate::auth::store::{AuthFile, AuthServices, MusicBrainzCredential, MusicBrainzToken};
     use mediapm_test_support::MockMusicBrainz;
+    use tracing::instrument::WithSubscriber;
     use wiremock::{Mock, ResponseTemplate};
 
     fn sample_token(expires_at_unix: u64) -> MusicBrainzToken {
@@ -768,6 +780,51 @@ mod tests {
             token,
         });
         auth
+    }
+
+    /// Collects formatted tracing output for one scoped subscriber.
+    ///
+    /// Reuses the in-memory writer shape of the existing scoped capture in
+    /// `src/mediapm/src/metadata_cache.rs`; no global subscriber is installed.
+    #[derive(Clone)]
+    struct CollectedLogs(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CollectedLogs {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log buffer").write(bytes)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Holds the process env lock while conflicting credential env values are
+    /// installed and restores the prior values on drop.
+    ///
+    /// The owning test is synchronous; the guard is never carried across an
+    /// await boundary.
+    struct CredentialEnvOverride {
+        previous_id: Option<OsString>,
+        previous_secret: Option<OsString>,
+        _env_lock: parking_lot::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for CredentialEnvOverride {
+        fn drop(&mut self) {
+            // SAFETY: this guard still owns the process env lock; no reader
+            // can observe a half-restored credential value.
+            unsafe {
+                match &self.previous_id {
+                    Some(value) => std::env::set_var("MUSICBRAINZ_OAUTH_CLIENT_ID", value),
+                    None => std::env::remove_var("MUSICBRAINZ_OAUTH_CLIENT_ID"),
+                }
+                match &self.previous_secret {
+                    Some(value) => std::env::set_var("MUSICBRAINZ_OAUTH_CLIENT_SECRET", value),
+                    None => std::env::remove_var("MUSICBRAINZ_OAUTH_CLIENT_SECRET"),
+                }
+            }
+        }
     }
 
     #[derive(Debug)]
@@ -820,6 +877,37 @@ mod tests {
             error.to_string().contains("mediapm auth musicbrainz login"),
             "the error must name the login command: {error}"
         );
+    }
+
+    #[test]
+    fn credentials_ignore_conflicting_client_credential_env_values() {
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let path = dir.path().join("auth.json");
+        save_auth_file(&path, &seeded_auth(None)).expect("seed");
+
+        let env_lock = crate::example_isolation::lock_process_env();
+        let previous_id = std::env::var_os("MUSICBRAINZ_OAUTH_CLIENT_ID");
+        let previous_secret = std::env::var_os("MUSICBRAINZ_OAUTH_CLIENT_SECRET");
+        // SAFETY: `env_lock` is held from here until `override_env` drops.
+        unsafe {
+            std::env::set_var("MUSICBRAINZ_OAUTH_CLIENT_ID", "env-conflicting-id");
+            std::env::set_var("MUSICBRAINZ_OAUTH_CLIENT_SECRET", "env-conflicting-secret");
+        }
+        let override_env = CredentialEnvOverride {
+            previous_id: previous_id.clone(),
+            previous_secret: previous_secret.clone(),
+            _env_lock: env_lock,
+        };
+
+        assert_eq!(
+            credentials(&path).expect("the auth file is the only credential source"),
+            ("stored-id".to_owned(), "stored-secret".to_owned())
+        );
+        drop(override_env);
+
+        let _lock = crate::example_isolation::lock_process_env();
+        assert_eq!(std::env::var_os("MUSICBRAINZ_OAUTH_CLIENT_ID"), previous_id);
+        assert_eq!(std::env::var_os("MUSICBRAINZ_OAUTH_CLIENT_SECRET"), previous_secret);
     }
 
     #[test]
@@ -879,6 +967,14 @@ mod tests {
         let prompt =
             RecordingPrompt::new(vec!["prompted-id".to_owned(), "prompted-secret".to_owned()]);
         let browser_path = path.clone();
+        let collected = CollectedLogs(Arc::new(Mutex::new(Vec::new())));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer({
+                let sink = collected.clone();
+                move || sink.clone()
+            })
+            .with_max_level(tracing::Level::INFO)
+            .finish();
         let outcome = login_with_base(&path, &prompt, true, &mock.server().uri(), |url| {
             let stored =
                 load_auth_file(&browser_path).expect("browser reads auth file").expect("present");
@@ -897,8 +993,18 @@ mod tests {
             });
             Ok(())
         })
+        .with_subscriber(subscriber)
         .await
         .expect("login");
+
+        let logged = String::from_utf8(collected.0.lock().expect("log buffer").clone())
+            .expect("captured logs are UTF-8");
+        let expected_line =
+            "--offline has no separate MusicBrainz validation step; OAuth exchange still runs";
+        assert!(
+            logged.lines().any(|line| line.ends_with(expected_line)),
+            "offline login must log exactly {expected_line:?}; captured: {logged}"
+        );
 
         assert_eq!(
             *prompt.labels.borrow(),
@@ -1002,6 +1108,38 @@ mod tests {
 
         let loaded = load_auth_file(&path).expect("load").expect("file");
         assert!(loaded.services.musicbrainz.is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_revocation_keeps_the_record_and_reports_a_secret_free_error() {
+        let mock = MockMusicBrainz::start().await;
+        Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/oauth2/revoke"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(mock.server())
+            .await;
+
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let path = dir.path().join("auth.json");
+        let seeded = seeded_auth(Some(sample_token(current_unix_time() + 3600)));
+        save_auth_file(&path, &seeded).expect("seed");
+
+        let error = logout_with_base(&path, false, &mock.server().uri())
+            .await
+            .expect_err("a failed revocation must not claim success");
+        let AuthError::Service(message) = &error else {
+            panic!("revocation failure must surface a service error: {error:?}");
+        };
+        assert_eq!(
+            message,
+            "MusicBrainz revocation failed; local record kept for retry or use --offline to remove it"
+        );
+        assert!(!message.contains("stored-secret"), "client secret leaked: {message}");
+        assert!(!message.contains("access-token"), "access token leaked: {message}");
+        assert!(!message.contains("refresh-token"), "refresh token leaked: {message}");
+
+        let loaded = load_auth_file(&path).expect("load").expect("record kept for retry");
+        assert_eq!(loaded.services.musicbrainz, seeded.services.musicbrainz);
     }
 
     #[tokio::test]
