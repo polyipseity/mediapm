@@ -28,7 +28,7 @@ Prefer a mocked upstream over a skip:
 
 ## Debug-only upstream seams
 
-Four base URL env vars are read per call and never cached: `MEDIAPM_GITHUB_API_BASE`, `MEDIAPM_GITHUB_DOWNLOAD_BASE`, `MEDIAPM_MARTIN_RIEDL_BASE`, `MEDIAPM_JELLYFIN_BASE`. Each reader honors its variable only when `cfg!(debug_assertions)` holds, gated on the reader body. Debug builds read env; release builds ignore these vars. No seam feature. Tests that set seams must hold the process env lock (see `temp-and-paths.instructions.md`, "Env overrides and isolation").
+Five base URL env vars are read per call and never cached: `MEDIAPM_GITHUB_API_BASE`, `MEDIAPM_GITHUB_DOWNLOAD_BASE`, `MEDIAPM_MARTIN_RIEDL_BASE`, `MEDIAPM_JELLYFIN_BASE`, `MEDIAPM_ACOUSTID_BASE`. Each reader honors its variable only when `cfg!(debug_assertions)` holds, gated on the reader body. Debug builds read env; release builds ignore these vars. No seam feature. Tests that set seams must hold the process env lock (see `temp-and-paths.instructions.md`, "Env overrides and isolation").
 
 ## Demo hierarchy golden
 
