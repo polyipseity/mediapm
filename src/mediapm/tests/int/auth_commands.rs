@@ -13,6 +13,8 @@ use mediapm::auth::service::{
 };
 use mediapm::auth::store::load_auth_file;
 
+const OFFLINE_STATUS_NOTICE: &str = " (--offline has no separate remote step)";
+
 /// Feeds queued secrets to auth actions without a terminal.
 struct IntegrationPrompt {
     secrets: RefCell<Vec<String>>,
@@ -54,7 +56,12 @@ async fn acoustid_login_status_logout_use_the_configured_auth_file() {
 
     let status =
         run_auth_action(service, AuthAction::Status, options, &runtime).await.expect("status");
-    assert_eq!(status.message, "AcoustID: logged in");
+    assert_eq!(
+        status.message.strip_suffix(OFFLINE_STATUS_NOTICE).expect("offline status notice"),
+        "AcoustID: logged in",
+        "status must keep the exact base message and append the offline notice: {}",
+        status.message
+    );
     assert!(!status.message.contains(SECRET), "status leaked the key: {}", status.message);
 
     let outcome =

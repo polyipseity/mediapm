@@ -111,10 +111,11 @@ impl fmt::Debug for AcoustIdCredential {
 
 /// Writes an auth file atomically with mode `0600` on Unix.
 ///
-/// The serialized bytes go to `path.with_extension("json.tmp")` first; that
-/// file is created with mode `0600` on Unix, then chmodded, then renamed over
-/// `path`, and the mode is reasserted on the destination. A failed write,
-/// chmod, or rename removes the temporary sibling so a retry starts clean.
+/// The serialized bytes go to `path.with_extension("json.tmp")` first; on
+/// Unix that file is restricted to mode `0600` before any bytes are written,
+/// including when it already exists, then chmodded, then renamed over `path`,
+/// and the mode is reasserted on the destination. A failed write, chmod, or
+/// rename removes the temporary sibling so a retry starts clean.
 ///
 /// # Errors
 ///
@@ -153,18 +154,19 @@ pub fn save_auth_file(path: &Path, auth: &AuthFile) -> Result<(), AuthError> {
 /// Creates and fills the temporary auth file with owner-only permissions on
 /// Unix, so credential bytes are never briefly readable by other users.
 ///
-/// The explicit chmod in [`save_auth_file`] still covers a pre-existing
-/// temporary file, whose creation mode is not controlled by this function.
+/// `OpenOptions::mode` applies only on creation, so an existing temporary file
+/// is restricted on the open handle before any credential bytes are written.
 #[cfg(unix)]
 fn write_auth_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
         .open(path)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     file.write_all(bytes)
 }
 
@@ -276,6 +278,26 @@ mod tests {
         let mode =
             std::fs::metadata(&tmp_path).expect("temp metadata").permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "temp file must be 0600 at creation, before chmod");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preexisting_permissive_temp_file_is_restricted_during_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let tmp_path = dir.path().join("auth.json.tmp");
+        std::fs::write(&tmp_path, b"previous content").expect("seed temp");
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o666))
+            .expect("seed permissive mode");
+
+        // Call the write path directly: `save_auth_file` chmods afterwards,
+        // which would mask a secret exposed during the write itself.
+        write_auth_bytes(&tmp_path, b"credential bytes").expect("write temp");
+
+        let mode =
+            std::fs::metadata(&tmp_path).expect("temp metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "existing temp must be 0600 before credential bytes are written");
+        assert_eq!(std::fs::read(&tmp_path).expect("temp bytes"), b"credential bytes");
     }
 
     #[test]

@@ -62,6 +62,19 @@ pub struct AuthOutcome {
     pub message: String,
 }
 
+/// Appends the shared `--offline` notice when an action has no remote step.
+///
+/// Both `message` and `absent_step` are caller-controlled fixed strings, so
+/// no credential value can enter the notice.
+fn with_offline_notice(outcome: AuthOutcome, offline: bool, absent_step: &str) -> AuthOutcome {
+    if !offline {
+        return outcome;
+    }
+    AuthOutcome {
+        message: format!("{} (--offline has no separate {absent_step} step)", outcome.message),
+    }
+}
+
 /// Runs one service/action pair against the effective auth file.
 ///
 /// # Errors
@@ -79,7 +92,8 @@ pub async fn run_auth_action(
             super::musicbrainz::login(runtime.auth_file, runtime.prompt, options.offline).await
         }
         (AuthServiceId::Musicbrainz, AuthAction::Status) => {
-            super::musicbrainz::status(runtime.auth_file)
+            let outcome = super::musicbrainz::status(runtime.auth_file)?;
+            Ok(with_offline_notice(outcome, options.offline, "remote"))
         }
         (AuthServiceId::Musicbrainz, AuthAction::Logout) => {
             super::musicbrainz::logout(runtime.auth_file, options.offline).await
@@ -87,30 +101,110 @@ pub async fn run_auth_action(
         (AuthServiceId::Acoustid, AuthAction::Login) => {
             super::acoustid::login(runtime.auth_file, runtime.prompt, options.offline).await
         }
-        (AuthServiceId::Acoustid, AuthAction::Status) => super::acoustid::status(runtime.auth_file),
+        (AuthServiceId::Acoustid, AuthAction::Status) => {
+            let outcome = super::acoustid::status(runtime.auth_file)?;
+            Ok(with_offline_notice(outcome, options.offline, "remote"))
+        }
         (AuthServiceId::Acoustid, AuthAction::Logout) => {
             let outcome = super::acoustid::logout(runtime.auth_file)?;
-            if options.offline {
-                Ok(AuthOutcome {
-                    message: format!(
-                        "{} (--offline has no separate revocation step)",
-                        outcome.message
-                    ),
-                })
-            } else {
-                Ok(outcome)
-            }
+            Ok(with_offline_notice(outcome, options.offline, "revocation"))
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::AuthServiceId;
+    use super::{AuthAction, AuthOptions, AuthRuntime, AuthServiceId, run_auth_action};
+    use crate::auth::prompt::FixedPrompt;
+    use crate::auth::store::{
+        AcoustIdCredential, AuthFile, AuthServices, MusicBrainzCredential, save_auth_file,
+    };
+
+    const OFFLINE_STATUS_NOTICE: &str = "(--offline has no separate remote step)";
 
     #[test]
     fn auth_service_ids_use_the_wire_keys() {
         assert_eq!(AuthServiceId::Musicbrainz.as_str(), "musicbrainz");
         assert_eq!(AuthServiceId::Acoustid.as_str(), "acoustid");
+    }
+
+    #[tokio::test]
+    async fn musicbrainz_status_reports_offline_notice_without_secrets() {
+        const SECRET: &str = "musicbrainz-client-secret-that-must-not-leak";
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let auth_file = dir.path().join("auth.json");
+        let auth = AuthFile {
+            services: AuthServices {
+                musicbrainz: Some(MusicBrainzCredential {
+                    client_id: "client-id".to_owned(),
+                    client_secret: SECRET.to_owned(),
+                    token: None,
+                }),
+                ..AuthServices::default()
+            },
+        };
+        save_auth_file(&auth_file, &auth).expect("seed");
+        let prompt = FixedPrompt::new(Vec::new());
+        let runtime = AuthRuntime { auth_file: &auth_file, prompt: &prompt };
+        let base = "MusicBrainz: credentials configured; no user token";
+
+        let online = run_auth_action(
+            AuthServiceId::Musicbrainz,
+            AuthAction::Status,
+            AuthOptions { offline: false },
+            &runtime,
+        )
+        .await
+        .expect("online status");
+        assert_eq!(online.message, base);
+
+        let offline = run_auth_action(
+            AuthServiceId::Musicbrainz,
+            AuthAction::Status,
+            AuthOptions { offline: true },
+            &runtime,
+        )
+        .await
+        .expect("offline status");
+        assert_eq!(offline.message, format!("{base} {OFFLINE_STATUS_NOTICE}"));
+        assert!(!offline.message.contains(SECRET), "status leaked the secret: {}", offline.message);
+    }
+
+    #[tokio::test]
+    async fn acoustid_status_reports_offline_notice_without_secrets() {
+        const SECRET: &str = "acoustid-key-that-must-not-leak";
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let auth_file = dir.path().join("auth.json");
+        let auth = AuthFile {
+            services: AuthServices {
+                acoustid: Some(AcoustIdCredential { api_key: SECRET.to_owned() }),
+                ..AuthServices::default()
+            },
+        };
+        save_auth_file(&auth_file, &auth).expect("seed");
+        let prompt = FixedPrompt::new(Vec::new());
+        let runtime = AuthRuntime { auth_file: &auth_file, prompt: &prompt };
+        let base = "AcoustID: logged in";
+
+        let online = run_auth_action(
+            AuthServiceId::Acoustid,
+            AuthAction::Status,
+            AuthOptions { offline: false },
+            &runtime,
+        )
+        .await
+        .expect("online status");
+        assert_eq!(online.message, base);
+
+        let offline = run_auth_action(
+            AuthServiceId::Acoustid,
+            AuthAction::Status,
+            AuthOptions { offline: true },
+            &runtime,
+        )
+        .await
+        .expect("offline status");
+        assert_eq!(offline.message, format!("{base} {OFFLINE_STATUS_NOTICE}"));
+        assert!(!offline.message.contains(SECRET), "status leaked the key: {}", offline.message);
     }
 }
