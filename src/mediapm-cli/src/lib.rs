@@ -192,6 +192,9 @@ pub enum Command {
     Conductor(PassthroughArgs),
     /// Authentication commands for upstream services.
     Auth {
+        /// Skip remote validation or revocation for this auth action.
+        #[arg(long)]
+        offline: bool,
         /// Auth subcommand selector.
         #[command(subcommand)]
         command: AuthCommand,

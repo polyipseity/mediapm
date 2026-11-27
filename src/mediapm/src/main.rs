@@ -35,9 +35,9 @@ use mediapm_cli::BuiltinCommand;
 use mediapm_cli::InternalMediaTaggerArgs;
 #[cfg(feature = "cli")]
 use mediapm_cli::{
-    AuthCommand, Cli, Command, GlobalCommand, GlobalToolCacheCommand, HierarchyCommand,
-    HierarchyPresetArg, MediaAddPreset, MediaCommand, MusicbrainzAuthCommand, RecheckPolicyArgs,
-    SyncArgs, ToolCommand,
+    AcoustidAuthCommand, AuthCommand, Cli, Command, GlobalCommand, GlobalToolCacheCommand,
+    HierarchyCommand, HierarchyPresetArg, MediaAddPreset, MediaCommand, MusicbrainzAuthCommand,
+    RecheckPolicyArgs, SyncArgs, ToolCommand,
 };
 #[cfg(feature = "cli")]
 use url::Url;
@@ -551,7 +551,7 @@ async fn main_cli() -> anyhow::Result<()> {
             let effective_paths = MediaPmPaths::from_root(&cli.root);
             passthrough_conductor(&args.args, &effective_paths).await
         }
-        Command::Auth { command } => {
+        Command::Auth { offline, command } => {
             let root = &cli.root;
             let paths = resolve_effective_paths_for_root(root, &rt);
             load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
@@ -609,11 +609,30 @@ async fn main_cli() -> anyhow::Result<()> {
                         Ok(())
                     }
                 },
-                // The subcommand tree is defined here so the CLI surface is
-                // parseable; the auth dispatch owns the behaviour and is
-                // wired in the following task. Fail closed until then.
-                AuthCommand::Acoustid { .. } => {
-                    anyhow::bail!("acoustid auth is not available in this build")
+                AuthCommand::Acoustid { command } => {
+                    use mediapm::auth::service::{
+                        AuthAction, AuthOptions, AuthOutcome, AuthRuntime, AuthServiceId,
+                        run_auth_action,
+                    };
+
+                    let action = match command {
+                        AcoustidAuthCommand::Login => AuthAction::Login,
+                        AcoustidAuthCommand::Status => AuthAction::Status,
+                        AcoustidAuthCommand::Logout => AuthAction::Logout,
+                    };
+                    let prompt = mediapm::auth::prompt::ConsoleSecretPrompt::new();
+                    let runtime = AuthRuntime { auth_file: &paths.auth_file, prompt: &prompt };
+                    let outcome = run_auth_action(
+                        AuthServiceId::Acoustid,
+                        action,
+                        AuthOptions { offline },
+                        &runtime,
+                    )
+                    .await
+                    .map_err(|error| anyhow::anyhow!("{error}"))?;
+                    let AuthOutcome { message } = outcome;
+                    println!("{message}");
+                    Ok(())
                 }
             }
         }
@@ -932,10 +951,23 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        Cli, Command, EXIT_INCOMPLETE_LIBRARY, EXIT_WARNING, MediaCommand,
+        AuthCommand, Cli, Command, EXIT_INCOMPLETE_LIBRARY, EXIT_WARNING, MediaCommand,
         inject_cas_passthrough_defaults, inject_conductor_passthrough_defaults, sync_exit_status,
         tool_sync_exit_status,
     };
+
+    #[test]
+    fn offline_flag_parses_at_the_auth_level() {
+        let parsed = Cli::try_parse_from(["mediapm", "auth", "--offline", "acoustid", "login"])
+            .expect("auth-level offline flag must parse");
+        match parsed.command {
+            Command::Auth { offline, command } => {
+                assert!(offline);
+                assert!(matches!(command, AuthCommand::Acoustid { .. }));
+            }
+            _ => panic!("expected auth command"),
+        }
+    }
 
     #[test]
     fn auth_file_cli_flag_is_wired() {
