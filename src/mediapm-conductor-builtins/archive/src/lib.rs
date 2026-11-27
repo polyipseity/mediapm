@@ -320,12 +320,13 @@ pub fn list_zip_member_file_paths(zip_bytes: &[u8]) -> Result<Vec<String>, Strin
     for index in 0..archive.len() {
         let entry =
             archive.by_index(index).map_err(|err| format!("reading zip entry failed: {err}"))?;
-        if entry.name().ends_with('/') {
+        let name = entry.name().map_err(|err| format!("reading zip entry name failed: {err}"))?;
+        if name.ends_with('/') {
             continue;
         }
-        let enclosed = entry.enclosed_name().ok_or_else(|| {
-            format!("unsafe zip entry name '{}', escaping destination", entry.name())
-        })?;
+        let enclosed = entry
+            .enclosed_name()
+            .ok_or_else(|| format!("unsafe zip entry name '{name}', escaping destination"))?;
         paths.push(enclosed.to_string_lossy().into_owned());
     }
     Ok(paths)
@@ -348,12 +349,13 @@ pub fn unpack_zip_bytes_to_directory(zip_bytes: &[u8], dest_dir: &Path) -> Resul
     for index in 0..archive.len() {
         let mut entry =
             archive.by_index(index).map_err(|err| format!("reading zip entry failed: {err}"))?;
-        let enclosed = entry.enclosed_name().ok_or_else(|| {
-            format!("unsafe zip entry name '{}', escaping destination", entry.name())
-        })?;
+        let name = entry.name().map_err(|err| format!("reading zip entry name failed: {err}"))?;
+        let enclosed = entry
+            .enclosed_name()
+            .ok_or_else(|| format!("unsafe zip entry name '{name}', escaping destination"))?;
         let out_path = dest_dir.join(enclosed);
 
-        if entry.name().ends_with('/') {
+        if name.ends_with('/') {
             std::fs::create_dir_all(&out_path).map_err(|err| {
                 format!("creating directory '{}' failed: {err}", out_path.display())
             })?;
@@ -397,12 +399,13 @@ pub fn normalize_archive_zip_bytes_to_folder_zip_bytes(
     for index in 0..archive.len() {
         let mut entry =
             archive.by_index(index).map_err(|err| format!("reading zip entry failed: {err}"))?;
-        let enclosed = entry.enclosed_name().ok_or_else(|| {
-            format!("unsafe zip entry name '{}', escaping destination", entry.name())
-        })?;
+        let name = entry.name().map_err(|err| format!("reading zip entry name failed: {err}"))?;
+        let enclosed = entry
+            .enclosed_name()
+            .ok_or_else(|| format!("unsafe zip entry name '{name}', escaping destination"))?;
         let mut normalized_name = enclosed.to_string_lossy().replace('\\', "/");
 
-        if entry.name().ends_with('/') {
+        if name.ends_with('/') {
             if !normalized_name.ends_with('/') {
                 normalized_name.push('/');
             }
@@ -709,12 +712,13 @@ fn transform_zip_bytes(zip_bytes: &[u8], params: &StringMap) -> Result<Vec<u8>, 
     for index in 0..archive.len() {
         let mut entry =
             archive.by_index(index).map_err(|err| format!("reading zip entry failed: {err}"))?;
-        let enclosed = entry.enclosed_name().ok_or_else(|| {
-            format!("unsafe zip entry name '{}', escaping destination", entry.name())
-        })?;
+        let name = entry.name().map_err(|err| format!("reading zip entry name failed: {err}"))?;
+        let enclosed = entry
+            .enclosed_name()
+            .ok_or_else(|| format!("unsafe zip entry name '{name}', escaping destination"))?;
         let normalized_name = enclosed.to_string_lossy().replace('\\', "/");
 
-        if entry.name().ends_with('/') {
+        if name.ends_with('/') {
             let mut dir_name = normalized_name.clone();
             if !dir_name.ends_with('/') {
                 dir_name.push('/');
@@ -1003,5 +1007,32 @@ mod tests {
             &BinaryInputMap::from([("content".to_string(), inner_payload)]),
         );
         assert!(result.is_err(), "should reject unpaired transform");
+    }
+
+    /// Verifies an escaping ZIP entry name is rejected with the unsafe-name diagnostic.
+    #[test]
+    fn zip_name_result_reports_unsafe_entry_names() {
+        let bytes = zip_with_entry("../escape.txt", b"secret");
+        let error = crate::list_zip_member_file_paths(&bytes).expect_err("escape must be rejected");
+        assert!(error.contains("unsafe zip entry name"), "{error}");
+    }
+
+    /// Verifies directory entries are skipped when listing ZIP member file paths.
+    #[test]
+    fn zip_name_result_keeps_directory_entries() {
+        let bytes = zip_with_entry("downloads/inside/", b"");
+        let paths = crate::list_zip_member_file_paths(&bytes).expect("directory entry is safe");
+        assert!(paths.is_empty(), "directory entries are not files: {paths:?}");
+    }
+
+    /// Builds a stored ZIP payload containing one entry with the given name and content.
+    fn zip_with_entry(name: &str, content: &[u8]) -> Vec<u8> {
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        writer.start_file(name, options).expect("test zip entry starts");
+        std::io::Write::write_all(&mut writer, content).expect("test zip content writes");
+        writer.finish().expect("test zip finishes").into_inner()
     }
 }
