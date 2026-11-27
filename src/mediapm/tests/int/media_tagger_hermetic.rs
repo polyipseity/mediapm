@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use mediapm::auth::store::{AcoustIdCredential, AuthFile, AuthServices, save_auth_file};
 use mediapm::builtins::media_tagger::{
     DEFAULT_ACOUSTID_ENDPOINT, DEFAULT_CA_PROVIDERS, DEFAULT_CAA_APPROVED_ONLY,
     DEFAULT_CAA_ENDPOINT, DEFAULT_CAA_IMAGE_SIZE, DEFAULT_CAA_IMAGE_TYPES,
@@ -61,7 +62,6 @@ fn hermetic_options(
     InternalMediaTaggerOptions {
         input_path: None,
         output_path: workspace.join("out").join("output.ffmetadata"),
-        acoustid_api_key: None,
         acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
         musicbrainz_endpoint: musicbrainz_endpoint.to_string(),
         caa_endpoint: caa_endpoint.to_string(),
@@ -99,6 +99,20 @@ fn hermetic_options(
         },
         auth_file: None,
     }
+}
+
+/// Builds options for the `AcoustID` autodetect path: a stub input reaches the
+/// decode step when a key resolves, while a closed gate fails before it.
+fn autodetect_options(
+    workspace: &Path,
+    auth_file: Option<&Path>,
+    input: &Path,
+) -> InternalMediaTaggerOptions {
+    let mut options = hermetic_options(workspace, "http://127.0.0.1:9/ws/2", DEFAULT_CAA_ENDPOINT);
+    options.input_path = Some(input.to_path_buf());
+    options.recording_mbid = None;
+    options.auth_file = auth_file.map(Path::to_path_buf);
+    options
 }
 
 /// The artist credit shared by the recording and release payloads.
@@ -583,7 +597,6 @@ async fn disabling_tag_saving_preserves_existing_global_tags_when_requested() {
     let options = InternalMediaTaggerOptions {
         input_path: Some(input),
         output_path: output.clone(),
-        acoustid_api_key: None,
         acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
         musicbrainz_endpoint: format!("{}/ws/2", "http://127.0.0.1:9"),
         caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
@@ -643,7 +656,6 @@ async fn disabling_tag_saving_drops_existing_global_tags_when_not_preserved() {
     let options = InternalMediaTaggerOptions {
         input_path: Some(input),
         output_path: output.clone(),
-        acoustid_api_key: None,
         acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
         musicbrainz_endpoint: format!("{}/ws/2", "http://127.0.0.1:9"),
         caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
@@ -902,5 +914,151 @@ async fn wanted_user_data_errors_when_musicbrainz_login_unavailable() {
         message.contains("no MusicBrainz login is available")
             || message.contains("MusicBrainz OAuth client credentials are missing"),
         "error should explain missing login or missing client credentials: {message}"
+    );
+}
+
+/// The `AcoustID` key reaches the tagger only through the unified auth file.
+///
+/// A hostile ambient `ACOUSTID_API_KEY` is installed while both runs execute:
+/// a stored key must open the fingerprint path, and removing the auth file
+/// must close it. The stub input makes an opened gate observable at decode,
+/// before any network lookup, so the test stays hermetic.
+#[tokio::test]
+async fn acoustid_key_comes_only_from_the_auth_file() {
+    const HOSTILE_ENV_NAME: &str = "ACOUSTID_API_KEY";
+    const POSITIVE_CONTROL: &str = "acoustid-key-source positive control: log capture is live";
+
+    /// Restores the ambient key name after the runs, even on panic.
+    struct RestoreEnv(Option<std::ffi::OsString>);
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            let _env = mediapm::example_isolation::lock_process_env();
+            // SAFETY: this guard still owns the process env lock, so no
+            // reader can observe a half-restored credential name.
+            unsafe {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("ACOUSTID_API_KEY", value),
+                    None => std::env::remove_var("ACOUSTID_API_KEY"),
+                }
+            }
+        }
+    }
+
+    let previous = {
+        let _env = mediapm::example_isolation::lock_process_env();
+        let previous = std::env::var_os(HOSTILE_ENV_NAME);
+        // SAFETY: the process env lock is held for the whole mutation.
+        unsafe { std::env::set_var(HOSTILE_ENV_NAME, "ambient-key-must-be-ignored") };
+        previous
+    };
+    let _restore = RestoreEnv(previous);
+
+    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer({
+            let logs = std::sync::Arc::clone(&logs);
+            move || CapturingLogWriter(std::sync::Arc::clone(&logs))
+        })
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    tracing::info!("{POSITIVE_CONTROL}");
+
+    let workspace = mediapm_utils::temp::output_dir().expect("temp dir");
+    let input = workspace.path().join("input.mp3");
+    std::fs::write(&input, b"dummy-bytes").expect("write input media stub");
+    let auth_file = workspace.path().join("auth.json");
+    save_auth_file(
+        &auth_file,
+        &AuthFile {
+            services: AuthServices {
+                acoustid: Some(AcoustIdCredential { api_key: "stored-key".to_string() }),
+                ..AuthServices::default()
+            },
+        },
+    )
+    .expect("seed the auth file with an AcoustID key");
+
+    let error = run_internal_media_tagger(
+        autodetect_options(workspace.path(), Some(&auth_file), &input),
+        &mediapm::child_env::default_host_inherited_env_pairs(),
+    )
+    .await
+    .expect_err("autodetect with a stored key must reach decode");
+    assert!(
+        format!("{error:#}").contains("decoding media for fingerprinting"),
+        "a key stored in the auth file must open the fingerprint path: {error:#}"
+    );
+
+    std::fs::remove_file(&auth_file).expect("remove the auth file");
+    let error = run_internal_media_tagger(
+        autodetect_options(workspace.path(), Some(&auth_file), &input),
+        &mediapm::child_env::default_host_inherited_env_pairs(),
+    )
+    .await
+    .expect_err("autodetect without a stored key must fail before decode");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("mediapm auth acoustid login"),
+        "the missing-key error must name the login command: {message}"
+    );
+    assert!(
+        !message.contains("decoding media for fingerprinting"),
+        "an ambient key must not satisfy the gate: {message}"
+    );
+
+    let captured = String::from_utf8(logs.lock().expect("log buffer").clone())
+        .expect("captured logs are UTF-8");
+    assert!(
+        captured.contains(POSITIVE_CONTROL),
+        "positive control must be captured before checking key-source logs: {captured}"
+    );
+}
+
+/// A malformed or unknown-version auth file is logged instead of being
+/// silently downgraded to a logged-out gate.
+#[tokio::test]
+async fn an_unreadable_auth_file_is_reported_at_the_acoustid_gate() {
+    const POSITIVE_CONTROL: &str = "auth-file-error positive control: log capture is live";
+
+    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer({
+            let logs = std::sync::Arc::clone(&logs);
+            move || CapturingLogWriter(std::sync::Arc::clone(&logs))
+        })
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    tracing::info!("{POSITIVE_CONTROL}");
+
+    let workspace = mediapm_utils::temp::output_dir().expect("temp dir");
+    let input = workspace.path().join("input.mp3");
+    std::fs::write(&input, b"dummy-bytes").expect("write input media stub");
+    let auth_file = workspace.path().join("auth.json");
+    std::fs::write(&auth_file, r#"{"version":999,"services":{}}"#)
+        .expect("seed an unknown-version auth file");
+
+    let error = run_internal_media_tagger(
+        autodetect_options(workspace.path(), Some(&auth_file), &input),
+        &mediapm::child_env::default_host_inherited_env_pairs(),
+    )
+    .await
+    .expect_err("an unreadable auth file must not unlock autodetection");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("mediapm auth acoustid login"),
+        "the missing-key error must name the login command: {message}"
+    );
+
+    let captured = String::from_utf8(logs.lock().expect("log buffer").clone())
+        .expect("captured logs are UTF-8");
+    assert!(
+        captured.contains(POSITIVE_CONTROL),
+        "positive control must be captured before checking auth-file logs: {captured}"
+    );
+    assert!(
+        captured.contains("unsupported auth file version 999"),
+        "the auth-file decode error must be reported, not silently logged out: {captured}"
     );
 }

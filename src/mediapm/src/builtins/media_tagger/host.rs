@@ -83,7 +83,8 @@ const DEFAULT_INCLUDE_USER_TAGS: bool = true;
 /// `build_media_tagger_command`: `option_args`, `leading_args` and
 /// `trailing_args` were rendered into its argv, and `enable_acoustid` became
 /// `--enable-acoustid`, a flag `mediapm-cli` does not declare (it declares only
-/// `--acoustid-api-key` and `--acoustid-endpoint`). The step renders no command
+/// `--acoustid-endpoint`; the AcoustID key comes from the auth file). The
+/// step renders no command
 /// any more, so a binding of one of these names reaches nothing while the
 /// value still decides the step's instance key.
 const RETIRED_COMMAND_OPTIONS: [&str; 4] =
@@ -104,15 +105,15 @@ const RENAMED_TAGGER_OPTIONS: [(&str, &str); 2] = [
 pub(crate) struct MediaTaggerBuiltin {
     /// Host environment-variable pairs the pipeline's child processes inherit.
     env_pairs: Vec<(String, String)>,
-    /// Runtime root used for login-gated auth state.
-    runtime_root: Option<PathBuf>,
+    /// Auth file used for login-gated auth state.
+    auth_file: Option<PathBuf>,
 }
 
 impl MediaTaggerBuiltin {
     /// Creates a runner that applies `env_pairs` to every child it spawns.
     #[must_use]
-    pub(crate) fn new(env_pairs: Vec<(String, String)>, runtime_root: Option<PathBuf>) -> Self {
-        Self { env_pairs, runtime_root }
+    pub(crate) fn new(env_pairs: Vec<(String, String)>, auth_file: Option<PathBuf>) -> Self {
+        Self { env_pairs, auth_file }
     }
 }
 
@@ -140,7 +141,7 @@ impl HostBuiltin for MediaTaggerBuiltin {
             request.args,
             input_path,
             request.sandbox_dir,
-            self.runtime_root.clone(),
+            self.auth_file.clone(),
         )?;
 
         run_internal_media_tagger(options, &self.env_pairs)
@@ -215,14 +216,13 @@ fn options_from_args(
     args: &BTreeMap<String, String>,
     input_path: Option<PathBuf>,
     sandbox_dir: &Path,
-    runtime_root: Option<PathBuf>,
+    auth_file: Option<PathBuf>,
 ) -> Result<InternalMediaTaggerOptions, ConductorError> {
     reject_retired_command_options(args)?;
 
     Ok(InternalMediaTaggerOptions {
         input_path,
         output_path: sandbox_dir.join(MEDIA_TAGGER_OUTPUT_FILE),
-        acoustid_api_key: optional_text(args, "acoustid_api_key"),
         acoustid_endpoint: text(args, "acoustid_endpoint", DEFAULT_ACOUSTID_ENDPOINT),
         musicbrainz_endpoint: text(args, "musicbrainz_endpoint", DEFAULT_MUSICBRAINZ_ENDPOINT),
         caa_endpoint: text(args, "caa_endpoint", DEFAULT_CAA_ENDPOINT),
@@ -286,7 +286,7 @@ fn options_from_args(
             )?,
             include_user_tags: flag(args, "include_user_tags", DEFAULT_INCLUDE_USER_TAGS)?,
         },
-        auth_file: runtime_root.map(|root| root.join("auth.json")),
+        auth_file,
     })
 }
 
@@ -490,7 +490,6 @@ mod tests {
         assert_eq!(options.acoustid_endpoint, super::DEFAULT_ACOUSTID_ENDPOINT);
         assert_eq!(options.cache_expiry_seconds, super::DEFAULT_CACHE_EXPIRY_SECONDS);
         assert_eq!(options.cover_art_slot_count, super::DEFAULT_COVER_ART_SLOT_COUNT);
-        assert_eq!(options.acoustid_api_key, None);
         assert_eq!(options.recording_mbid, None);
         assert!(options.enable_logged_in_features_musicbrainz);
         assert!(options.enable_logged_in_features_acoustid);

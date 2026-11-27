@@ -1831,15 +1831,15 @@ mod tests {
         );
     }
 
-    /// Checks the registry-owned example shape: every credential name is
+    /// Checks the registry-owned example shape: no credential name is
     /// documented, and no live line assigns a value. Commented `# NAME=value`
     /// lines are the writer's reference format, so only non-comment lines are
     /// held to the empty-value rule.
-    fn assert_credential_example_has_names_without_values(example: &str) {
+    fn assert_credential_names_are_absent_from_example(example: &str) {
         for name in
             ["ACOUSTID_API_KEY", "MUSICBRAINZ_OAUTH_CLIENT_ID", "MUSICBRAINZ_OAUTH_CLIENT_SECRET"]
         {
-            assert!(example.contains(name), "the example must list {name}: {example}");
+            assert!(!example.contains(name), "the example must not list {name}: {example}");
         }
         for line in example.lines() {
             let line = line.trim();
@@ -1853,10 +1853,10 @@ mod tests {
         }
     }
 
-    /// The registry writer must document mediapm's credential names without
-    /// carrying any credential values into the reference file.
+    /// The registry writer must omit credential names and carry no credential
+    /// values into the reference file.
     #[test]
-    fn the_composed_env_registry_writes_credential_names_without_values() {
+    fn the_composed_env_registry_writes_no_credential_names_or_values() {
         let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         mediapm_conductor::runtime_env::ensure_runtime_env_files(
             dir.path(),
@@ -1866,7 +1866,7 @@ mod tests {
 
         let example = std::fs::read_to_string(dir.path().join(".env.example"))
             .expect("read the registry-written example");
-        assert_credential_example_has_names_without_values(&example);
+        assert_credential_names_are_absent_from_example(&example);
     }
 
     /// Service construction must publish the registry-owned example before
@@ -1878,7 +1878,7 @@ mod tests {
 
         let example = std::fs::read_to_string(dir.path().join(".mediapm").join(".env.example"))
             .expect("read the construction-written example");
-        assert_credential_example_has_names_without_values(&example);
+        assert_credential_names_are_absent_from_example(&example);
     }
 
     /// Re-ensuring after an external edit repairs the example to exactly the

@@ -2,9 +2,8 @@
 //!
 //! [`env_registry`] is this crate's own slice: the provider seams, the
 //! provisioning and fetch concurrency knobs, the shared HTTP timeout,
-//! media-tagger's `AcoustID` and `MusicBrainz` OAuth credentials and binary
-//! override, the progress debug sink and the test/example-only isolation
-//! roots. [`composed_env_registry`] is what the runtime root renders:
+//! media-tagger's binary override, the progress debug sink and the
+//! test/example-only isolation roots. [`composed_env_registry`] is what the runtime root renders:
 //! conductor's table first (design B1 ordering), this crate's beside it,
 //! and the `mediapm-cli` clap readers when the `cli` feature is on, all
 //! through [`compose_env_registry`]'s first-wins dedup, so a name two
@@ -21,8 +20,8 @@ use mediapm_utils::env_registry::{EnvVarEntry, EnvVarGroup, compose_env_registry
 /// the four provider seams (`tools/provider/{mod.rs,ffmpeg.rs}`),
 /// `MEDIAPM_TOOL_PROVISION_CONCURRENCY` (`conductor_bridge/sync/mod.rs`),
 /// `MEDIAPM_HTTP_TIMEOUT_SECONDS` (`builtins/media_tagger/musicbrainz.rs`),
-/// `ACOUSTID_API_KEY` and `MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN`
-/// (`builtins/media_tagger/mod.rs`), `MEDIAPM_UPDATE_FIXTURES`
+/// `MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN` (`builtins/media_tagger/mod.rs`),
+/// `MEDIAPM_UPDATE_FIXTURES`
 /// (`materializer/resolve.rs`, cfg(test)) and the example-isolation roots
 /// (`example_isolation.rs`) are read under `src/mediapm/src`, while
 /// `MEDIAPM_SOURCE_FETCH_CONCURRENCY` is read only by `mediapm-conductor`'s
@@ -83,24 +82,6 @@ pub fn env_registry() -> &'static [EnvVarEntry] {
             group: EnvVarGroup::DebugSeams,
         },
         EnvVarEntry {
-            name: "ACOUSTID_API_KEY",
-            default: "",
-            doc: "AcoustID API key for media-tagger metadata enrichment.",
-            group: EnvVarGroup::Upstream,
-        },
-        EnvVarEntry {
-            name: "MUSICBRAINZ_OAUTH_CLIENT_ID",
-            default: "",
-            doc: "MusicBrainz OAuth client ID — register at https://metabrainz.org/profile/applications.",
-            group: EnvVarGroup::Upstream,
-        },
-        EnvVarEntry {
-            name: "MUSICBRAINZ_OAUTH_CLIENT_SECRET",
-            default: "",
-            doc: "MusicBrainz OAuth client secret — register at https://metabrainz.org/profile/applications.",
-            group: EnvVarGroup::Upstream,
-        },
-        EnvVarEntry {
             name: "MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN",
             default: "",
             doc: "Manual override for media-tagger's ffmpeg binary (normally generated into .env.generated).",
@@ -150,8 +131,8 @@ mod tests {
     use super::*;
 
     /// Every runtime env var this crate reads (provider seams, provisioning
-    /// and fetch concurrency, the HTTP timeout, media-tagger credentials and
-    /// binary override, the progress debug sink, the example-isolation roots
+    /// and fetch concurrency, the HTTP timeout, media-tagger's binary
+    /// override, the progress debug sink, the example-isolation roots
     /// and the fixture rewrite toggle) must have a table entry, so the
     /// composed root registry documents what a mediapm run actually reads.
     #[test]
@@ -166,9 +147,6 @@ mod tests {
             "MEDIAPM_TOOL_PROVISION_CONCURRENCY",
             "MEDIAPM_SOURCE_FETCH_CONCURRENCY",
             "MEDIAPM_HTTP_TIMEOUT_SECONDS",
-            "ACOUSTID_API_KEY",
-            "MUSICBRAINZ_OAUTH_CLIENT_ID",
-            "MUSICBRAINZ_OAUTH_CLIENT_SECRET",
             "MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN",
             "MEDIAPM_UPDATE_FIXTURES",
             "MEDIAPM_EXAMPLE_OUTPUT_ROOT",
@@ -181,10 +159,24 @@ mod tests {
         }
     }
 
+    /// Credentials live in the unified auth file, never in the runtime env
+    /// surface: a registry entry would advertise a credential source that no
+    /// production reader accepts.
+    #[test]
+    fn credential_env_names_are_absent_from_the_runtime_registry() {
+        let names: Vec<_> = env_registry().iter().map(|entry| entry.name).collect();
+        for removed in
+            ["ACOUSTID_API_KEY", "MUSICBRAINZ_OAUTH_CLIENT_ID", "MUSICBRAINZ_OAUTH_CLIENT_SECRET"]
+        {
+            assert!(!names.contains(&removed), "{removed} must be absent: {names:?}");
+        }
+    }
+
     /// The composed registry must carry each slice's surface exactly once:
-    /// conductor's timeout knob and mediapm's media-tagger key prove the
+    /// conductor's timeout knob and mediapm's binary override prove the
     /// slices joined, and each seam proves the mandated overlap deduplicated
-    /// instead of rendering twice.
+    /// instead of rendering twice. Credential names must stay absent from
+    /// every slice: `mediapm auth` now owns those secrets.
     #[test]
     fn the_composed_registry_carries_every_slice() {
         let names: Vec<_> = composed_env_registry().iter().map(|entry| entry.name).collect();
@@ -193,17 +185,17 @@ mod tests {
             "conductor's slice is missing from the composed registry: {names:?}"
         );
         assert!(
-            names.contains(&"ACOUSTID_API_KEY"),
+            names.contains(&"MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN"),
             "mediapm's slice is missing from the composed registry: {names:?}"
         );
-        assert!(
-            names.contains(&"MUSICBRAINZ_OAUTH_CLIENT_ID"),
-            "mediapm's slice is missing from the composed registry: {names:?}"
-        );
-        assert!(
-            names.contains(&"MUSICBRAINZ_OAUTH_CLIENT_SECRET"),
-            "mediapm's slice is missing from the composed registry: {names:?}"
-        );
+        for removed in
+            ["ACOUSTID_API_KEY", "MUSICBRAINZ_OAUTH_CLIENT_ID", "MUSICBRAINZ_OAUTH_CLIENT_SECRET"]
+        {
+            assert!(
+                !names.contains(&removed),
+                "{removed} must be absent from the composed registry: {names:?}"
+            );
+        }
         #[cfg(feature = "cli")]
         assert!(
             names.contains(&"MEDIAPM_ROOT"),

@@ -507,7 +507,6 @@ fn build_media_tagger_outputs() -> BTreeMap<String, OutputCaptureSpec> {
 #[must_use]
 pub(crate) fn build_media_tagger_spec() -> ToolDefinition {
     let accepted_inputs = [
-        "acoustid_api_key",
         "acoustid_endpoint",
         "cache_dir",
         "cache_expiry_seconds",

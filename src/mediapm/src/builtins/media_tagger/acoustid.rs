@@ -10,8 +10,8 @@ use tokio::process::Command;
 use mediapm_conductor::http::client::shared_http_client;
 
 use super::cover_art::MediaTaggerHttpCache;
-use super::util::{normalize_optional_text, resolve_ffmpeg_executable};
-use super::{ACOUSTID_API_KEY_ENV, FINGERPRINT_CHANNELS, FINGERPRINT_SAMPLE_RATE};
+use super::util::resolve_ffmpeg_executable;
+use super::{FINGERPRINT_CHANNELS, FINGERPRINT_SAMPLE_RATE};
 
 /// Decoded fingerprint payload plus AcoustID request duration hint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,28 +20,6 @@ pub(super) struct FingerprintPayload {
     pub(super) fingerprint: String,
     /// Rounded audio duration in whole seconds.
     pub(super) duration_seconds: u32,
-}
-
-/// Resolves AcoustID API key from CLI override or environment.
-pub(super) fn resolve_acoustid_api_key(override_value: Option<&str>) -> Option<String> {
-    if let Some(override_value) = override_value {
-        if let Some(value) = normalize_optional_text(Some(override_value)) {
-            return Some(value);
-        }
-
-        // An explicit blank override intentionally disables environment
-        // fallback so callers can force the "missing-key" flow.
-        return None;
-    }
-
-    if let Some(value) = std::env::var_os(ACOUSTID_API_KEY_ENV)
-        .and_then(|value| value.into_string().ok())
-        .and_then(|value| normalize_optional_text(Some(&value)))
-    {
-        return Some(value);
-    }
-
-    None
 }
 
 /// Runs `ffmpeg` decode and Chromaprint fingerprint generation for one media file.

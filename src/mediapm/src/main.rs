@@ -745,7 +745,6 @@ fn builtin_media_tagger_options(
     mediapm::builtins::media_tagger::InternalMediaTaggerOptions {
         input_path: Some(std::path::PathBuf::from(args.input)),
         output_path: std::path::PathBuf::from(args.output),
-        acoustid_api_key: args.acoustid_api_key,
         acoustid_endpoint: args.acoustid_endpoint,
         musicbrainz_endpoint: args.musicbrainz_endpoint,
         caa_endpoint: args.caa_endpoint,

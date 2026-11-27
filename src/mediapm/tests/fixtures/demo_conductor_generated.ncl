@@ -1121,10 +1121,6 @@ managed tool content root for sd
       kind = "builtin",
       name = "media-tagger",
       inputs = {
-        acoustid_api_key = {
-          kind = "string",
-          required = false,
-        },
         acoustid_endpoint = {
           kind = "string",
           required = false,

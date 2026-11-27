@@ -610,12 +610,13 @@ pub(crate) fn conductor_run_workflow_options(
     Ok(mediapm_conductor::RunWorkflowOptions {
         progress_group,
         overall_bar,
-        host_builtins: crate::builtins::host_builtins(env_pairs, Some(runtime_root.to_path_buf()))
-            .map_err(|error| {
-                MediaPmError::Workflow(format!(
-                    "builtin runner registry rejected its entries: {error}"
-                ))
-            })?,
+        host_builtins: crate::builtins::host_builtins(
+            env_pairs,
+            Some(runtime_root.join("auth.json")),
+        )
+        .map_err(|error| {
+            MediaPmError::Workflow(format!("builtin runner registry rejected its entries: {error}"))
+        })?,
         ..mediapm_conductor::RunWorkflowOptions::default()
     })
 }

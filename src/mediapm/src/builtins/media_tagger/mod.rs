@@ -14,9 +14,9 @@
 //! asset, not missing metadata — with `404` as the sole exception: the archive's
 //! "no art exists" answer.
 //! AcoustID lookup itself is only attempted when no recording MBID override is
-//! supplied. Missing/empty lookup credentials are a hard error on that
-//! autodetection path; when credentials are provided, lookup/authentication
-//! failures are surfaced as hard errors.
+//! supplied. A missing stored key is a hard error on that autodetection path;
+//! when a key is stored, lookup/authentication failures are surfaced as hard
+//! errors.
 //! MBID override sentinel behavior:
 //! - empty/omitted or `auto` => allow AcoustID autodetection path,
 //! - `none` => disable AcoustID autodetection path entirely.
@@ -43,6 +43,7 @@ mod util;
 mod tests {
     use std::collections::BTreeMap;
 
+    use crate::auth::store::{AcoustIdCredential, AuthFile, AuthServices, save_auth_file};
     use crate::builtins::media_tagger::cover_art::{
         COVER_ART_PHASE_BUDGET, CacheExpiryPolicy, CoverArtArchiveImage, CoverArtArchiveResponse,
         MediaTaggerHttpCache, SelectedCoverArt, insert_musicbrainz_image_tags,
@@ -73,7 +74,6 @@ mod tests {
             InternalMediaTaggerOptions {
                 input_path: Some(input_path),
                 output_path: output_path.clone(),
-                acoustid_api_key: Some("   ".to_string()),
                 acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
                 musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
                 caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
@@ -114,7 +114,7 @@ mod tests {
         let error = result.expect_err("missing key on autodetect path must fail");
         assert!(
             error.to_string().contains(
-                "AcoustID identification is required but no AcoustID API key is available"
+                "AcoustID identification is required but no AcoustID login is available (run 'mediapm auth acoustid login')"
             ),
             "expected gate-aware missing-key failure but got: {error:#}"
         );
@@ -143,7 +143,6 @@ mod tests {
             InternalMediaTaggerOptions {
                 input_path: Some(input_path),
                 output_path: output_path.clone(),
-                acoustid_api_key: Some("demo-key".to_string()),
                 acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
                 musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
                 caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
@@ -202,12 +201,22 @@ mod tests {
         let input_path = workspace.path().join("input.mp3");
         let output_path = workspace.path().join("output.ffmetadata");
         std::fs::write(&input_path, b"dummy-bytes").expect("write input media stub");
+        let auth_file = workspace.path().join("auth.json");
+        save_auth_file(
+            &auth_file,
+            &AuthFile {
+                services: AuthServices {
+                    acoustid: Some(AcoustIdCredential { api_key: "demo-key".to_string() }),
+                    ..AuthServices::default()
+                },
+            },
+        )
+        .expect("seed the auth file with an AcoustID key");
 
         let result = run_internal_media_tagger(
             InternalMediaTaggerOptions {
                 input_path: Some(input_path),
                 output_path: output_path.clone(),
-                acoustid_api_key: Some("demo-key".to_string()),
                 acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
                 musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
                 caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
@@ -239,7 +248,7 @@ mod tests {
                     DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
                 enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
                 metadata_selection: MetadataSelection::default(),
-                auth_file: None,
+                auth_file: Some(auth_file),
             },
             &test_env_pairs(),
         )
@@ -269,7 +278,6 @@ mod tests {
             InternalMediaTaggerOptions {
                 input_path: Some(input_path),
                 output_path: output_path.clone(),
-                acoustid_api_key: None,
                 acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
                 musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
                 caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
@@ -319,12 +327,22 @@ mod tests {
         let input_path = workspace.path().join("input.mp3");
         let output_path = workspace.path().join("output.ffmetadata");
         std::fs::write(&input_path, b"dummy-bytes").expect("write input media stub");
+        let auth_file = workspace.path().join("auth.json");
+        save_auth_file(
+            &auth_file,
+            &AuthFile {
+                services: AuthServices {
+                    acoustid: Some(AcoustIdCredential { api_key: "demo-key".to_string() }),
+                    ..AuthServices::default()
+                },
+            },
+        )
+        .expect("seed the auth file with an AcoustID key");
 
         let result = run_internal_media_tagger(
             InternalMediaTaggerOptions {
                 input_path: Some(input_path),
                 output_path: output_path.clone(),
-                acoustid_api_key: Some("demo-key".to_string()),
                 acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
                 musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
                 caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
@@ -356,7 +374,7 @@ mod tests {
                     DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
                 enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
                 metadata_selection: MetadataSelection::default(),
-                auth_file: None,
+                auth_file: Some(auth_file),
             },
             &test_env_pairs(),
         )
@@ -687,9 +705,7 @@ mod tests {
     }
 }
 
-use self::acoustid::{
-    decode_and_fingerprint_audio, lookup_acoustid_match, resolve_acoustid_api_key,
-};
+use self::acoustid::{decode_and_fingerprint_audio, lookup_acoustid_match};
 use self::cover_art::{
     COVER_ART_PHASE_BUDGET, CacheExpiryPolicy, MediaTaggerHttpCache, collect_musicbrainz_cover_art,
     insert_musicbrainz_image_tags, persist_cover_art_slot_artifacts,
@@ -722,8 +738,6 @@ pub const DEFAULT_CAA_ENDPOINT: &str = "https://coverartarchive.org";
 const FINGERPRINT_SAMPLE_RATE: u32 = 44_100;
 /// Target channel count used for deterministic fingerprint extraction.
 const FINGERPRINT_CHANNELS: u16 = 2;
-/// Environment variable fallback for AcoustID API credentials.
-const ACOUSTID_API_KEY_ENV: &str = "ACOUSTID_API_KEY";
 /// Executable name used for decode/export metadata operations.
 const FFMPEG_EXECUTABLE: &str = "ffmpeg";
 /// Optional env-var override for ffmpeg executable used by internal tagger.
@@ -882,8 +896,6 @@ pub struct InternalMediaTaggerOptions {
     pub input_path: Option<PathBuf>,
     /// Output `FFmetadata` path generated by this metadata-fetch stage.
     pub output_path: PathBuf,
-    /// Optional AcoustID API key override.
-    pub acoustid_api_key: Option<String>,
     /// AcoustID lookup endpoint.
     pub acoustid_endpoint: String,
     /// MusicBrainz API endpoint whose host\[:port\] selects the fetch domain.
@@ -1129,10 +1141,21 @@ async fn run_internal_media_tagger_impl(
             GateLabels {
                 service: "AcoustID",
                 disabled_flag: "--enable-logged-in-features-acoustid",
-                missing_login_hint: "no AcoustID API key is available (set --acoustid-api-key or ACOUSTID_API_KEY)",
+                missing_login_hint: "no AcoustID login is available (run 'mediapm auth acoustid login')",
             },
             || {
-                let key = resolve_acoustid_api_key(options.acoustid_api_key.as_deref());
+                let key = options.auth_file.as_deref().and_then(|path| {
+                    match crate::auth::acoustid::api_key(path) {
+                        Ok(key) => key,
+                        Err(error) => {
+                            tracing::warn!(
+                                error = %error,
+                                "could not read AcoustID credentials from the auth file"
+                            );
+                            None
+                        }
+                    }
+                });
                 let state = if key.is_some() { AuthState::LoggedIn } else { AuthState::LoggedOut };
                 acoustid_api_key.set(key);
                 state
@@ -1188,7 +1211,7 @@ async fn run_internal_media_tagger_impl(
 
     let Some(recording_mbid) = detected_recording_mbid else {
         bail!(
-            "could not resolve recording MBID (set --recording-mbid or provide AcoustID API key via --acoustid-api-key/{ACOUSTID_API_KEY_ENV})"
+            "could not resolve recording MBID (set --recording-mbid or run 'mediapm auth acoustid login')"
         );
     };
 

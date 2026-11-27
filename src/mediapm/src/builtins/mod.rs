@@ -72,8 +72,8 @@ const IMPORT_BUILTIN_ID: &str = "import";
 ///
 /// `env_pairs` are the whitelisted host environment-variable pairs the
 /// registered runners apply to every child process they spawn, resolved from the
-/// effective mediapm runtime storage. `runtime_root` is the effective runtime
-/// root used for login-gated auth state.
+/// effective mediapm runtime storage. `auth_file` is the unified credential
+/// file used for login-gated auth state.
 ///
 /// # Errors
 ///
@@ -83,15 +83,15 @@ const IMPORT_BUILTIN_ID: &str = "import";
 /// than something a run can be asked to tolerate.
 pub(crate) fn host_builtins(
     env_pairs: Vec<(String, String)>,
-    runtime_root: Option<PathBuf>,
+    auth_file: Option<PathBuf>,
 ) -> Result<HostBuiltins, ConductorError> {
     #[cfg(feature = "media-tagger")]
     let entries: Vec<Arc<dyn HostBuiltin>> =
-        vec![Arc::new(MediaTaggerBuiltin::new(env_pairs, runtime_root)) as Arc<dyn HostBuiltin>];
+        vec![Arc::new(MediaTaggerBuiltin::new(env_pairs, auth_file)) as Arc<dyn HostBuiltin>];
     #[cfg(not(feature = "media-tagger"))]
     let entries: Vec<Arc<dyn HostBuiltin>> = {
         let _ = env_pairs;
-        let _ = runtime_root;
+        let _ = auth_file;
         Vec::new()
     };
 

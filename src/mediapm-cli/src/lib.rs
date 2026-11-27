@@ -498,9 +498,6 @@ pub struct InternalMediaTaggerArgs {
     /// Output file path.
     #[arg(short, long)]
     pub output: String,
-    /// `AcoustID` API key.
-    #[arg(long)]
-    pub acoustid_api_key: Option<String>,
     /// `AcoustID` endpoint URL.
     #[arg(long, default_value = DEFAULT_ACOUSTID_ENDPOINT)]
     pub acoustid_endpoint: String,

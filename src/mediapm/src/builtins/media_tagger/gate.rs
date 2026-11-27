@@ -254,7 +254,7 @@ mod tests {
         let labels = GateLabels {
             service: "AcoustID",
             disabled_flag: "--enable-logged-in-features-acoustid",
-            missing_login_hint: "no AcoustID API key is available (set --acoustid-api-key or ACOUSTID_API_KEY)",
+            missing_login_hint: "no AcoustID login is available (run 'mediapm auth acoustid login')",
         };
         let outcome = resolve_gate(true, Need::Required("AcoustID identification"), labels, || {
             AuthState::LoggedOut
@@ -262,7 +262,7 @@ mod tests {
         assert_eq!(
             outcome,
             GateOutcome::Fail {
-                message: "AcoustID identification is required but no AcoustID API key is available (set --acoustid-api-key or ACOUSTID_API_KEY)"
+                message: "AcoustID identification is required but no AcoustID login is available (run 'mediapm auth acoustid login')"
                     .to_string(),
             }
         );
