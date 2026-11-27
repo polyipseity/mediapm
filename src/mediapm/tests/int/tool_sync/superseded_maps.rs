@@ -71,5 +71,6 @@ async fn a_skipping_sync_clears_a_stale_sibling_map_through_reconcile()
         after_bytes, before_bytes,
         "an unchanged library leaves the document byte-identical"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }

@@ -84,7 +84,8 @@ pub(crate) fn read_doc(path: &Path) -> mediapm::MediaPmDocument {
 /// Creates a `MediaPmService` with a hermetic cache override: a fresh
 /// artifact root plus a dedicated cache root, so sync never touches the real
 /// OS user cache. The cache root is returned alongside the service so
-/// callers can inspect the initialized cache files.
+/// callers can inspect the initialized cache files. The caller owns the
+/// returned service and must await `MediaPmService::shutdown` before dropping it.
 pub(crate) async fn service_with_cache(
     mut runtime: MediaRuntimeStorage,
 ) -> Result<
@@ -106,7 +107,9 @@ pub(crate) async fn service_with_cache(
 /// Creates a filesystem service rooted at a fresh temp artifact dir.
 ///
 /// The returned `ManagedTempDir` must be kept alive alongside the service (dropping
-/// it deletes the workspace); config-only tests can bind it to `_root`.
+/// it deletes the workspace); config-only tests can bind it to `_root`. The
+/// caller owns the returned service and must await `MediaPmService::shutdown`
+/// before dropping it.
 pub(crate) async fn service_in_tempdir() -> Result<
     (MediaPmService<mediapm_cas::FileSystemCas>, mediapm_utils::temp::ManagedTempDir),
     mediapm::MediaPmError,
@@ -119,7 +122,9 @@ pub(crate) async fn service_in_tempdir() -> Result<
 /// Creates a filesystem service whose tool download cache lives inside the
 /// workspace root, so parallel tests never contend on the OS-level cache.
 /// `hierarchy_root_dir` optionally points the hierarchy materializer at a
-/// subdirectory of the artifact root (mirrors the demo-online layout).
+/// subdirectory of the artifact root (mirrors the demo-online layout). The
+/// caller owns the returned service and must await `MediaPmService::shutdown`
+/// before dropping it.
 pub(crate) async fn service_at(
     root: &Path,
     _hierarchy_root_dir: Option<&str>,

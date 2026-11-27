@@ -1011,14 +1011,11 @@ async fn generate_demo_outputs(run_sync: bool) -> ExampleResult<DemoRunPaths> {
     let manifest_path = root.join("manifest.json");
     write_json_file(&manifest_path, &manifest)?;
 
-    service.conductor().shutdown().await?;
+    let library_root = service.paths().hierarchy_root_dir.clone();
+    service.shutdown().await?;
+    drop(service);
 
-    Ok(DemoRunPaths {
-        output_root: root,
-        workspace_root,
-        manifest_path,
-        library_root: service.paths().hierarchy_root_dir.clone(),
-    })
+    Ok(DemoRunPaths { output_root: root, workspace_root, manifest_path, library_root })
 }
 
 #[tokio::main]
@@ -1447,7 +1444,8 @@ mod tests {
         // Quiesce before the isolated root goes away: this service started a
         // background maintenance pass, and a pass still in flight would write
         // the conductor state file back into the removed directory.
-        second_service.conductor().shutdown().await.expect("shutdown second service");
+        second_service.shutdown().await.expect("shutdown second service");
+        drop(second_service);
     }
 
     /// Pins the demo's own hardlink verification against the single

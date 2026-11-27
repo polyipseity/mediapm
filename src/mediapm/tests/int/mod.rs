@@ -63,6 +63,8 @@ mod metadata_probe_cache_hop;
 mod resync;
 /// Runtime root `.gitignore` creation on service construction.
 mod runtime_gitignore;
+/// Each source owner of a service must await its shutdown.
+mod service_shutdown_guard;
 /// A generated document this build cannot decode is regenerated, not fatal.
 mod stale_generated_document;
 /// State JSON persistence and migration tests.

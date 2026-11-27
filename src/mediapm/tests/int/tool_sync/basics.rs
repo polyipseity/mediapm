@@ -23,6 +23,7 @@ async fn sync_empty_workspace_succeeds() -> Result<(), mediapm::MediaPmError> {
     let _summary = service
         .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await?;
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -35,6 +36,7 @@ async fn sync_creates_runtime_directories() -> Result<(), mediapm::MediaPmError>
     let paths = service.paths();
     assert!(paths.runtime_root.exists(), "runtime root .mediapm/ should exist");
     assert!(paths.tools_dir.exists(), "tools/ directory should exist");
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -49,6 +51,7 @@ async fn sync_creates_state_document() -> Result<(), mediapm::MediaPmError> {
     let content = std::fs::read_to_string(state_path).expect("state.json should be readable");
     assert!(!content.is_empty(), "state.json must not be empty");
     assert!(content.contains("version"), "state.json must contain a version field");
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -62,6 +65,7 @@ async fn sync_creates_generated_document() -> Result<(), mediapm::MediaPmError> 
     assert!(generated_path.exists(), "conductor.generated.ncl should exist");
     let doc = read_generated_doc(&service);
     assert!(!doc.tools.is_empty(), "generated doc must have tools");
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -124,6 +128,7 @@ async fn sync_writes_platform_inherited_env_into_the_generated_document()
         46,
         "a platform still absent from the config keeps its defaults",
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -146,6 +151,7 @@ async fn sync_writes_default_platform_inherited_env_when_config_names_none()
     assert_eq!(generated.runtime.environment.platform_inherited_env_vars.linux.len(), 51);
     assert_eq!(generated.runtime.environment.platform_inherited_env_vars.macos.len(), 40);
     assert_eq!(generated.runtime.environment.platform_inherited_env_vars.windows.len(), 46);
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -160,6 +166,7 @@ async fn sync_creates_env_generated() -> Result<(), mediapm::MediaPmError> {
     let content = std::fs::read_to_string(env_path).expect("env file should be readable");
     assert!(!content.is_empty(), "env file must not be empty");
     assert!(content.starts_with('#'), "env file must start with a comment header");
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -190,6 +197,7 @@ async fn sync_env_has_no_hash_in_names() -> Result<(), mediapm::MediaPmError> {
             assert!(!name.contains('@'), "env var name must not contain @: '{name}' in env file");
         }
     }
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -234,6 +242,7 @@ async fn sync_env_paths_contain_payload_segment() -> Result<(), mediapm::MediaPm
             );
         }
     }
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -280,6 +289,7 @@ async fn sync_registers_builtins() -> Result<(), mediapm::MediaPmError> {
         real_cache_mtime, real_cache_mtime_after,
         "real cache directory must not be modified when cache_root_override is set",
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -311,6 +321,7 @@ async fn sync_twice_env_generated_persists() -> Result<(), mediapm::MediaPmError
         content_after_first, content_after_second,
         "env content must be identical after re-sync"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -328,6 +339,7 @@ async fn sync_is_idempotent() -> Result<(), mediapm::MediaPmError> {
     let state_after_second =
         std::fs::read(&service.paths().mediapm_state_json).expect("state.json should exist");
     assert_eq!(state_after_first, state_after_second, "state.json must be identical after re-sync");
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -433,5 +445,6 @@ async fn sync_provisions_downloaded_payload() -> Result<(), mediapm::MediaPmErro
         "the host OS slot {host} must be provisioned: {:?}",
         content_map.keys().collect::<Vec<_>>(),
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }

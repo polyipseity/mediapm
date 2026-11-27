@@ -56,6 +56,7 @@ async fn conductor_ncl_skips_write_when_unchanged() {
         mtime1, mtime2,
         "conductor.generated.ncl mtime must not change when content is identical"
     );
+    service.shutdown().await.expect("service shutdown");
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +136,7 @@ async fn regression_state_only_churn_does_not_touch_conductor_file() {
     let after_state =
         std::fs::read_to_string(&state_path).expect("read state.json after second sync");
     assert!(!after_state.is_empty(), "state.json must still exist and be non-empty");
+    service.shutdown().await.expect("service shutdown");
 }
 
 // ---------------------------------------------------------------------------
@@ -233,4 +235,5 @@ async fn dual_write_holds_for_a_downloaded_payload() {
         state_mtime_after > state_mtime,
         "state.json must be rewritten on every sync pass, not change-detected",
     );
+    service.shutdown().await.expect("service shutdown");
 }

@@ -250,6 +250,8 @@ async fn a_step_option_change_re_executes_only_the_changed_step_when_bytes_are_u
         "the impure import (step 1) and the downstream step 3 (unchanged inputs) must remain cached: {third:?}"
     );
 
+    service.shutdown().await.expect("service shutdown");
+
     drop(service);
     Ok(())
 }
@@ -288,6 +290,8 @@ async fn a_tool_payload_update_does_not_re_execute_steps() -> Result<(), MediaPm
 
     drop(seams);
     drop(mock);
+    service.shutdown().await.expect("service shutdown");
+
     drop(service);
 
     // Second provision: a different upstream build (new autobuild tag and macOS
@@ -319,6 +323,8 @@ async fn a_tool_payload_update_does_not_re_execute_steps() -> Result<(), MediaPm
         after_update.cached_steps, 3,
         "all three steps must remain cached after a tool payload update: {after_update:?}"
     );
+
+    service.shutdown().await.expect("service shutdown");
 
     drop(service);
     drop(fresh_cache);
@@ -484,6 +490,8 @@ async fn invalidating_the_last_step_preserves_the_impure_import_output_in_cas()
         "the impure import instance must still be recorded after rerun and GC"
     );
 
+    service.shutdown().await.expect("service shutdown");
+
     drop(service);
     Ok(())
 }
@@ -541,6 +549,8 @@ async fn changing_upstream_bytes_re_executes_dependents_and_resolves_the_new_ins
         rerun.missing_paths == 0,
         "the re-executed workflow must materialize successfully: {rerun:?}"
     );
+
+    service.shutdown().await.expect("service shutdown");
 
     drop(service);
     Ok(())

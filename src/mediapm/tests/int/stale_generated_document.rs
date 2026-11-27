@@ -150,6 +150,7 @@ async fn a_stale_generated_document_is_regenerated() -> Result<(), mediapm::Medi
         "the regenerated document must declare the payload the media document names"
     );
 
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -185,5 +186,6 @@ async fn a_stale_user_document_stops_the_sync() -> Result<(), mediapm::MediaPmEr
     let after = std::fs::read(&user_path).expect("the user document should still be readable");
     assert_eq!(after, before, "the sync must not rewrite the user document it refused to read");
 
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }

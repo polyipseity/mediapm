@@ -268,3 +268,14 @@ async fn seeded_three_tool_skip_service() -> Result<
 
     Ok((service, root, cache_root))
 }
+
+/// The skip fixture stays usable until its owner awaits shutdown.
+///
+/// The helper itself returns a live service, so this pins the handoff: a
+/// caller can quiesce it before the temp roots it shares go out of scope.
+#[tokio::test]
+async fn seeded_skip_service_owner_awaits_shutdown() {
+    let (service, _root, _cache_root) =
+        seeded_three_tool_skip_service().await.expect("seeded service");
+    service.shutdown().await.expect("service shutdown");
+}

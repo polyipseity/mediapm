@@ -272,6 +272,7 @@ async fn an_immediate_second_sync_executes_nothing_and_rematerializes_nothing()
     );
 
     // Release the CAS store lock before the workspace TempDir removes the tree.
+    service.shutdown().await.expect("service shutdown");
     drop(service);
     Ok(())
 }
@@ -335,6 +336,6 @@ async fn force_rerun_reexecutes_the_cached_workflow() -> Result<(), MediaPmError
     );
 
     // Release the CAS store lock before the workspace TempDir removes the tree.
-    drop(service);
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }

@@ -105,6 +105,7 @@ async fn sync_with_zip_members(
     save_mediapm_document(&service.paths().mediapm_ncl, &document)?;
     let outcome = sync_library_with_test_terminal(&mut service, false).await;
     // Release the CAS `store/lock` before the caller inspects the tree.
+    service.shutdown().await.expect("service shutdown");
     drop(service);
     Ok((outcome, root))
 }

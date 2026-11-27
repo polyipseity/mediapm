@@ -27,6 +27,7 @@ async fn add_remote_source_works() -> Result<(), mediapm::MediaPmError> {
     let doc = read_doc(&service.paths().mediapm_ncl);
     let source = doc.media.get(&media_id).expect("source exists");
     assert!(source.steps.is_empty(), "default MediaSourceSpec has no steps");
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -40,6 +41,7 @@ async fn add_channel_hierarchy_preset_creates_expected_nodes() -> Result<(), med
 
     let doc = read_doc(&service.paths().mediapm_ncl);
     assert!(!doc.hierarchy.is_empty(), "YtDlpChannel preset should produce hierarchy nodes");
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -63,5 +65,6 @@ async fn add_one_remote_tool_requirement_persists() -> Result<(), mediapm::Media
     assert!(!doc.tools.contains_key("sd"));
     // import is a builtin, not a managed catalog tool.
     assert!(!doc.tools.contains_key("import"), "builtins are not in tool catalog");
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }

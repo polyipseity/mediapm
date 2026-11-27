@@ -22,6 +22,7 @@ async fn sync_tool_requires_sync_when_missing() -> Result<(), mediapm::MediaPmEr
     let service = MediaPmService::new_fs_at(root.path()).await?;
     let state = MediaPmState::default();
     assert!(service.logical_tool_requires_sync("non-existent", &state).await?);
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -57,6 +58,7 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
         resolved_vcs_hash: None,
     });
     assert!(!service.logical_tool_requires_sync("media-tagger", &state).await?);
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -121,6 +123,7 @@ async fn sync_requires_sync_when_the_cache_root_is_held_open() -> Result<(), med
     // a write dispatched just before teardown would recreate the cache root
     // after its owning tempdir is removed and leave an index-only orphan.
     holder.shutdown().await;
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -154,6 +157,7 @@ async fn sync_tool_registry_entry_version_matches_canonical() -> Result<(), medi
         !entry.canonical_version.is_empty(),
         "canonical_version must be non-empty for configured tools"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -166,6 +170,7 @@ async fn sync_no_tools_need_sync_when_none_desired() -> Result<(), mediapm::Medi
     let state = MediaPmState::default();
     let needing = service.collect_tools_requiring_sync(&state).await?;
     assert!(needing.is_empty(), "no desired tools → nothing needs sync");
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -192,6 +197,7 @@ async fn sync_collects_missing_tool() -> Result<(), mediapm::MediaPmError> {
     let state = MediaPmState::default();
     let needing = service.collect_tools_requiring_sync(&state).await?;
     assert_eq!(needing, vec!["media-tagger"]);
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -216,6 +222,7 @@ async fn sync_no_pruning_for_configured_tools() -> Result<(), mediapm::MediaPmEr
         "configured tools must not be pruned; pruned={}",
         summary.pruned_tools,
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -278,6 +285,7 @@ async fn sync_upgrades_v2_state_to_current_format() -> Result<(), mediapm::Media
         Some(1),
         "state.json should still have 1 tool entry after upgrade"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -370,6 +378,7 @@ async fn regression_warning_check_uses_sync_cache() -> Result<(), mediapm::Media
         !service.logical_tool_requires_sync("ffmpeg", &state).await?,
         "warning check must resolve from the sync cache root and report no sync needed",
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -417,5 +426,6 @@ async fn sync_leaves_no_tool_requiring_sync() -> Result<(), mediapm::MediaPmErro
             "{tool_id} was just synced, so the warning check must agree it is current",
         );
     }
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }

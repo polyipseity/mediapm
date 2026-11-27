@@ -143,5 +143,7 @@ async fn the_service_hands_its_metadata_cache_to_the_materializer() -> Result<()
          bytes; workspace {}",
         root.path().display()
     );
+    service.shutdown().await.expect("service shutdown");
+    drop(service);
     Ok(())
 }

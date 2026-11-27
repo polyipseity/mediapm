@@ -111,6 +111,7 @@ async fn sync_skip_preserves_inlined_deps() -> Result<(), mediapm::MediaPmError>
         mediapm::content_map_hash(content_map),
         "the record must keep describing the map the document holds"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -149,6 +150,7 @@ async fn sync_env_has_no_deps_garbage() -> Result<(), mediapm::MediaPmError> {
             "env must not leak companion vars: {line}\n{content}"
         );
     }
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -196,6 +198,7 @@ async fn sync_composite_non_transitive() -> Result<(), mediapm::MediaPmError> {
         !service.logical_tool_requires_sync("yt-dlp", &state).await?,
         "a composite-bearing dep entry must contribute its own version segment only"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -306,6 +309,7 @@ async fn sync_inlines_same_step_deps_into_content_map() -> Result<(), mediapm::M
             .any(|e| e.tool_id == "deno" && e.canonical_version == STUB_DENO_COMMIT_SHA),
         "deno must carry bare canonical {STUB_DENO_COMMIT_SHA}"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -489,6 +493,7 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
             .any(|e| e.tool_id == "deno" && e.canonical_version == STUB_DENO_COMMIT_SHA),
         "deno must reprovision to bare canonical {STUB_DENO_COMMIT_SHA}"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -555,6 +560,7 @@ async fn sync_level_ordering_applies_deps_before_requesters() -> Result<(), medi
     assert!(tool_ids.contains(&"yt-dlp"), "yt-dlp must be in managed_tools");
     assert!(tool_ids.contains(&"deno"), "deno must be in managed_tools");
 
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -604,5 +610,9 @@ async fn sync_parallel_driver_is_deterministic() -> Result<(), mediapm::MediaPmE
     );
     assert_eq!(doc1, doc2, "generated doc bytes differ between runs");
 
+    let shutdown1 = svc1.shutdown().await;
+    let shutdown2 = svc2.shutdown().await;
+    shutdown1.expect("service shutdown");
+    shutdown2.expect("service shutdown");
     Ok(())
 }

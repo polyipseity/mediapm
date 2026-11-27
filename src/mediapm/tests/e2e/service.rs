@@ -20,6 +20,7 @@ async fn add_source_persists() -> Result<(), mediapm::MediaPmError> {
     let doc = read_doc(&service.paths().mediapm_ncl);
     assert!(doc.media.contains_key(&media_id), "source should exist after add");
 
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -96,7 +97,8 @@ async fn add_local_source_caches_metadata() -> Result<(), mediapm::MediaPmError>
         service.add_local_source(&media_path, "ffprobe", None, AddInsertPosition::End).await?;
     assert!(!media_id.is_empty(), "local add must produce a media id");
 
-    // The cache flushes when the service is dropped; drop before asserting.
+    // Quiesce before asserting, then drop to flush the metadata cache.
+    service.shutdown().await.expect("service shutdown");
     drop(service);
 
     let cache_path =
@@ -139,6 +141,7 @@ async fn add_source_with_metadata() -> Result<(), mediapm::MediaPmError> {
     assert_eq!(source.title.as_str(), "My Title");
     assert_eq!(source.description.as_str(), "A test asset description");
 
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -180,6 +183,7 @@ async fn add_tool_without_version_persists() -> Result<(), mediapm::MediaPmError
     assert!(doc.tools.contains_key("ffmpeg"), "ffmpeg should be registered");
     assert!(!doc.tools.contains_key("yt-dlp"), "yt-dlp was not added in this test");
 
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -197,6 +201,7 @@ async fn add_local_hierarchy_preset() -> Result<(), mediapm::MediaPmError> {
     let doc = read_doc(&service.paths().mediapm_ncl);
     assert!(!doc.hierarchy.is_empty(), "Local preset should produce hierarchy nodes");
 
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -210,6 +215,7 @@ async fn add_channel_hierarchy_preset() -> Result<(), mediapm::MediaPmError> {
     let doc = read_doc(&service.paths().mediapm_ncl);
     assert!(!doc.hierarchy.is_empty(), "YtDlpChannel preset should produce hierarchy nodes");
 
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -232,5 +238,6 @@ async fn source_accepts_any_scheme() -> Result<(), mediapm::MediaPmError> {
     let doc = read_doc(&service.paths().mediapm_ncl);
     assert!(doc.media.contains_key(&media_id), "source added with ftp scheme should persist");
 
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }

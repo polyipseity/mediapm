@@ -135,5 +135,6 @@ mod tests {
              row's `MaterializationBarLabel` sets `phase`, or if a per-entry row does; \
              only the per-entry rows may name a phase:\n{materialization_grid}"
         );
+        service.shutdown().await.expect("service shutdown");
     }
 }

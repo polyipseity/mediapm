@@ -83,6 +83,8 @@ async fn a_local_source_is_staged_before_its_hash_is_written() {
         .await
         .expect("the named hash must resolve to staged bytes");
     assert_eq!(stored.as_ref(), LOCAL_SOURCE_BYTES, "the staged bytes are the file's");
+    service.shutdown().await.expect("service shutdown");
+    drop(service);
 }
 
 /// Seeds the ffprobe metadata cache so the add runs without an ffprobe binary.
@@ -173,6 +175,7 @@ async fn a_reopened_workspace_resolves_the_staged_hash() {
     };
     let expected = Hash::from_content(LOCAL_SOURCE_BYTES);
     assert_eq!(named, expected.to_hex(), "the import step must name the file's content hash");
+    first.shutdown().await.expect("first service shutdown");
     drop(first);
 
     let second = MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), storage)
@@ -189,4 +192,6 @@ async fn a_reopened_workspace_resolves_the_staged_hash() {
         LOCAL_SOURCE_BYTES,
         "the bytes staged by the first process survive it"
     );
+    second.shutdown().await.expect("second service shutdown");
+    drop(second);
 }

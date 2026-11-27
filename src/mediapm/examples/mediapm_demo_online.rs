@@ -3957,7 +3957,7 @@ async fn run_online_demo(
     let manifest_path = root.join("manifest.json");
     write_json_file(&manifest_path, &manifest)?;
 
-    sync_service.conductor().shutdown().await?;
+    sync_service.shutdown().await?;
 
     // S2's demo clause: the materializer's probe answers through the
     // service's workspace `MetadataCache` (this demo calls no

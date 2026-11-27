@@ -13,6 +13,8 @@ use mediapm::{MediaPmService, load_mediapm_document, save_mediapm_document};
 async fn document_lifecycle_values_reach_the_conductor_facade() {
     let root = mediapm_utils::temp::output_dir().expect("artifact dir");
     let service = MediaPmService::new_fs_at(root.path()).await.expect("scaffold");
+    service.shutdown().await.expect("scaffold shutdown");
+
     drop(service);
     let ncl = root.path().join("mediapm.ncl");
     let mut doc = load_mediapm_document(&ncl).expect("scaffolded document loads");
@@ -25,6 +27,9 @@ async fn document_lifecycle_values_reach_the_conductor_facade() {
         (90_000, 42),
         "a document-stated lifecycle group must reach the sweep"
     );
+    service.shutdown().await.expect("service shutdown");
+
+    drop(service);
 }
 
 /// A stated service override beats the document (green on both sides of
@@ -33,6 +38,8 @@ async fn document_lifecycle_values_reach_the_conductor_facade() {
 async fn a_stated_override_beats_the_document() {
     let root = mediapm_utils::temp::output_dir().expect("artifact dir");
     let service = MediaPmService::new_fs_at(root.path()).await.expect("scaffold");
+    service.shutdown().await.expect("scaffold shutdown");
+
     drop(service);
     let ncl = root.path().join("mediapm.ncl");
     let mut doc = load_mediapm_document(&ncl).expect("scaffolded document loads");
@@ -57,6 +64,9 @@ async fn a_stated_override_beats_the_document() {
         (77, 88),
         "a stated override must win over the document"
     );
+    service.shutdown().await.expect("service shutdown");
+
+    drop(service);
 }
 
 /// No lifecycle stated (the scaffold creates a `mediapm.ncl` without
@@ -73,6 +83,9 @@ async fn defaults_hold_when_nothing_states_a_value() {
         ),
         "an unstated pair resolves to the built-in defaults"
     );
+    service.shutdown().await.expect("service shutdown");
+
+    drop(service);
 }
 
 /// The merge keeps the document half when the override states nothing:
@@ -96,6 +109,8 @@ fn merge_keeps_document_lifecycle_when_the_override_states_nothing() {
 async fn an_override_equal_to_the_default_does_not_usurp_a_stated_document() {
     let root = mediapm_utils::temp::output_dir().expect("artifact dir");
     let service = MediaPmService::new_fs_at(root.path()).await.expect("scaffold");
+    service.shutdown().await.expect("scaffold shutdown");
+
     drop(service);
     let ncl = root.path().join("mediapm.ncl");
     let mut doc = load_mediapm_document(&ncl).expect("scaffolded document loads");
@@ -122,6 +137,9 @@ async fn an_override_equal_to_the_default_does_not_usurp_a_stated_document() {
         (90_000, 42),
         "an override equal to the built-in default is unstated; the document must win"
     );
+    service.shutdown().await.expect("service shutdown");
+
+    drop(service);
 }
 
 /// One override field is the unstated sentinel while the other states a
@@ -131,6 +149,8 @@ async fn an_override_equal_to_the_default_does_not_usurp_a_stated_document() {
 async fn a_mixed_override_resolves_each_field_on_its_own_terms() {
     let root = mediapm_utils::temp::output_dir().expect("artifact dir");
     let service = MediaPmService::new_fs_at(root.path()).await.expect("scaffold");
+    service.shutdown().await.expect("scaffold shutdown");
+
     drop(service);
     let ncl = root.path().join("mediapm.ncl");
     let mut doc = load_mediapm_document(&ncl).expect("scaffolded document loads");
@@ -157,4 +177,7 @@ async fn a_mixed_override_resolves_each_field_on_its_own_terms() {
         (90_000, 88),
         "the sentinel side falls back to the document; the stated side wins"
     );
+    service.shutdown().await.expect("service shutdown");
+
+    drop(service);
 }

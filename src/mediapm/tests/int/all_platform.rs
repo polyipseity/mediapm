@@ -213,5 +213,6 @@ async fn every_managed_tool_provisions_a_payload_for_every_os_slot()
     let doc = read_generated_doc(&service);
     assert_every_managed_tool_covers_every_os(&doc);
     assert_host_builtin_has_no_payload(&doc);
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }

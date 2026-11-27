@@ -117,6 +117,8 @@ async fn sync_executes_import_workflow() -> Result<(), mediapm::MediaPmError> {
         state_path.display()
     );
 
+    service.shutdown().await.expect("service shutdown");
+    drop(service);
     Ok(())
 }
 
@@ -143,6 +145,8 @@ async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmErr
         assert!(summary.executed_steps >= 1, "first sync should execute the import workflow");
         first_executed = summary.executed_steps;
         state_path = service.paths().conductor_state_config.clone();
+        service.shutdown().await.expect("service shutdown");
+        drop(service);
     }
 
     let first_state = read_conductor_state(&state_path)?;
@@ -174,6 +178,8 @@ async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmErr
         "a cache-hit re-run must not accumulate new instances in the state file"
     );
 
+    service.shutdown().await.expect("service shutdown");
+    drop(service);
     Ok(())
 }
 
@@ -211,12 +217,14 @@ async fn sync_with_failed_step_then_shutdown_succeeds() -> Result<(), mediapm::M
         // `coordinator.shutdown()`, so the client's `stop_and_wait` failed with
         // `MessagingErr::ChannelClosed` ("Messaging failed because channel is
         // closed").
-        service.conductor().shutdown().await?;
+        service.shutdown().await.expect("service shutdown");
+        drop(service);
     }
 
     // Sequential same-root opens must not deadlock on the CAS directory lock
     // after a clean shutdown released the first service's handle.
     let service = service_at(root.path(), None).await?;
+    service.shutdown().await.expect("service shutdown");
     drop(service);
 
     Ok(())
@@ -278,5 +286,7 @@ async fn sync_populates_managed_files_from_conductor_state() -> Result<(), media
         record.hash
     );
 
+    service.shutdown().await.expect("service shutdown");
+    drop(service);
     Ok(())
 }

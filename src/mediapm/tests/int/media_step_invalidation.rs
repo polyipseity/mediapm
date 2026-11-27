@@ -174,6 +174,7 @@ async fn invalidating_marks_the_instances_and_leaves_recorded_progress_alone()
     let marked = conductor_state_on_disk(&paths);
     assert_step_instances_marked(&marked, &summary.targeted_step_ids[0], true, "after invalidate");
 
+    service.shutdown().await.expect("service shutdown");
     drop(service);
     Ok(())
 }
@@ -226,7 +227,7 @@ async fn invalidating_one_workflow_leaves_the_other_cached() -> Result<(), Media
         "the sync after the re-run must be cache-first again: {free:?}"
     );
 
-    drop(service);
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -268,7 +269,7 @@ async fn undo_clears_the_marker_so_the_next_sync_is_free() -> Result<(), MediaPm
         "undoing before the sync must let the recorded instance serve the run: {free:?}"
     );
 
-    drop(service);
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -314,7 +315,7 @@ async fn a_failed_run_leaves_the_marker_set() -> Result<(), MediaPmError> {
     let state = conductor_state_on_disk(&service.paths().clone());
     assert_step_instances_marked(&state, &summary.targeted_step_ids[0], true, "after a failed run");
 
-    drop(service);
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -370,7 +371,7 @@ async fn marking_a_shared_step_leaves_another_media_that_reuses_it_alone()
         "the named media re-executes while the other is served from cache: {forced:?}",
     );
 
-    drop(service);
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -424,7 +425,7 @@ async fn unknown_media_and_absent_step_indexes_are_errors() -> Result<(), MediaP
         );
     }
 
-    drop(service);
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -515,6 +516,6 @@ async fn invalidating_a_fan_out_step_marks_every_id_it_wrote() -> Result<(), Med
         assert_step_instances_marked(&marked, step_id, false, "only the targeted step is marked");
     }
 
-    drop(service);
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }

@@ -117,7 +117,9 @@ fn run() -> anyhow::Result<()> {
 async fn async_main() -> anyhow::Result<()> {
     #[cfg(feature = "cli")]
     {
-        main_cli().await?;
+        // The CLI body owns several service lifecycles, so its future is
+        // deliberately heap-pinned rather than grown on this stack frame.
+        Box::pin(main_cli()).await?;
         Ok(())
     }
 
@@ -126,6 +128,43 @@ async fn async_main() -> anyhow::Result<()> {
         eprintln!("error: the mediapm binary requires the 'cli' feature");
         std::process::exit(1);
     }
+}
+
+#[cfg(feature = "cli")]
+/// Runs one service-backed CLI body, then awaits shutdown before the drop.
+///
+/// The body's `?` exits are captured as a result value, so even a failed
+/// command quiesces its service first. A failed shutdown forgets the
+/// still-uncompleted service, because its Drop would panic and mask the
+/// original error. `std::process::exit` ends the process without running drops
+/// and is outside this contract.
+macro_rules! with_cli_service {
+    ($root:expr, $rt:expr, mut $service:ident, $body:block) => {{
+        let mut $service =
+            MediaPmService::new_fs_at_with_runtime_storage_overrides($root, $rt).await?;
+        let result = async $body.await;
+        let shutdown = $service.shutdown().await;
+        if shutdown.is_err() {
+            std::mem::forget($service);
+        } else {
+            drop($service);
+        }
+        shutdown?;
+        result
+    }};
+    ($root:expr, $rt:expr, $service:ident, $body:block) => {{
+        let $service =
+            MediaPmService::new_fs_at_with_runtime_storage_overrides($root, $rt).await?;
+        let result = async $body.await;
+        let shutdown = $service.shutdown().await;
+        if shutdown.is_err() {
+            std::mem::forget($service);
+        } else {
+            drop($service);
+        }
+        shutdown?;
+        result
+    }};
 }
 
 #[cfg(feature = "cli")]
@@ -177,26 +216,26 @@ async fn main_cli() -> anyhow::Result<()> {
             let root = &cli.root;
             let paths = resolve_effective_paths_for_root(root, &rt);
             load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
-            let mut service =
-                MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
-            let options = sync_library_options(args);
-            let summary = service.sync_library_with_options(options).await?;
-            mediapm::output::print_sync_summary(&summary);
-            match sync_exit_status(&summary) {
-                None => {}
-                // The `Δ` lines above are the warning, so only the status is
-                // left to add.
-                Some(EXIT_WARNING) => std::process::exit(EXIT_WARNING),
-                Some(status) => {
-                    print_error(format!(
-                        "sync did not produce everything the config asked for: \
-                         missing={} failed_steps={}",
-                        summary.missing_paths, summary.workflow_failed_steps
-                    ));
-                    std::process::exit(status);
+            with_cli_service!(root, rt, mut service, {
+                let options = sync_library_options(args);
+                let summary = service.sync_library_with_options(options).await?;
+                mediapm::output::print_sync_summary(&summary);
+                match sync_exit_status(&summary) {
+                    None => {}
+                    // The `Δ` lines above are the warning, so only the status is
+                    // left to add.
+                    Some(EXIT_WARNING) => std::process::exit(EXIT_WARNING),
+                    Some(status) => {
+                        print_error(format!(
+                            "sync did not produce everything the config asked for: \
+                             missing={} failed_steps={}",
+                            summary.missing_paths, summary.workflow_failed_steps
+                        ));
+                        std::process::exit(status);
+                    }
                 }
-            }
-            Ok(())
+                Ok(())
+            })
         }
         Command::Tool { command } => match command {
             ToolCommand::Run { tool, args } => {
@@ -211,49 +250,49 @@ async fn main_cli() -> anyhow::Result<()> {
                 let root = &cli.root;
                 let paths = resolve_effective_paths_for_root(root, &rt);
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
-                let mut service =
-                    MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
-                service.add_tool_requirement(&name, None)?;
-                print_result(
-                    StatusIcon::Success,
-                    "tool added",
-                    &[("name", &name as &dyn std::fmt::Display), ("tag", &"latest")],
-                    None,
-                );
-                print_hint("run 'mediapm tool sync' to download and register");
-                Ok(())
+                with_cli_service!(root, rt, mut service, {
+                    service.add_tool_requirement(&name, None)?;
+                    print_result(
+                        StatusIcon::Success,
+                        "tool added",
+                        &[("name", &name as &dyn std::fmt::Display), ("tag", &"latest")],
+                        None,
+                    );
+                    print_hint("run 'mediapm tool sync' to download and register");
+                    Ok(())
+                })
             }
             ToolCommand::Sync(args) => {
                 let root = &cli.root;
                 let paths = resolve_effective_paths_for_root(root, &rt);
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
-                let mut service =
-                    MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
-                let recheck_override = resolve_recheck_override(args.recheck_policy);
-                let no_progress = args.no_progress;
-                let summary = service
-                    .sync_tools_with_tag_update_checks(recheck_override, no_progress)
-                    .await?;
-                print_result(
-                    mediapm::output::tool_sync_icon(&summary),
-                    "tools synced",
-                    &[
-                        ("added", &summary.added_tools as &dyn std::fmt::Display),
-                        ("updated", &summary.updated_tools),
-                        ("pruned", &summary.pruned_tools),
-                        ("removed", &summary.removed_tools),
-                    ],
-                    None,
-                );
-                for warning in &summary.warnings {
-                    print_warning(warning);
-                }
-                // The `Δ` lines above carry which tool failed and why, so the
-                // status only has to add that the run was not clean.
-                if let Some(status) = tool_sync_exit_status(&summary) {
-                    std::process::exit(status);
-                }
-                Ok(())
+                with_cli_service!(root, rt, mut service, {
+                    let recheck_override = resolve_recheck_override(args.recheck_policy);
+                    let no_progress = args.no_progress;
+                    let summary = service
+                        .sync_tools_with_tag_update_checks(recheck_override, no_progress)
+                        .await?;
+                    print_result(
+                        mediapm::output::tool_sync_icon(&summary),
+                        "tools synced",
+                        &[
+                            ("added", &summary.added_tools as &dyn std::fmt::Display),
+                            ("updated", &summary.updated_tools),
+                            ("pruned", &summary.pruned_tools),
+                            ("removed", &summary.removed_tools),
+                        ],
+                        None,
+                    );
+                    for warning in &summary.warnings {
+                        print_warning(warning);
+                    }
+                    // The `Δ` lines above carry which tool failed and why, so the
+                    // status only has to add that the run was not clean.
+                    if let Some(status) = tool_sync_exit_status(&summary) {
+                        std::process::exit(status);
+                    }
+                    Ok(())
+                })
             }
             ToolCommand::List => {
                 let effective_paths = MediaPmPaths::from_root(&cli.root);
@@ -264,17 +303,17 @@ async fn main_cli() -> anyhow::Result<()> {
                 let root = &cli.root;
                 let paths = resolve_effective_paths_for_root(root, &rt);
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
-                let mut service =
-                    MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
-                service.remove_tool_requirement(&name)?;
-                print_result(
-                    StatusIcon::Success,
-                    "tool removed",
-                    &[("name", &name as &dyn std::fmt::Display)],
-                    None,
-                );
-                print_hint("run 'mediapm tool sync' to reconcile runtime state");
-                Ok(())
+                with_cli_service!(root, rt, mut service, {
+                    service.remove_tool_requirement(&name)?;
+                    print_result(
+                        StatusIcon::Success,
+                        "tool removed",
+                        &[("name", &name as &dyn std::fmt::Display)],
+                        None,
+                    );
+                    print_hint("run 'mediapm tool sync' to reconcile runtime state");
+                    Ok(())
+                })
             }
             ToolCommand::Prune { id, metadata } => {
                 let effective_paths = MediaPmPaths::from_root(&cli.root);
@@ -288,195 +327,196 @@ async fn main_cli() -> anyhow::Result<()> {
                 let root = &cli.root;
                 let paths = resolve_effective_paths_for_root(root, &rt);
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
-                let service =
-                    MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
-                service.refresh_runtime_configuration()?;
-                print_result(StatusIcon::Success, "runtime refreshed", &[], None);
-                Ok(())
+                with_cli_service!(root, rt, service, {
+                    service.refresh_runtime_configuration()?;
+                    print_result(StatusIcon::Success, "runtime refreshed", &[], None);
+                    Ok(())
+                })
             }
         },
         Command::Media { command } => {
             let root = &cli.root;
             let paths = resolve_effective_paths_for_root(root, &rt);
             load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
-            let mut service =
-                MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
-            match command {
-                MediaCommand::Add(args) => {
-                    let media_id = match args.preset {
-                        MediaAddPreset::YtDlp => {
-                            let uri = Url::parse(&args.source).map_err(|e| {
-                                anyhow::anyhow!("invalid URL '{}': {}", args.source, e)
-                            })?;
-                            let media_id = media_id_from_uri(&uri);
-                            if args.overwrite {
-                                let _ = service.remove_media_source(&media_id);
-                            }
-                            let steps = default_yt_dlp_steps(
-                                args.recording_mbid.as_deref(),
-                                args.release_mbid.as_deref(),
-                            );
-                            let source_spec = MediaSourceSpec {
-                                title: args.title.clone().unwrap_or_default(),
-                                description: args.description.clone().unwrap_or_default(),
-                                artist: args.artist.clone().unwrap_or_default(),
-                                metadata: args.album.as_deref().map_or_else(
-                                    std::collections::BTreeMap::new,
-                                    |album| {
-                                        let mut metadata = std::collections::BTreeMap::new();
-                                        metadata.insert(
-                                            "album".to_string(),
-                                            MediaMetadataValue::Literal(album.to_string()),
-                                        );
-                                        metadata
-                                    },
-                                ),
-                                variant_hashes: std::collections::BTreeMap::new(),
-                                steps,
-                            };
-                            service.add_media_source_with_position(
-                                &source_spec,
-                                media_id.clone(),
-                                &uri,
-                                args.title.as_deref(),
-                                args.description.as_deref(),
-                                args.insert_position.into(),
-                                args.overwrite,
-                            )?;
-                            media_id
-                        }
-                        MediaAddPreset::Local => {
-                            let path = PathBuf::from(&args.source);
-                            service
-                                .add_local_source_with_position(
-                                    &path,
-                                    args.ffprobe_command.as_deref().unwrap_or("ffprobe"),
-                                    None,
+            with_cli_service!(root, rt, mut service, {
+                match command {
+                    MediaCommand::Add(args) => {
+                        let media_id = match args.preset {
+                            MediaAddPreset::YtDlp => {
+                                let uri = Url::parse(&args.source).map_err(|e| {
+                                    anyhow::anyhow!("invalid URL '{}': {}", args.source, e)
+                                })?;
+                                let media_id = media_id_from_uri(&uri);
+                                if args.overwrite {
+                                    let _ = service.remove_media_source(&media_id);
+                                }
+                                let steps = default_yt_dlp_steps(
+                                    args.recording_mbid.as_deref(),
+                                    args.release_mbid.as_deref(),
+                                );
+                                let source_spec = MediaSourceSpec {
+                                    title: args.title.clone().unwrap_or_default(),
+                                    description: args.description.clone().unwrap_or_default(),
+                                    artist: args.artist.clone().unwrap_or_default(),
+                                    metadata: args.album.as_deref().map_or_else(
+                                        std::collections::BTreeMap::new,
+                                        |album| {
+                                            let mut metadata = std::collections::BTreeMap::new();
+                                            metadata.insert(
+                                                "album".to_string(),
+                                                MediaMetadataValue::Literal(album.to_string()),
+                                            );
+                                            metadata
+                                        },
+                                    ),
+                                    variant_hashes: std::collections::BTreeMap::new(),
+                                    steps,
+                                };
+                                service.add_media_source_with_position(
+                                    &source_spec,
+                                    media_id.clone(),
+                                    &uri,
+                                    args.title.as_deref(),
+                                    args.description.as_deref(),
                                     args.insert_position.into(),
                                     args.overwrite,
-                                )
-                                .await?
-                        }
-                    };
-                    print_result(
-                        StatusIcon::Success,
-                        "media added",
-                        &[("id", &media_id as &dyn std::fmt::Display)],
-                        None,
-                    );
-                    print_hint(
-                        "run 'mediapm sync' to apply workflow/hierarchy changes (and 'mediapm tool sync' first if tools are out of date)",
-                    );
-                    Ok(())
-                }
-                MediaCommand::Remove { media_id } => {
-                    service.remove_media_source(&media_id)?;
-                    print_result(
-                        StatusIcon::Success,
-                        "media removed",
-                        &[("id", &media_id as &dyn std::fmt::Display)],
-                        None,
-                    );
-                    print_hint("run 'mediapm sync' to apply workflow/hierarchy changes");
-                    Ok(())
-                }
-                MediaCommand::Invalidate(args) => {
-                    let summary = if args.undo {
-                        service
-                            .revalidate_media_step_tool_calls(&args.media_id, args.step_index)
-                            .await?
-                    } else {
-                        service
-                            .invalidate_media_step_tool_calls(&args.media_id, args.step_index)
-                            .await?
-                    };
-                    let marker = if args.undo { "cleared" } else { "marked" };
-                    print_result(
-                        StatusIcon::Success,
-                        if args.undo { "media revalidated" } else { "media invalidated" },
-                        &[
-                            ("id", &args.media_id as &dyn std::fmt::Display),
-                            ("step", &args.step_index),
-                            ("workflow", &summary.workflow_id as &dyn std::fmt::Display),
-                            ("steps", &summary.targeted_step_ids.len()),
-                            ("instances", &summary.changed_instances),
-                            ("unchanged", &summary.unchanged_instances),
-                        ],
-                        None,
-                    );
-                    if summary.changed_instances == 0 && summary.unchanged_instances == 0 {
-                        print_hint(
-                            "no recorded instance carries the step ids this index resolves to; \
-                             the next sync runs the step from scratch",
+                                )?;
+                                media_id
+                            }
+                            MediaAddPreset::Local => {
+                                let path = PathBuf::from(&args.source);
+                                service
+                                    .add_local_source_with_position(
+                                        &path,
+                                        args.ffprobe_command.as_deref().unwrap_or("ffprobe"),
+                                        None,
+                                        args.insert_position.into(),
+                                        args.overwrite,
+                                    )
+                                    .await?
+                            }
+                        };
+                        print_result(
+                            StatusIcon::Success,
+                            "media added",
+                            &[("id", &media_id as &dyn std::fmt::Display)],
+                            None,
                         );
-                    } else if summary.changed_instances == 0 {
                         print_hint(
-                            "every matching instance already carried this marker, so there is \
-                             nothing new to apply",
+                            "run 'mediapm sync' to apply workflow/hierarchy changes (and 'mediapm tool sync' first if tools are out of date)",
                         );
-                    } else {
-                        print_hint(format!(
-                            "{marker} {} instance(s); run 'mediapm sync' to apply",
-                            summary.changed_instances,
-                        ));
+                        Ok(())
                     }
-                    Ok(())
+                    MediaCommand::Remove { media_id } => {
+                        service.remove_media_source(&media_id)?;
+                        print_result(
+                            StatusIcon::Success,
+                            "media removed",
+                            &[("id", &media_id as &dyn std::fmt::Display)],
+                            None,
+                        );
+                        print_hint("run 'mediapm sync' to apply workflow/hierarchy changes");
+                        Ok(())
+                    }
+                    MediaCommand::Invalidate(args) => {
+                        let summary = if args.undo {
+                            service
+                                .revalidate_media_step_tool_calls(&args.media_id, args.step_index)
+                                .await?
+                        } else {
+                            service
+                                .invalidate_media_step_tool_calls(&args.media_id, args.step_index)
+                                .await?
+                        };
+                        let marker = if args.undo { "cleared" } else { "marked" };
+                        print_result(
+                            StatusIcon::Success,
+                            if args.undo { "media revalidated" } else { "media invalidated" },
+                            &[
+                                ("id", &args.media_id as &dyn std::fmt::Display),
+                                ("step", &args.step_index),
+                                ("workflow", &summary.workflow_id as &dyn std::fmt::Display),
+                                ("steps", &summary.targeted_step_ids.len()),
+                                ("instances", &summary.changed_instances),
+                                ("unchanged", &summary.unchanged_instances),
+                            ],
+                            None,
+                        );
+                        if summary.changed_instances == 0 && summary.unchanged_instances == 0 {
+                            print_hint(
+                                "no recorded instance carries the step ids this index resolves to; \
+                             the next sync runs the step from scratch",
+                            );
+                        } else if summary.changed_instances == 0 {
+                            print_hint(
+                                "every matching instance already carried this marker, so there is \
+                             nothing new to apply",
+                            );
+                        } else {
+                            print_hint(format!(
+                                "{marker} {} instance(s); run 'mediapm sync' to apply",
+                                summary.changed_instances,
+                            ));
+                        }
+                        Ok(())
+                    }
                 }
-            }
+            })
         }
         Command::Hierarchy { command } => {
             let root = &cli.root;
             let paths = resolve_effective_paths_for_root(root, &rt);
             load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
-            let mut service =
-                MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
-            match command {
-                HierarchyCommand::Add(args) => {
-                    if args.overwrite {
+            with_cli_service!(root, rt, mut service, {
+                match command {
+                    HierarchyCommand::Add(args) => {
+                        if args.overwrite {
+                            let _ = service.remove_media_hierarchy_preset(&format!(
+                                "root/{}",
+                                args.root_folder.trim_end_matches('/')
+                            ));
+                        }
+                        service.add_media_hierarchy_preset_with_position(
+                            args.preset.into(),
+                            args.insert_position.into(),
+                        )?;
+                        print_result(
+                            StatusIcon::Success,
+                            "hierarchy added",
+                            &[(
+                                "preset",
+                                &(match args.preset {
+                                    HierarchyPresetArg::Local => "local",
+                                    HierarchyPresetArg::YtDlp => "yt-dlp",
+                                }) as &dyn std::fmt::Display,
+                            )],
+                            None,
+                        );
+                        print_hint("run 'mediapm sync' to apply workflow/hierarchy changes");
+                        Ok(())
+                    }
+                    // `--preset` is accepted for forward-compatibility / CLI
+                    // discoverability but intentionally unused in the handler:
+                    // remove-by-root-folder is simpler and covers all preset
+                    // types since they all share the same node layout.
+                    HierarchyCommand::Remove { preset: _, root_folder, media_id } => {
                         let _ = service.remove_media_hierarchy_preset(&format!(
                             "root/{}",
-                            args.root_folder.trim_end_matches('/')
+                            root_folder.trim_end_matches('/')
                         ));
+                        let removed =
+                            service.remove_media_hierarchy_preset_by_media_id(&media_id)?;
+                        print_result(
+                            StatusIcon::Success,
+                            "hierarchy removed",
+                            &[("id", &media_id as &dyn std::fmt::Display), ("count", &removed)],
+                            None,
+                        );
+                        print_hint("run 'mediapm sync' to apply workflow/hierarchy changes");
+                        Ok(())
                     }
-                    service.add_media_hierarchy_preset_with_position(
-                        args.preset.into(),
-                        args.insert_position.into(),
-                    )?;
-                    print_result(
-                        StatusIcon::Success,
-                        "hierarchy added",
-                        &[(
-                            "preset",
-                            &(match args.preset {
-                                HierarchyPresetArg::Local => "local",
-                                HierarchyPresetArg::YtDlp => "yt-dlp",
-                            }) as &dyn std::fmt::Display,
-                        )],
-                        None,
-                    );
-                    print_hint("run 'mediapm sync' to apply workflow/hierarchy changes");
-                    Ok(())
                 }
-                // `--preset` is accepted for forward-compatibility / CLI
-                // discoverability but intentionally unused in the handler:
-                // remove-by-root-folder is simpler and covers all preset
-                // types since they all share the same node layout.
-                HierarchyCommand::Remove { preset: _, root_folder, media_id } => {
-                    let _ = service.remove_media_hierarchy_preset(&format!(
-                        "root/{}",
-                        root_folder.trim_end_matches('/')
-                    ));
-                    let removed = service.remove_media_hierarchy_preset_by_media_id(&media_id)?;
-                    print_result(
-                        StatusIcon::Success,
-                        "hierarchy removed",
-                        &[("id", &media_id as &dyn std::fmt::Display), ("count", &removed)],
-                        None,
-                    );
-                    print_hint("run 'mediapm sync' to apply workflow/hierarchy changes");
-                    Ok(())
-                }
-            }
+            })
         }
         Command::Global { command } => match command {
             GlobalCommand::Path => {

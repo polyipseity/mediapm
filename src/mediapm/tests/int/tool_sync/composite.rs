@@ -91,6 +91,7 @@ async fn sync_stores_composite_canonical_version() -> Result<(), mediapm::MediaP
         !entry.canonical_version.contains(';'),
         "CrossStep-only composite should have no ';' delimiter"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -182,6 +183,7 @@ async fn sync_composite_carries_same_step_dep_segments() -> Result<(), mediapm::
         yt_dlp.canonical_version, expected,
         "the stored composite must carry each SameStep dep's own version, ordered by dep id",
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -214,6 +216,7 @@ async fn sync_skip_triggers_on_unchanged_composite() -> Result<(), mediapm::Medi
         state_after_first, state_after_second,
         "state.json content must be identical after re-sync with unchanged tools"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -258,6 +261,7 @@ async fn sync_logical_requires_sync_composite_comparison() -> Result<(), mediapm
         !service.logical_tool_requires_sync("media-tagger", &state).await?,
         "logical_tool_requires_sync should return false when composite matches"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -290,5 +294,6 @@ async fn sync_logical_requires_sync_on_composite_mismatch() -> Result<(), mediap
         service.logical_tool_requires_sync("media-tagger", &state).await?,
         "logical_tool_requires_sync should return true when composite mismatches"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }

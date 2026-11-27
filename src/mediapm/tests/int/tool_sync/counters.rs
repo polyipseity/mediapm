@@ -50,6 +50,7 @@ async fn regression_a_builtin_that_did_not_change_is_not_updated()
         second.skipped_tools, 1,
         "the re-registration is counted as a skip instead: {second:?}"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -97,5 +98,6 @@ async fn regression_a_builtin_build_change_is_an_update() -> Result<(), mediapm:
         "a record naming a different build is an update: {second:?}"
     );
     assert_eq!(second.skipped_tools, 0, "and it is not also counted as a skip: {second:?}");
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }

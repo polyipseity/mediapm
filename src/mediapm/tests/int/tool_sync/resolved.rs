@@ -84,6 +84,7 @@ async fn sync_populates_resolved_fields_in_state() -> Result<(), mediapm::MediaP
         mediapm::MEDIAPM_GIT_HASH,
         "canonical_version should equal MEDIAPM_GIT_HASH for builtin launcher"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -130,6 +131,7 @@ async fn sync_populates_resolved_fields_from_a_download_provider()
         entry.canonical_version, STUB_COMMIT_SHA,
         "a release tool's canonical version is its commit hash, not its tag"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -219,6 +221,7 @@ async fn sync_skip_backfills_resolved_fields() -> Result<(), mediapm::MediaPmErr
         mediapm::MEDIAPM_GIT_HASH,
         "canonical_version must be preserved"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -330,6 +333,7 @@ async fn sync_exact_version_spec_skips_when_stored_fields_match()
         Some(mediapm::MEDIAPM_GIT_HASH),
         "stored resolved_vcs_hash must be preserved on skip"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -455,5 +459,6 @@ async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmEr
         }),
         "env var names must not contain @:\n{content}"
     );
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }

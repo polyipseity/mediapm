@@ -43,6 +43,7 @@ async fn sync_rejects_bad_dependency_key() {
         "error should suggest alternatives: {msg}"
     );
     assert!(msg.contains("ffmpeg"), "suggestion should mention 'ffmpeg': {msg}");
+    service.shutdown().await.expect("service shutdown");
 }
 
 /// Sync rejects a dependency key that is not in the tool's registered
@@ -87,6 +88,7 @@ async fn sync_rejects_dep_key_not_in_known_types() {
     );
     assert!(msg.contains("ffmpeg"), "suggestion should mention 'ffmpeg': {msg}");
     assert!(msg.contains("deno"), "suggestion should mention 'deno': {msg}");
+    service.shutdown().await.expect("service shutdown");
 }
 
 /// Sync rejects a non-ffmpeg tool that sets `max_input_slots` (a field that
@@ -112,6 +114,7 @@ async fn sync_rejects_slot_field_on_non_ffmpeg() {
     assert!(msg.contains("MPM-E001"), "error should contain MPM-E001 code, got: {msg}");
     assert!(msg.contains("max_input_slots"), "error should mention the field: {msg}");
     assert!(msg.contains("yt-dlp"), "error should mention the tool: {msg}");
+    service.shutdown().await.expect("service shutdown");
 }
 
 // The former `sync_accepts_slot_field_on_ffmpeg` sync-level test was moved to
@@ -165,6 +168,7 @@ async fn sync_accepts_slot_field_on_ffmpeg() -> Result<(), mediapm::MediaPmError
             content_map.keys().collect::<Vec<_>>(),
         );
     }
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -199,6 +203,7 @@ async fn sync_accepts_recheck_seconds_on_any_tool() {
         "recheck_seconds on non-ffmpeg tool should be accepted: {:?}",
         result.err()
     );
+    service.shutdown().await.expect("service shutdown");
 }
 
 /// Provisioning failures fail fast: an unresolvable tool aborts the whole sync
@@ -230,4 +235,5 @@ async fn sync_unresolvable_tool_fails_fast_and_writes_nothing() {
         !paths.conductor_generated_ncl.exists(),
         "a failed sync must not write conductor.generated.ncl"
     );
+    service.shutdown().await.expect("service shutdown");
 }

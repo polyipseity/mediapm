@@ -428,6 +428,7 @@ mod tests {
             "a warning is not a missing entry, so the run stays out of the error band; \
              summary: {summary:?}"
         );
+        service.shutdown().await.expect("service shutdown");
     }
 
     /// `RecordingObserver` collects phases in order.

@@ -106,9 +106,9 @@ fn tool_requirement_for(logical_tool_name: &str) -> ToolRequirement {
 
 /// Populates the managed-tool requirements this example documents.
 ///
-/// Shuts the conductor the service owns down before returning:
-/// `Conductor::shutdown` awaits the background pass that would otherwise write
-/// into the caller's removed directory.
+/// Shuts the service down before returning: `MediaPmService::shutdown`
+/// quiesces the conductor's background pass, which would otherwise write into
+/// the caller's removed directory.
 async fn run_add_tools_example() -> ExampleResult<()> {
     let root = output_root();
     reset_output_root(&root)?;
@@ -179,7 +179,8 @@ async fn run_add_tools_example() -> ExampleResult<()> {
 
     fs::write(&paths.conductor_generated_ncl, encode_document(machine)?)?;
 
-    service.conductor().shutdown().await?;
+    service.shutdown().await?;
+    drop(service);
 
     Ok(())
 }

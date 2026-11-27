@@ -41,6 +41,7 @@ async fn a_synced_import_source_declares_its_payload_hash() {
 
     sync_library_with_test_terminal(&mut service, false).await.expect("second sync");
     assert_every_hash_reference_is_declared(&service);
+    service.shutdown().await.expect("service shutdown");
 }
 
 /// Asserts the document a sync left on disk declares every CAS hash its steps

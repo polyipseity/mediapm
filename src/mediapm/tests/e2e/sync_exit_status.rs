@@ -175,6 +175,7 @@ async fn seed_payload(workspace: &Path, payload: Bytes) -> String {
         .expect("the payload is materialized as a file");
 
     let hash = hash.to_string();
+    service.shutdown().await.expect("service shutdown");
     drop(service);
     hash
 }

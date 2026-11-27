@@ -53,9 +53,9 @@ fn write_dummy_local_source(root: &Path) -> ExampleResult<PathBuf> {
 
 /// Registers one local and one remote media source in a clean workspace.
 ///
-/// Shuts the conductor the service owns down before returning:
-/// `Conductor::shutdown` awaits the background pass that would otherwise write
-/// into the caller's removed directory.
+/// Shuts the service down before returning: `MediaPmService::shutdown`
+/// quiesces the conductor's background pass, which would otherwise write into
+/// the caller's removed directory.
 async fn run_add_sources_example() -> ExampleResult<()> {
     let root = output_root();
     reset_output_root(&root)?;
@@ -75,7 +75,7 @@ async fn run_add_sources_example() -> ExampleResult<()> {
         None,
     )?;
 
-    service.conductor().shutdown().await?;
+    service.shutdown().await?;
 
     Ok(())
 }

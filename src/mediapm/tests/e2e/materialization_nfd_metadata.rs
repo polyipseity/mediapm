@@ -126,5 +126,7 @@ async fn sync_hierarchy_normalizes_nfc_metadata_to_nfd_materialized_path()
     })?;
     assert_eq!(bytes, PAYLOAD, "materialized file must carry the CAS payload");
 
+    service.shutdown().await.expect("service shutdown");
+    drop(service);
     Ok(())
 }

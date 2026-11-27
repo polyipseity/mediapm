@@ -598,5 +598,7 @@ async fn demo_online_hierarchy_materialization_matches_golden_tree()
         panic!("materialized content should match CAS seeds: {error}");
     }
 
+    service.shutdown().await.expect("service shutdown");
+    drop(service);
     Ok(())
 }

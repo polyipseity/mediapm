@@ -204,6 +204,7 @@ async fn resync_over_an_unchanged_library_skips_the_entry_and_writes_nothing()
 
     // Release the CAS `store/lock` before the workspace `TempDir` removes the
     // tree it guards.
+    service.shutdown().await.expect("service shutdown");
     drop(service);
     Ok(())
 }
@@ -275,7 +276,7 @@ async fn resync_over_an_unchanged_media_folder_skips_the_entry_and_writes_nothin
         "the member must still hold what the first run wrote"
     );
 
-    drop(service);
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -378,7 +379,7 @@ async fn resync_over_an_unchanged_playlist_skips_the_entry_and_writes_nothing()
         "the body must still hold what the first run rendered"
     );
 
-    drop(service);
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -428,7 +429,7 @@ async fn resync_after_a_changed_hash_rewrites_the_entry() -> Result<(), mediapm:
         "the entry must hold the bytes the revised document names"
     );
 
-    drop(service);
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -476,7 +477,7 @@ async fn resync_after_the_file_was_deleted_rewrites_the_entry() -> Result<(), me
         "the entry must be back on disk holding the bytes its record names"
     );
 
-    drop(service);
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 
@@ -529,7 +530,7 @@ async fn resync_after_an_external_write_rewrites_the_entry() -> Result<(), media
         "the entry must hold the bytes the document resolves"
     );
 
-    drop(service);
+    service.shutdown().await.expect("service shutdown");
     Ok(())
 }
 

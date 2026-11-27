@@ -171,6 +171,7 @@ async fn two_steps_over_identical_work_share_one_instance_and_both_names_materia
     );
 
     // Release the CAS store lock before the workspace TempDir removes the tree.
+    service.shutdown().await.expect("service shutdown");
     drop(service);
     Ok(())
 }
