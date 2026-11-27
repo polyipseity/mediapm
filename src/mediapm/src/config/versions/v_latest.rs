@@ -61,8 +61,10 @@ pub struct RuntimePathsConfigLatest {
     #[serde(default)]
     pub env_generated_file: Option<String>,
     /// Full path to the versioned credential store; `None` leaves the
-    /// `MediaPmPaths` default (`<runtime_root>/auth.json`) in charge.
-    #[serde(default)]
+    /// `MediaPmPaths` default (`<runtime_root>/auth.json`) in charge. An absent
+    /// key is the only wire form of `None`: v5 declares `auth_file` optional,
+    /// which rejects a rendered JSON `null`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_file: Option<String>,
 }
 

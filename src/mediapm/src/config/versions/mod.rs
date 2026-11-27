@@ -917,6 +917,67 @@ mod tests {
             boundary.path_sanitization.is_none(),
             "the boundary deviation carries no sanitization setting"
         );
+        assert!(
+            boundary.paths.auth_file.is_none(),
+            "auth_file stays absent: its default follows the effective mediapm_dir, not a fixed workspace-relative path"
+        );
+    }
+
+    /// Verifies a document built through the write-direction boundary omits an
+    /// unset `auth_file` and satisfies the active v5 contract.
+    ///
+    /// v5 declares the key `optional`, which means absent; an emitted JSON
+    /// `null` is rejected by the contract even though serde accepts it back.
+    #[test]
+    fn parity_boundary_document_omits_unset_auth_file_and_validates_v5() {
+        let mut document = MediaPmDocument {
+            runtime: runtime_boundary(RuntimeBoundaryDeviations::default()),
+            ..MediaPmDocument::default()
+        };
+        // The boundary's unset `path_sanitization` is a separate null-emission
+        // defect, and the unit variants of its untagged enum also serialize as
+        // null. State a contract-valid custom map so this test isolates the
+        // `auth_file` key rather than failing on an unrelated field.
+        document.runtime.path_sanitization = Some(crate::config::SanitizeNamesConfig::Custom(
+            std::collections::BTreeMap::from([('<', '_')]),
+        ));
+
+        let rendered =
+            mediapm_utils::nickel::render_document_as_nickel(&document, "mediapm document")
+                .expect("render boundary document");
+        let source = String::from_utf8(rendered).expect("rendered Nickel source is UTF-8");
+        assert!(
+            !source.contains("auth_file"),
+            "an unset auth_file must be omitted, not rendered as null:\n{source}"
+        );
+
+        let validated = validate_v5_document(&source)
+            .expect("a boundary-built document must satisfy the active v5 contract");
+        assert!(
+            validated["runtime"]["paths"].get("auth_file").is_none(),
+            "validation must not invent an auth_file key: {validated}"
+        );
+    }
+
+    /// Verifies `MEDIAPM_AUTH_FILE` is the environment lever for the auth-file
+    /// override.
+    ///
+    /// Clap reads `env = "..."` from the process at parse time, so this pins
+    /// the arg definition rather than setting a process-wide variable that
+    /// would race sibling tests. The check lives here because this module owns
+    /// the boundary whose `auth_file` key the lever overrides.
+    #[cfg(feature = "cli")]
+    #[test]
+    fn auth_file_env_lever_is_mediapm_auth_file() {
+        use clap::CommandFactory;
+
+        let env = mediapm_cli::Cli::command()
+            .get_arguments()
+            .find(|arg| arg.get_id().as_str() == "auth_file")
+            .expect("the CLI declares an auth-file argument")
+            .get_env()
+            .map(|name| name.to_string_lossy().into_owned());
+        assert_eq!(env.as_deref(), Some("MEDIAPM_AUTH_FILE"));
     }
 
     /// Verifies the three-state `mediapm_state_config` deviation keeps its

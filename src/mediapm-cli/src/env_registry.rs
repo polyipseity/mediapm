@@ -64,6 +64,12 @@ pub fn env_registry() -> &'static [EnvVarEntry] {
             group: EnvVarGroup::CliPaths,
         },
         EnvVarEntry {
+            name: "MEDIAPM_AUTH_FILE",
+            default: "",
+            doc: "Auth file path override (mediapm runtime.auth_file).",
+            group: EnvVarGroup::CliPaths,
+        },
+        EnvVarEntry {
             name: "MEDIAPM_MEDIAPM_SCHEMA_DIR",
             default: "",
             doc: "MediaPM contract-source export directory (mediapm runtime.mediapm_schema_dir).",
@@ -109,6 +115,7 @@ mod tests {
             "MEDIAPM_CONDUCTOR_STATE_CONFIG",
             "MEDIAPM_ENV_FILE",
             "MEDIAPM_ENV_GENERATED_FILE",
+            "MEDIAPM_AUTH_FILE",
             "MEDIAPM_MEDIAPM_SCHEMA_DIR",
             "MEDIAPM_MEDIA_STATE_CONFIG",
             "MEDIAPM_TOOL_CACHE_DIR",

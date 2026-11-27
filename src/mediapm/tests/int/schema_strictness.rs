@@ -1091,6 +1091,7 @@ fn strict_exported_contracts_are_the_sources_the_runtime_evaluates() {
         ("v2.ncl", ncl(include_str!("../../src/config/versions/v2.ncl"))),
         ("v3.ncl", ncl(include_str!("../../src/config/versions/v3.ncl"))),
         ("v4.ncl", ncl(include_str!("../../src/config/versions/v4.ncl"))),
+        ("v5.ncl", ncl(include_str!("../../src/config/versions/v5.ncl"))),
     ];
     for (name, source) in mediapm_expected {
         let written = ncl(&std::fs::read_to_string(export_dir.join(name))
