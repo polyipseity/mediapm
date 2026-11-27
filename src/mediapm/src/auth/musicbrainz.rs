@@ -1,96 +1,43 @@
 //! `MusicBrainz` OAuth (PKCE + loopback) implementation.
 //!
-//! Tokens are stored at `<runtime_root>/auth/musicbrainz.json` (not in state).
+//! Client credentials and the user token live only in the unified auth file.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+
+use super::error::AuthError;
+use super::prompt::SecretPrompt;
+use super::service::{AuthOutcome, AuthServiceId};
+use super::store::{
+    MusicBrainzCredential, MusicBrainzToken, load_auth_file, remove_service, save_auth_file,
+};
 
 /// Default `MusicBrainz` OAuth base URL.
 pub const DEFAULT_MUSICBRAINZ_OAUTH_BASE_URL: &str = "https://metabrainz.org";
 
-/// Registration URL shown in error messages when OAuth client credentials are missing.
+/// Registration URL shown when no stored client credentials exist.
 pub const MUSICBRAINZ_APP_REGISTRATION_URL: &str = "https://metabrainz.org/profile/applications";
 
 /// OAuth scopes mediapm requests for read-only `MusicBrainz` user data.
 pub const MUSICBRAINZ_OAUTH_SCOPES: &str =
     "profile musicbrainz:tag musicbrainz:rating musicbrainz:collection";
 
-/// Errors produced by `MusicBrainz` OAuth flows.
+/// Errors produced by the `MusicBrainz` HTTP and loopback flows.
 #[derive(Debug, Error)]
 pub enum MusicBrainzAuthError {
-    /// Required OAuth client credentials are missing.
-    #[error(
-        "MusicBrainz OAuth client credentials are missing; register an application at {registration_url} and set MUSICBRAINZ_OAUTH_CLIENT_ID and MUSICBRAINZ_OAUTH_CLIENT_SECRET"
-    )]
-    MissingClientCredentials {
-        /// URL where the user can register an OAuth application.
-        registration_url: &'static str,
-    },
-    /// The auth file could not be read.
-    #[error("failed to read MusicBrainz auth file {path}: {source}")]
-    ReadAuthFile {
-        /// Path that could not be read.
-        path: PathBuf,
-        /// Underlying I/O error.
-        #[source]
-        source: std::io::Error,
-    },
-    /// The auth file could not be written.
-    #[error("failed to write MusicBrainz auth file {path}: {source}")]
-    WriteAuthFile {
-        /// Path that could not be written.
-        path: PathBuf,
-        /// Underlying I/O error.
-        #[source]
-        source: std::io::Error,
-    },
-    /// The auth file could not be parsed.
-    #[error("failed to parse MusicBrainz auth file {path}: {source}")]
-    ParseAuthFile {
-        /// Path that could not be parsed.
-        path: PathBuf,
-        /// Underlying parse error.
-        #[source]
-        source: serde_json::Error,
-    },
-    /// The auth file could not be serialized.
-    #[error("failed to serialize MusicBrainz auth file: {source}")]
-    SerializeAuthFile {
-        /// Underlying serialization error.
-        #[source]
-        source: serde_json::Error,
-    },
-    /// The auth file parent directory could not be created.
-    #[error("failed to create MusicBrainz auth directory {path}: {source}")]
-    CreateAuthDir {
-        /// Path that could not be created.
-        path: PathBuf,
-        /// Underlying I/O error.
-        #[source]
-        source: std::io::Error,
-    },
-    /// Removing the auth file failed.
-    #[error("failed to remove MusicBrainz auth file {path}: {source}")]
-    RemoveAuthFile {
-        /// Path that could not be removed.
-        path: PathBuf,
-        /// Underlying I/O error.
-        #[source]
-        source: std::io::Error,
-    },
-    /// No auth session is present.
+    /// No user token is stored.
     #[error("not logged in to MusicBrainz; run 'mediapm auth musicbrainz login'")]
     NotLoggedIn,
-    /// Refresh token was rejected and the stored auth was cleared.
+    /// Refresh token was rejected and the stored record must be cleared.
     #[error("MusicBrainz login expired; run 'mediapm auth musicbrainz login' again")]
     LoginExpired,
     /// HTTP client could not be obtained.
@@ -138,90 +85,6 @@ pub enum MusicBrainzAuthError {
     },
 }
 
-/// Stored `MusicBrainz` OAuth token data.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MusicBrainzAuthFile {
-    /// OAuth access token.
-    pub access_token: String,
-    /// OAuth refresh token, if provided.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refresh_token: Option<String>,
-    /// Unix timestamp (seconds) when the access token expires.
-    pub expires_at_unix: u64,
-    /// Granted scopes.
-    #[serde(default)]
-    pub scopes: Vec<String>,
-    /// Token type (usually "Bearer").
-    #[serde(default = "default_token_type")]
-    pub token_type: String,
-}
-
-fn default_token_type() -> String {
-    "Bearer".to_owned()
-}
-
-impl MusicBrainzAuthFile {
-    /// Returns true if the access token is expired or near expiry (within 60 seconds).
-    #[must_use]
-    pub fn is_expired(&self, now_unix: u64) -> bool {
-        now_unix >= self.expires_at_unix.saturating_sub(60)
-    }
-}
-
-/// Runtime configuration for `MusicBrainz` OAuth.
-#[derive(Clone)]
-pub struct MusicBrainzOAuthConfig {
-    /// Base URL, e.g. `https://metabrainz.org`.
-    pub base_url: String,
-    /// OAuth client id.
-    pub client_id: String,
-    /// OAuth client secret.
-    pub client_secret: String,
-}
-
-impl MusicBrainzOAuthConfig {
-    /// Creates a config from environment variables.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MusicBrainzAuthError::MissingClientCredentials`] when either
-    /// credential is missing or empty.
-    pub fn from_env() -> Result<Self, MusicBrainzAuthError> {
-        Self::from_env_with_base(DEFAULT_MUSICBRAINZ_OAUTH_BASE_URL)
-    }
-
-    /// Creates a config from environment variables with a custom base URL (for tests).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MusicBrainzAuthError::MissingClientCredentials`] when either
-    /// credential is missing or empty.
-    pub fn from_env_with_base(base_url: impl Into<String>) -> Result<Self, MusicBrainzAuthError> {
-        let client_id = std::env::var("MUSICBRAINZ_OAUTH_CLIENT_ID").unwrap_or_default();
-        let client_secret = std::env::var("MUSICBRAINZ_OAUTH_CLIENT_SECRET").unwrap_or_default();
-        let client_id = client_id.trim().to_owned();
-        let client_secret = client_secret.trim().to_owned();
-        if client_id.is_empty() || client_secret.is_empty() {
-            return Err(MusicBrainzAuthError::MissingClientCredentials {
-                registration_url: MUSICBRAINZ_APP_REGISTRATION_URL,
-            });
-        }
-        Ok(Self { base_url: base_url.into(), client_id, client_secret })
-    }
-}
-
-impl std::fmt::Debug for MusicBrainzAuthFile {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MusicBrainzAuthFile")
-            .field("access_token", &"[REDACTED]")
-            .field("refresh_token", &self.refresh_token.as_ref().map(|_| "[REDACTED]"))
-            .field("expires_at_unix", &self.expires_at_unix)
-            .field("scopes", &self.scopes)
-            .field("token_type", &self.token_type)
-            .finish()
-    }
-}
-
 impl std::fmt::Debug for MusicBrainzOAuthConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MusicBrainzOAuthConfig")
@@ -232,85 +95,55 @@ impl std::fmt::Debug for MusicBrainzOAuthConfig {
     }
 }
 
-/// Returns the path to the `MusicBrainz` auth file under the runtime root.
-#[must_use]
-pub fn musicbrainz_auth_file_path(runtime_root: &Path) -> PathBuf {
-    runtime_root.join("auth").join("musicbrainz.json")
+/// OAuth parameters for one `MusicBrainz` request.
+#[derive(Clone)]
+pub struct MusicBrainzOAuthConfig {
+    /// Base URL, e.g. `https://metabrainz.org`.
+    pub base_url: String,
+    /// OAuth client id from the unified auth file.
+    pub client_id: String,
+    /// OAuth client secret from the unified auth file.
+    pub client_secret: String,
 }
 
-/// Loads the `MusicBrainz` auth file if it exists.
+/// Returns the stored client id and secret, or an error naming the login command.
 ///
 /// # Errors
 ///
-/// Returns [`MusicBrainzAuthError`] when the file exists but cannot be read or parsed.
-pub fn load_auth_file(path: &Path) -> Result<Option<MusicBrainzAuthFile>, MusicBrainzAuthError> {
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            let auth: MusicBrainzAuthFile = serde_json::from_slice(&bytes).map_err(|source| {
-                MusicBrainzAuthError::ParseAuthFile { path: path.to_path_buf(), source }
-            })?;
-            Ok(Some(auth))
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(MusicBrainzAuthError::ReadAuthFile { path: path.to_path_buf(), source }),
+/// Returns [`AuthError`] when the auth file cannot be read or the record has
+/// no client credentials. There is no environment or dotenv fallback.
+fn credentials(auth_file: &Path) -> Result<(String, String), AuthError> {
+    let Some(credential) = load_auth_file(auth_file)?.and_then(|auth| auth.services.musicbrainz)
+    else {
+        return Err(missing_credentials_error());
+    };
+    if credential.client_id.trim().is_empty() || credential.client_secret.trim().is_empty() {
+        return Err(missing_credentials_error());
     }
+    Ok((credential.client_id, credential.client_secret))
 }
 
-/// Saves the `MusicBrainz` auth file atomically with mode 0600 on Unix.
-///
-/// # Errors
-///
-/// Returns [`MusicBrainzAuthError`] when directory creation, serialization, or write fails.
-pub fn save_auth_file(path: &Path, auth: &MusicBrainzAuthFile) -> Result<(), MusicBrainzAuthError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| MusicBrainzAuthError::CreateAuthDir {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
-    let mut json = serde_json::to_vec_pretty(auth)
-        .map_err(|source| MusicBrainzAuthError::SerializeAuthFile { source })?;
-    json.push(b'\n');
-    let tmp_path = path.with_extension("json.tmp");
-    std::fs::write(&tmp_path, &json)
-        .map_err(|source| MusicBrainzAuthError::WriteAuthFile { path: tmp_path.clone(), source })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        if let Err(source) = std::fs::set_permissions(&tmp_path, perms) {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(MusicBrainzAuthError::WriteAuthFile { path: tmp_path, source });
-        }
-    }
-    if let Err(source) = std::fs::rename(&tmp_path, path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(MusicBrainzAuthError::WriteAuthFile { path: path.to_path_buf(), source });
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        if let Err(source) = std::fs::set_permissions(path, perms) {
-            return Err(MusicBrainzAuthError::WriteAuthFile { path: path.to_path_buf(), source });
-        }
-    }
-    Ok(())
+fn missing_credentials_error() -> AuthError {
+    AuthError::Service(format!(
+        "MusicBrainz client credentials are missing; run 'mediapm auth musicbrainz login' and register an application at {MUSICBRAINZ_APP_REGISTRATION_URL}"
+    ))
 }
 
-/// Deletes the `MusicBrainz` auth file if it exists. Returns true if deleted.
-///
-/// # Errors
-///
-/// Returns [`MusicBrainzAuthError`] when the file exists but cannot be removed.
-pub fn delete_auth_file(path: &Path) -> Result<bool, MusicBrainzAuthError> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(true),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(source) => {
-            Err(MusicBrainzAuthError::RemoveAuthFile { path: path.to_path_buf(), source })
-        }
-    }
+fn cannot_revoke_error() -> AuthError {
+    AuthError::Service(
+        "cannot revoke without stored client credentials; use --offline to remove locally"
+            .to_owned(),
+    )
+}
+
+fn not_logged_in_error() -> AuthError {
+    AuthError::Service(
+        "not logged in to MusicBrainz; run 'mediapm auth musicbrainz login'".to_owned(),
+    )
+}
+
+fn service_error(error: &MusicBrainzAuthError) -> AuthError {
+    AuthError::Service(error.to_string())
 }
 
 /// PKCE verifier/challenge pair (S256).
@@ -399,14 +232,14 @@ fn parse_scopes(scope: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-fn token_response_to_auth_file(resp: TokenResponse, now_unix: u64) -> MusicBrainzAuthFile {
+fn token_response_to_token(resp: TokenResponse, now_unix: u64) -> MusicBrainzToken {
     let expires_in = resp.expires_in.unwrap_or(3600);
-    MusicBrainzAuthFile {
+    MusicBrainzToken {
         access_token: resp.access_token,
         refresh_token: resp.refresh_token,
         expires_at_unix: now_unix.saturating_add(expires_in),
         scopes: parse_scopes(resp.scope.as_deref()),
-        token_type: resp.token_type.unwrap_or_else(default_token_type),
+        token_type: resp.token_type.unwrap_or_else(|| "Bearer".to_owned()),
     }
 }
 
@@ -434,7 +267,7 @@ pub async fn exchange_authorization_code(
     code: &str,
     redirect_uri: &str,
     code_verifier: &str,
-) -> Result<MusicBrainzAuthFile, MusicBrainzAuthError> {
+) -> Result<MusicBrainzToken, MusicBrainzAuthError> {
     let endpoint = token_endpoint(&config.base_url);
     let form = [
         ("grant_type", "authorization_code"),
@@ -456,7 +289,7 @@ pub async fn exchange_authorization_code(
     let token: TokenResponse = serde_json::from_str(&body).map_err(|err| {
         MusicBrainzAuthError::TokenEndpoint { message: format!("invalid token response: {err}") }
     })?;
-    Ok(token_response_to_auth_file(token, current_unix_time()))
+    Ok(token_response_to_token(token, current_unix_time()))
 }
 
 /// Refreshes an access token using a refresh token.
@@ -469,7 +302,7 @@ pub async fn exchange_authorization_code(
 pub async fn refresh_access_token(
     config: &MusicBrainzOAuthConfig,
     refresh_token: &str,
-) -> Result<(MusicBrainzAuthFile, bool), MusicBrainzAuthError> {
+) -> Result<(MusicBrainzToken, bool), MusicBrainzAuthError> {
     let endpoint = token_endpoint(&config.base_url);
     let form = [
         ("grant_type", "refresh_token"),
@@ -493,7 +326,7 @@ pub async fn refresh_access_token(
         MusicBrainzAuthError::TokenEndpoint { message: format!("invalid token response: {err}") }
     })?;
     let rotated = token.refresh_token.is_some();
-    let mut auth = token_response_to_auth_file(token, current_unix_time());
+    let mut auth = token_response_to_token(token, current_unix_time());
     if auth.refresh_token.is_none() {
         auth.refresh_token = Some(refresh_token.to_owned());
     }
@@ -524,75 +357,181 @@ pub async fn revoke_token(
     })
 }
 
-/// Ensures a valid access token is available, refreshing if needed.
+/// Ensures a valid access token is available, reading and writing only the
+/// unified auth file.
 ///
 /// # Errors
 ///
-/// Returns [`MusicBrainzAuthError`] when not logged in, refresh fails, or storage fails.
-pub async fn ensure_access_token(
-    runtime_root: &Path,
-    config: &MusicBrainzOAuthConfig,
-) -> Result<String, MusicBrainzAuthError> {
-    let path = musicbrainz_auth_file_path(runtime_root);
-    let Some(mut auth) = load_auth_file(&path)? else {
-        return Err(MusicBrainzAuthError::NotLoggedIn);
+/// Returns [`AuthError`] when not logged in, stored credentials are missing,
+/// refresh fails, or storage fails.
+pub async fn ensure_access_token(auth_file: &Path) -> Result<String, AuthError> {
+    ensure_access_token_with_base(auth_file, DEFAULT_MUSICBRAINZ_OAUTH_BASE_URL).await
+}
+
+async fn ensure_access_token_with_base(
+    auth_file: &Path,
+    base_url: &str,
+) -> Result<String, AuthError> {
+    let Some(mut auth) = load_auth_file(auth_file)? else {
+        return Err(not_logged_in_error());
     };
-    if !auth.is_expired(current_unix_time()) {
-        return Ok(auth.access_token);
+    let Some(mut credential) = auth.services.musicbrainz else {
+        return Err(not_logged_in_error());
+    };
+    let Some(token) = credential.token.clone() else {
+        return Err(not_logged_in_error());
+    };
+    if !token.is_expired(current_unix_time()) {
+        return Ok(token.access_token);
     }
-    let Some(refresh_token) = auth.refresh_token.clone() else {
-        let _ = delete_auth_file(&path)?;
-        return Err(MusicBrainzAuthError::LoginExpired);
+    let (client_id, client_secret) = credentials(auth_file)?;
+    let config = MusicBrainzOAuthConfig { base_url: base_url.to_owned(), client_id, client_secret };
+    let Some(refresh_token) = token.refresh_token else {
+        remove_service(auth_file, AuthServiceId::Musicbrainz.as_str())?;
+        return Err(service_error(&MusicBrainzAuthError::LoginExpired));
     };
-    match refresh_access_token(config, &refresh_token).await {
+    match refresh_access_token(&config, &refresh_token).await {
         Ok((refreshed, _rotated)) => {
-            auth = refreshed;
-            save_auth_file(&path, &auth)?;
-            Ok(auth.access_token)
+            let access_token = refreshed.access_token.clone();
+            credential.token = Some(refreshed);
+            auth.services.musicbrainz = Some(credential);
+            save_auth_file(auth_file, &auth)?;
+            Ok(access_token)
         }
         Err(MusicBrainzAuthError::LoginExpired) => {
-            let _ = delete_auth_file(&path)?;
-            Err(MusicBrainzAuthError::LoginExpired)
+            remove_service(auth_file, AuthServiceId::Musicbrainz.as_str())?;
+            Err(service_error(&MusicBrainzAuthError::LoginExpired))
         }
-        Err(err) => Err(err),
+        Err(err) => Err(service_error(&err)),
     }
 }
 
-/// Returns a human-readable status for the stored auth file.
+/// Reports stored credential and token state without printing a secret.
 ///
 /// # Errors
 ///
-/// Returns [`MusicBrainzAuthError`] when the auth file exists but cannot be read.
-pub fn auth_status(runtime_root: &Path) -> Result<String, MusicBrainzAuthError> {
-    let path = musicbrainz_auth_file_path(runtime_root);
-    let Some(auth) = load_auth_file(&path)? else {
-        return Ok("not logged in".to_owned());
+/// Returns [`AuthError`] when the auth file cannot be read or decoded.
+pub fn status(auth_file: &Path) -> Result<AuthOutcome, AuthError> {
+    let Some(credential) = load_auth_file(auth_file)?.and_then(|auth| auth.services.musicbrainz)
+    else {
+        return Ok(AuthOutcome { message: "MusicBrainz: not logged in".to_owned() });
     };
-    let now = current_unix_time();
-    let state = if auth.is_expired(now) { "expired" } else { "logged in" };
-    let scopes =
-        if auth.scopes.is_empty() { "(no scopes)".to_owned() } else { auth.scopes.join(" ") };
-    Ok(format!("{state}; scopes: {scopes}; file: {}", path.display()))
+    let message = match credential.token {
+        None => "MusicBrainz: credentials configured; no user token".to_owned(),
+        Some(token) => {
+            let state = if token.is_expired(current_unix_time()) { "expired" } else { "logged in" };
+            let scopes = if token.scopes.is_empty() {
+                "(no scopes)".to_owned()
+            } else {
+                token.scopes.join(" ")
+            };
+            format!("MusicBrainz: {state}; scopes: {scopes}")
+        }
+    };
+    Ok(AuthOutcome { message })
 }
 
-/// Logs out: revokes the stored token (best-effort) and deletes the auth file.
+/// Logs in through the browser PKCE flow, writing credentials before the
+/// browser opens and the returned token into the same auth-file record.
 ///
 /// # Errors
 ///
-/// Returns [`MusicBrainzAuthError`] when deletion fails.
-pub async fn logout_musicbrainz(
-    runtime_root: &Path,
-    config: Option<&MusicBrainzOAuthConfig>,
-) -> Result<bool, MusicBrainzAuthError> {
-    let path = musicbrainz_auth_file_path(runtime_root);
-    let Some(auth) = load_auth_file(&path)? else {
-        return Ok(false);
-    };
-    if let Some(config) = config {
-        let token = auth.refresh_token.as_deref().unwrap_or(&auth.access_token);
-        let _ = revoke_token(config, token).await;
+/// Returns [`AuthError`] when prompting, storage, or the OAuth flow fails.
+pub async fn login(
+    auth_file: &Path,
+    prompt: &dyn SecretPrompt,
+    offline: bool,
+) -> Result<AuthOutcome, AuthError> {
+    login_with_base(auth_file, prompt, offline, DEFAULT_MUSICBRAINZ_OAUTH_BASE_URL, open_browser)
+        .await
+}
+
+async fn login_with_base(
+    auth_file: &Path,
+    prompt: &dyn SecretPrompt,
+    offline: bool,
+    base_url: &str,
+    open_browser_fn: impl FnOnce(&str) -> Result<(), MusicBrainzAuthError>,
+) -> Result<AuthOutcome, AuthError> {
+    let mut auth = load_auth_file(auth_file)?.unwrap_or_default();
+    let mut credential = auth.services.musicbrainz.take().unwrap_or(MusicBrainzCredential {
+        client_id: String::new(),
+        client_secret: String::new(),
+        token: None,
+    });
+    if credential.client_id.trim().is_empty() {
+        credential.client_id = prompt.read_secret("MusicBrainz client ID: ")?;
     }
-    delete_auth_file(&path)
+    if credential.client_secret.trim().is_empty() {
+        credential.client_secret = prompt.read_secret("MusicBrainz client secret: ")?;
+    }
+    let config = MusicBrainzOAuthConfig {
+        base_url: base_url.to_owned(),
+        client_id: credential.client_id.clone(),
+        client_secret: credential.client_secret.clone(),
+    };
+    credential.token = None;
+    auth.services.musicbrainz = Some(credential);
+    save_auth_file(auth_file, &auth)?;
+
+    if offline {
+        tracing::info!(
+            "--offline has no separate MusicBrainz validation step; OAuth exchange still runs"
+        );
+    }
+
+    let token = perform_oauth_login(&config, open_browser_fn)
+        .await
+        .map_err(|error| service_error(&error))?;
+    let scopes = if token.scopes.is_empty() { "(none)".to_owned() } else { token.scopes.join(" ") };
+    let message = format!("MusicBrainz: logged in; scopes: {scopes}");
+    let credential = auth.services.musicbrainz.as_mut().expect("credentials saved above");
+    credential.token = Some(token);
+    save_auth_file(auth_file, &auth)?;
+    Ok(AuthOutcome { message })
+}
+
+/// Logs out: revokes the stored token unless `--offline`, then removes the
+/// `MusicBrainz` record from the unified auth file.
+///
+/// # Errors
+///
+/// Returns [`AuthError`] when revocation is impossible without stored
+/// credentials or the auth file cannot be read, decoded, or saved.
+pub async fn logout(auth_file: &Path, offline: bool) -> Result<AuthOutcome, AuthError> {
+    logout_with_base(auth_file, offline, DEFAULT_MUSICBRAINZ_OAUTH_BASE_URL).await
+}
+
+async fn logout_with_base(
+    auth_file: &Path,
+    offline: bool,
+    base_url: &str,
+) -> Result<AuthOutcome, AuthError> {
+    if offline {
+        remove_service(auth_file, AuthServiceId::Musicbrainz.as_str())?;
+        return Ok(AuthOutcome {
+            message: "MusicBrainz: removed local record without revocation".to_owned(),
+        });
+    }
+    let Some(credential) = load_auth_file(auth_file)?.and_then(|auth| auth.services.musicbrainz)
+    else {
+        return Err(cannot_revoke_error());
+    };
+    let Some(token) = credential.token.as_ref() else {
+        return Err(cannot_revoke_error());
+    };
+    if credential.client_id.trim().is_empty() || credential.client_secret.trim().is_empty() {
+        return Err(cannot_revoke_error());
+    }
+    let config = MusicBrainzOAuthConfig {
+        base_url: base_url.to_owned(),
+        client_id: credential.client_id,
+        client_secret: credential.client_secret,
+    };
+    let revoked = token.refresh_token.as_deref().unwrap_or(&token.access_token).to_owned();
+    let _ = revoke_token(&config, &revoked).await;
+    remove_service(auth_file, AuthServiceId::Musicbrainz.as_str())?;
+    Ok(AuthOutcome { message: "MusicBrainz: revoked token and removed local record".to_owned() })
 }
 
 /// Parsed OAuth callback query.
@@ -759,19 +698,16 @@ pub fn open_browser(url: &str) -> Result<(), MusicBrainzAuthError> {
         .map_err(|err| MusicBrainzAuthError::OpenBrowser { message: err.to_string() })
 }
 
-/// Performs the interactive `MusicBrainz` OAuth login flow.
-///
-/// Binds a loopback listener, opens the browser (via `open_browser_fn`), waits for
-/// the callback, exchanges the code, and saves tokens.
+/// Runs the PKCE loopback exchange and returns the token; storage belongs to
+/// [`login`], which saves credentials before this browser flow begins.
 ///
 /// # Errors
 ///
-/// Returns [`MusicBrainzAuthError`] on any login failure.
-pub async fn login_musicbrainz(
-    runtime_root: &Path,
+/// Returns [`MusicBrainzAuthError`] on any OAuth flow failure.
+async fn perform_oauth_login(
     config: &MusicBrainzOAuthConfig,
     open_browser_fn: impl FnOnce(&str) -> Result<(), MusicBrainzAuthError>,
-) -> Result<MusicBrainzAuthFile, MusicBrainzAuthError> {
+) -> Result<MusicBrainzToken, MusicBrainzAuthError> {
     let listener = bind_loopback_listener()?;
     let port = listener
         .local_addr()
@@ -795,21 +731,22 @@ pub async fn login_musicbrainz(
         message: format!("callback task failed: {err}"),
     })??;
 
-    let auth =
-        exchange_authorization_code(config, &callback.code, &redirect_uri, &pkce.verifier).await?;
-    let path = musicbrainz_auth_file_path(runtime_root);
-    save_auth_file(&path, &auth)?;
-    Ok(auth)
+    exchange_authorization_code(config, &callback.code, &redirect_uri, &pkce.verifier).await
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use super::*;
+    use crate::auth::error::AuthError;
+    use crate::auth::prompt::SecretPrompt;
+    use crate::auth::store::{AuthFile, AuthServices, MusicBrainzCredential, MusicBrainzToken};
     use mediapm_test_support::MockMusicBrainz;
     use wiremock::{Mock, ResponseTemplate};
 
-    fn sample_auth(expires_at_unix: u64) -> MusicBrainzAuthFile {
-        MusicBrainzAuthFile {
+    fn sample_token(expires_at_unix: u64) -> MusicBrainzToken {
+        MusicBrainzToken {
             access_token: "access-token".to_owned(),
             refresh_token: Some("refresh-token".to_owned()),
             expires_at_unix,
@@ -820,6 +757,40 @@ mod tests {
                 "musicbrainz:collection".to_owned(),
             ],
             token_type: "Bearer".to_owned(),
+        }
+    }
+
+    fn seeded_auth(token: Option<MusicBrainzToken>) -> AuthFile {
+        let mut auth = AuthFile { services: AuthServices::default() };
+        auth.services.musicbrainz = Some(MusicBrainzCredential {
+            client_id: "stored-id".to_owned(),
+            client_secret: "stored-secret".to_owned(),
+            token,
+        });
+        auth
+    }
+
+    #[derive(Debug)]
+    struct RecordingPrompt {
+        secrets: RefCell<Vec<String>>,
+        labels: RefCell<Vec<&'static str>>,
+    }
+
+    impl RecordingPrompt {
+        fn new(secrets: Vec<String>) -> Self {
+            Self { secrets: RefCell::new(secrets), labels: RefCell::new(Vec::new()) }
+        }
+    }
+
+    impl SecretPrompt for RecordingPrompt {
+        fn read_secret(&self, label: &'static str) -> Result<String, AuthError> {
+            self.labels.borrow_mut().push(label);
+            let mut secrets = self.secrets.borrow_mut();
+            let secret = secrets.remove(0);
+            if secret.trim().is_empty() {
+                return Err(AuthError::EmptySecret);
+            }
+            Ok(secret)
         }
     }
 
@@ -834,22 +805,35 @@ mod tests {
     }
 
     #[test]
-    fn missing_client_credentials_reports_registration_url() {
-        let err = MusicBrainzOAuthConfig::from_env_with_base("https://metabrainz.org").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("MUSICBRAINZ_OAUTH_CLIENT_ID"));
-        assert!(msg.contains("MUSICBRAINZ_OAUTH_CLIENT_SECRET"));
-        assert!(msg.contains("https://metabrainz.org/profile/applications"));
+    fn credentials_read_only_the_unified_auth_file() {
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let path = dir.path().join("auth.json");
+        save_auth_file(&path, &seeded_auth(None)).expect("seed");
+        assert_eq!(
+            credentials(&path).expect("stored credentials"),
+            ("stored-id".to_owned(), "stored-secret".to_owned())
+        );
+
+        let missing = dir.path().join("missing-auth.json");
+        let error = credentials(&missing).expect_err("no credential source besides the auth file");
+        assert!(
+            error.to_string().contains("mediapm auth musicbrainz login"),
+            "the error must name the login command: {error}"
+        );
     }
 
     #[test]
     fn auth_file_round_trip_and_permissions() {
-        let dir = mediapm_utils::temp::output_dir().expect("tempdir");
-        let path = dir.path().join("auth").join("musicbrainz.json");
-        let auth = sample_auth(current_unix_time() + 3600);
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let path = dir.path().join("auth.json");
+        let mut auth = AuthFile { services: AuthServices::default() };
+        auth.services.musicbrainz = Some(MusicBrainzCredential {
+            client_id: "id".to_owned(),
+            client_secret: "secret".to_owned(),
+            token: Some(sample_token(1_790_000_000)),
+        });
         save_auth_file(&path, &auth).expect("save");
-        let loaded = load_auth_file(&path).expect("load").expect("present");
-        assert_eq!(loaded, auth);
+        assert_eq!(load_auth_file(&path).unwrap().unwrap(), auth);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -858,8 +842,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn status_reports_token_state_without_secrets() {
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let path = dir.path().join("auth.json");
+        assert!(status(&path).expect("status").message.contains("not logged in"));
+
+        save_auth_file(&path, &seeded_auth(None)).expect("seed credentials");
+        let status_without_token = status(&path).expect("status").message;
+        assert!(status_without_token.contains("no user token"));
+        assert!(!status_without_token.contains("stored-secret"));
+
+        save_auth_file(&path, &seeded_auth(Some(sample_token(current_unix_time() + 3600))))
+            .expect("seed token");
+        let status_with_token = status(&path).expect("status").message;
+        assert!(status_with_token.contains("logged in"));
+        assert!(status_with_token.contains("musicbrainz:tag"));
+        assert!(!status_with_token.contains("stored-secret"));
+        assert!(!status_with_token.contains("access-token"));
+    }
+
     #[tokio::test]
-    async fn login_exchanges_code_and_stores_auth_file() {
+    async fn login_prompts_saves_credentials_before_browser_flow_and_stores_token() {
         let mock = MockMusicBrainz::start().await;
         mock.mount_oauth_authorize_redirect("test-code").await;
         mock.mount_oauth_token(
@@ -870,15 +874,19 @@ mod tests {
         )
         .await;
 
-        let dir = mediapm_utils::temp::output_dir().expect("tempdir");
-        let runtime_root = dir.path();
-        let config = MusicBrainzOAuthConfig {
-            base_url: mock.server().uri(),
-            client_id: "client-id".to_owned(),
-            client_secret: "client-secret".to_owned(),
-        };
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let path = dir.path().join("auth.json");
+        let prompt =
+            RecordingPrompt::new(vec!["prompted-id".to_owned(), "prompted-secret".to_owned()]);
+        let browser_path = path.clone();
+        let outcome = login_with_base(&path, &prompt, true, &mock.server().uri(), |url| {
+            let stored =
+                load_auth_file(&browser_path).expect("browser reads auth file").expect("present");
+            let credential = stored.services.musicbrainz.expect("credentials saved before browser");
+            assert_eq!(credential.client_id, "prompted-id");
+            assert_eq!(credential.client_secret, "prompted-secret");
+            assert!(credential.token.is_none(), "no token before the exchange");
 
-        let auth = login_musicbrainz(runtime_root, &config, |url| {
             let url = url.to_owned();
             std::thread::spawn(move || {
                 let client = reqwest::blocking::Client::builder()
@@ -892,26 +900,18 @@ mod tests {
         .await
         .expect("login");
 
-        assert_eq!(auth.access_token, "access-1");
-        assert_eq!(auth.refresh_token.as_deref(), Some("refresh-1"));
-        let stored = load_auth_file(&musicbrainz_auth_file_path(runtime_root))
-            .expect("load")
-            .expect("stored");
-        assert_eq!(stored.access_token, "access-1");
-    }
-
-    #[test]
-    fn status_reports_logged_out_and_logged_in() {
-        let dir = mediapm_utils::temp::output_dir().expect("tempdir");
-        let runtime_root = dir.path();
-        let status = auth_status(runtime_root).expect("status");
-        assert!(status.contains("not logged in"));
-
-        let path = musicbrainz_auth_file_path(runtime_root);
-        save_auth_file(&path, &sample_auth(current_unix_time() + 3600)).expect("save");
-        let status = auth_status(runtime_root).expect("status");
-        assert!(status.contains("logged in"));
-        assert!(status.contains("musicbrainz:tag"));
+        assert_eq!(
+            *prompt.labels.borrow(),
+            ["MusicBrainz client ID: ", "MusicBrainz client secret: "]
+        );
+        assert!(!outcome.message.contains("prompted-secret"));
+        let stored = load_auth_file(&path).expect("load").expect("stored");
+        let credential = stored.services.musicbrainz.expect("record");
+        assert_eq!(credential.client_id, "prompted-id");
+        assert_eq!(credential.client_secret, "prompted-secret");
+        let token = credential.token.expect("token");
+        assert_eq!(token.access_token, "access-1");
+        assert_eq!(token.refresh_token.as_deref(), Some("refresh-1"));
     }
 
     #[tokio::test]
@@ -925,24 +925,25 @@ mod tests {
         )
         .await;
 
-        let dir = mediapm_utils::temp::output_dir().expect("tempdir");
-        let runtime_root = dir.path();
-        let path = musicbrainz_auth_file_path(runtime_root);
-        let mut expired = sample_auth(current_unix_time().saturating_sub(10));
-        expired.refresh_token = Some("refresh-1".to_owned());
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let path = dir.path().join("auth.json");
+        let mut expired = seeded_auth(Some(sample_token(current_unix_time().saturating_sub(10))));
+        if let Some(token) = expired.services.musicbrainz.as_mut().and_then(|c| c.token.as_mut()) {
+            token.refresh_token = Some("refresh-1".to_owned());
+        }
         save_auth_file(&path, &expired).expect("save");
 
-        let config = MusicBrainzOAuthConfig {
-            base_url: mock.server().uri(),
-            client_id: "client-id".to_owned(),
-            client_secret: "client-secret".to_owned(),
-        };
-        let token = ensure_access_token(runtime_root, &config).await.expect("token");
+        let token =
+            ensure_access_token_with_base(&path, &mock.server().uri()).await.expect("token");
         assert_eq!(token, "access-2");
 
         let stored = load_auth_file(&path).expect("load").expect("stored");
-        assert_eq!(stored.access_token, "access-2");
-        assert_eq!(stored.refresh_token.as_deref(), Some("refresh-2"));
+        let credential = stored.services.musicbrainz.expect("record");
+        assert_eq!(credential.client_id, "stored-id");
+        assert_eq!(credential.client_secret, "stored-secret");
+        let token = credential.token.expect("token");
+        assert_eq!(token.access_token, "access-2");
+        assert_eq!(token.refresh_token.as_deref(), Some("refresh-2"));
     }
 
     #[tokio::test]
@@ -956,22 +957,23 @@ mod tests {
             .mount(mock.server())
             .await;
 
-        let dir = mediapm_utils::temp::output_dir().expect("tempdir");
-        let runtime_root = dir.path();
-        let path = musicbrainz_auth_file_path(runtime_root);
-        let mut expired = sample_auth(current_unix_time().saturating_sub(10));
-        expired.refresh_token = Some("refresh-1".to_owned());
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let path = dir.path().join("auth.json");
+        let mut expired = seeded_auth(Some(sample_token(current_unix_time().saturating_sub(10))));
+        if let Some(token) = expired.services.musicbrainz.as_mut().and_then(|c| c.token.as_mut()) {
+            token.refresh_token = Some("refresh-1".to_owned());
+        }
         save_auth_file(&path, &expired).expect("save");
 
-        let config = MusicBrainzOAuthConfig {
-            base_url: mock.server().uri(),
-            client_id: "client-id".to_owned(),
-            client_secret: "client-secret".to_owned(),
-        };
-        let err = ensure_access_token(runtime_root, &config).await.unwrap_err();
-        assert!(matches!(err, MusicBrainzAuthError::LoginExpired));
-        let loaded = load_auth_file(&path).expect("load");
-        assert!(loaded.is_none(), "expired refresh should drop stored auth");
+        let error = ensure_access_token_with_base(&path, &mock.server().uri())
+            .await
+            .expect_err("expired refresh must fail");
+        assert!(
+            matches!(&error, AuthError::Service(message) if message.contains("login expired")),
+            "unexpected error: {error}"
+        );
+        let loaded = load_auth_file(&path).expect("load").expect("file");
+        assert!(loaded.services.musicbrainz.is_none(), "expired refresh should drop the record");
     }
 
     #[tokio::test]
@@ -979,18 +981,62 @@ mod tests {
         let mock = MockMusicBrainz::start().await;
         mock.mount_oauth_revoke().await;
 
-        let dir = mediapm_utils::temp::output_dir().expect("tempdir");
-        let runtime_root = dir.path();
-        let path = musicbrainz_auth_file_path(runtime_root);
-        save_auth_file(&path, &sample_auth(current_unix_time() + 3600)).expect("save");
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let path = dir.path().join("auth.json");
+        save_auth_file(&path, &seeded_auth(Some(sample_token(1_790_000_000)))).expect("seed");
 
-        let config = MusicBrainzOAuthConfig {
-            base_url: mock.server().uri(),
-            client_id: "client-id".to_owned(),
-            client_secret: "client-secret".to_owned(),
-        };
-        let removed = logout_musicbrainz(runtime_root, Some(&config)).await.expect("logout");
-        assert!(removed);
-        assert!(!path.exists());
+        let outcome = logout_with_base(&path, false, &mock.server().uri()).await.expect("logout");
+        assert!(outcome.message.contains("revoked"));
+
+        let requests = mock.server().received_requests().await.expect("request log");
+        let revoke = requests
+            .iter()
+            .find(|request| request.url.path() == "/oauth2/revoke")
+            .expect("revocation request");
+        let body = String::from_utf8_lossy(&revoke.body);
+        assert!(body.contains("client_id=stored-id"), "revoke must use the stored id: {body}");
+        assert!(
+            body.contains("client_secret=stored-secret"),
+            "revoke must use the stored secret: {body}"
+        );
+
+        let loaded = load_auth_file(&path).expect("load").expect("file");
+        assert!(loaded.services.musicbrainz.is_none());
+    }
+
+    #[tokio::test]
+    async fn offline_logout_skips_revocation_and_removes_the_record() {
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let path = dir.path().join("auth.json");
+        let mut auth = AuthFile { services: AuthServices::default() };
+        auth.services.musicbrainz = Some(MusicBrainzCredential {
+            client_id: "id".to_owned(),
+            client_secret: "secret".to_owned(),
+            token: Some(sample_token(1_790_000_000)),
+        });
+        save_auth_file(&path, &auth).expect("seed");
+        let outcome = logout(&path, true).await.expect("offline logout");
+        assert!(outcome.message.contains("without revocation"));
+        let loaded = load_auth_file(&path).unwrap().unwrap();
+        assert!(loaded.services.musicbrainz.is_none());
+    }
+
+    #[tokio::test]
+    async fn online_logout_without_stored_credentials_errors() {
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let missing = dir.path().join("missing-auth.json");
+        let error = logout(&missing, false).await.expect_err("no credential fallback");
+        assert_eq!(
+            error.to_string(),
+            "cannot revoke without stored client credentials; use --offline to remove locally"
+        );
+
+        let credentials_only = dir.path().join("credentials-only.json");
+        save_auth_file(&credentials_only, &seeded_auth(None)).expect("seed");
+        let error = logout(&credentials_only, false).await.expect_err("no token to revoke");
+        assert_eq!(
+            error.to_string(),
+            "cannot revoke without stored client credentials; use --offline to remove locally"
+        );
     }
 }

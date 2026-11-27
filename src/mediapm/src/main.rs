@@ -539,8 +539,8 @@ async fn main_cli() -> anyhow::Result<()> {
                 let root = &cli.root;
                 let paths = resolve_effective_paths_for_root(root, &rt);
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
-                let runtime_root = builtin_media_tagger_runtime_root(&paths);
-                run_builtin_media_tagger(args, runtime_root).await
+                let auth_file = paths.auth_file.clone();
+                run_builtin_media_tagger(args, auth_file).await
             }
         },
         Command::Cas(args) => {
@@ -555,60 +555,32 @@ async fn main_cli() -> anyhow::Result<()> {
             let root = &cli.root;
             let paths = resolve_effective_paths_for_root(root, &rt);
             load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
-            let runtime_root = paths.runtime_root.clone();
             match command {
-                AuthCommand::Musicbrainz { command } => match command {
-                    MusicbrainzAuthCommand::Login => {
-                        let config = mediapm::auth::musicbrainz::MusicBrainzOAuthConfig::from_env()
-                            .map_err(|e| anyhow::anyhow!("{e}"))?;
-                        let auth = mediapm::auth::musicbrainz::login_musicbrainz(
-                            &runtime_root,
-                            &config,
-                            mediapm::auth::musicbrainz::open_browser,
-                        )
-                        .await
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
-                        println!(
-                            "logged in to MusicBrainz; scopes: {}",
-                            if auth.scopes.is_empty() {
-                                "(none)".to_string()
-                            } else {
-                                auth.scopes.join(" ")
-                            }
-                        );
-                        Ok(())
-                    }
-                    MusicbrainzAuthCommand::Status => {
-                        let status = mediapm::auth::musicbrainz::auth_status(&runtime_root)
-                            .map_err(|e| anyhow::anyhow!("{e}"))?;
-                        println!("{status}");
-                        Ok(())
-                    }
-                    MusicbrainzAuthCommand::Logout => {
-                        let config =
-                            mediapm::auth::musicbrainz::MusicBrainzOAuthConfig::from_env().ok();
-                        let auth_path =
-                            mediapm::auth::musicbrainz::musicbrainz_auth_file_path(&runtime_root);
-                        let had_auth = auth_path.exists();
-                        if had_auth && config.is_none() {
-                            eprintln!(
-                                "warning: MUSICBRAINZ_OAUTH_CLIENT_ID/SECRET missing; skipping server revocation and deleting local auth file"
-                            );
-                        }
-                        let removed = mediapm::auth::musicbrainz::logout_musicbrainz(
-                            &runtime_root,
-                            config.as_ref(),
-                        )
-                        .await
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
-                        if removed {
-                            println!("logged out of MusicBrainz");
-                        } else {
-                            println!("not logged in to MusicBrainz");
-                        }
-                        Ok(())
-                    }
-                },
+                AuthCommand::Musicbrainz { command } => {
+                    use mediapm::auth::service::{
+                        AuthAction, AuthOptions, AuthOutcome, AuthRuntime, AuthServiceId,
+                        run_auth_action,
+                    };
+
+                    let action = match command {
+                        MusicbrainzAuthCommand::Login => AuthAction::Login,
+                        MusicbrainzAuthCommand::Status => AuthAction::Status,
+                        MusicbrainzAuthCommand::Logout => AuthAction::Logout,
+                    };
+                    let prompt = mediapm::auth::prompt::ConsoleSecretPrompt::new();
+                    let runtime = AuthRuntime { auth_file: &paths.auth_file, prompt: &prompt };
+                    let outcome = run_auth_action(
+                        AuthServiceId::Musicbrainz,
+                        action,
+                        AuthOptions { offline },
+                        &runtime,
+                    )
+                    .await
+                    .map_err(|error| anyhow::anyhow!("{error}"))?;
+                    let AuthOutcome { message } = outcome;
+                    println!("{message}");
+                    Ok(())
+                }
                 AuthCommand::Acoustid { command } => {
                     use mediapm::auth::service::{
                         AuthAction, AuthOptions, AuthOutcome, AuthRuntime, AuthServiceId,
@@ -759,14 +731,6 @@ fn default_yt_dlp_steps(
     ]
 }
 
-/// Extracts the runtime root a direct builtin invocation uses for auth state
-/// from paths the caller has already resolved.
-#[cfg(all(feature = "cli", feature = "media-tagger"))]
-#[must_use]
-fn builtin_media_tagger_runtime_root(paths: &MediaPmPaths) -> PathBuf {
-    paths.runtime_root.clone()
-}
-
 /// Executes builtin media-tagger command invocation via `run_internal_media_tagger`.
 #[cfg(feature = "media-tagger")]
 #[expect(
@@ -775,7 +739,7 @@ fn builtin_media_tagger_runtime_root(paths: &MediaPmPaths) -> PathBuf {
 )]
 async fn run_builtin_media_tagger(
     args: InternalMediaTaggerArgs,
-    runtime_root: std::path::PathBuf,
+    auth_file: std::path::PathBuf,
 ) -> anyhow::Result<()> {
     let env_pairs = mediapm::child_env::default_host_inherited_env_pairs();
     mediapm::builtins::media_tagger::run_internal_media_tagger(
@@ -818,7 +782,7 @@ async fn run_builtin_media_tagger(
                 include_user_collections: args.include_user_collections,
                 include_user_tags: args.include_user_tags,
             },
-            runtime_root: Some(runtime_root),
+            auth_file: Some(auth_file),
         },
         &env_pairs,
     )
@@ -1381,32 +1345,6 @@ mod tests {
         assert_eq!(
             args.caa_endpoint, "http://127.0.0.1:9/ws",
             "an explicit --caa-endpoint value must reach the options unchanged"
-        );
-    }
-
-    /// A direct builtin run must reuse its already-resolved effective paths
-    /// for auth state, not fall back to an override-free workspace root.
-    #[cfg(feature = "media-tagger")]
-    #[test]
-    fn builtin_media_tagger_runtime_root_honors_config_overrides() {
-        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
-        let rt = super::MediaRuntimeStorage {
-            paths: super::RuntimePathsConfig {
-                mediapm_dir: std::path::PathBuf::from("custom-runtime"),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let paths = super::resolve_effective_paths_for_root(dir.path(), &rt);
-        assert_eq!(
-            super::builtin_media_tagger_runtime_root(&paths),
-            paths.runtime_root,
-            "the direct builtin path must reuse the resolved effective paths",
-        );
-        assert_eq!(
-            paths.runtime_root,
-            dir.path().join("custom-runtime"),
-            "the CLI mediapm_dir override must move the resolved runtime root",
         );
     }
 

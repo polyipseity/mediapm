@@ -105,7 +105,7 @@ mod tests {
                     DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
                 enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
                 metadata_selection: MetadataSelection::default(),
-                runtime_root: None,
+                auth_file: None,
             },
             &test_env_pairs(),
         )
@@ -175,7 +175,7 @@ mod tests {
                     DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
                 enable_logged_in_features_acoustid: false,
                 metadata_selection: MetadataSelection::default(),
-                runtime_root: None,
+                auth_file: None,
             },
             &test_env_pairs(),
         )
@@ -239,7 +239,7 @@ mod tests {
                     DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
                 enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
                 metadata_selection: MetadataSelection::default(),
-                runtime_root: None,
+                auth_file: None,
             },
             &test_env_pairs(),
         )
@@ -301,7 +301,7 @@ mod tests {
                     DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
                 enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
                 metadata_selection: MetadataSelection::default(),
-                runtime_root: None,
+                auth_file: None,
             },
             &test_env_pairs(),
         )
@@ -356,7 +356,7 @@ mod tests {
                     DEFAULT_ENABLE_LOGGED_IN_FEATURES_MUSICBRAINZ,
                 enable_logged_in_features_acoustid: DEFAULT_ENABLE_LOGGED_IN_FEATURES_ACOUSTID,
                 metadata_selection: MetadataSelection::default(),
-                runtime_root: None,
+                auth_file: None,
             },
             &test_env_pairs(),
         )
@@ -983,11 +983,11 @@ pub struct InternalMediaTaggerOptions {
     pub enable_logged_in_features_acoustid: bool,
     /// Which login-gated MusicBrainz metadata fields to include.
     pub metadata_selection: MetadataSelection,
-    /// Runtime root directory used for login-gated auth files.
+    /// Unified auth file holding the `MusicBrainz` token.
     ///
     /// When `None`, login-gated MusicBrainz features that require an auth file
     /// cannot resolve login state.
-    pub runtime_root: Option<PathBuf>,
+    pub auth_file: Option<PathBuf>,
 }
 
 /// Normalized MBID override mode from runtime input text.
@@ -1212,27 +1212,11 @@ async fn run_internal_media_tagger_impl(
     let mut mb_auth_state: Option<AuthState> = None;
     let mut mb_auth_error: Option<String> = None;
     if any_wanted_user_field && options.enable_logged_in_features_musicbrainz {
-        if let Some(runtime_root) = options.runtime_root.as_deref() {
-            match crate::auth::musicbrainz::MusicBrainzOAuthConfig::from_env() {
-                Ok(config) => {
-                    match crate::auth::musicbrainz::ensure_access_token(runtime_root, &config).await
-                    {
-                        Ok(token) => {
-                            mb_token = Some(token);
-                            mb_auth_state = Some(AuthState::LoggedIn);
-                        }
-                        Err(
-                            err @ (crate::auth::musicbrainz::MusicBrainzAuthError::NotLoggedIn
-                            | crate::auth::musicbrainz::MusicBrainzAuthError::LoginExpired),
-                        ) => {
-                            let _ = err;
-                            mb_auth_state = Some(AuthState::LoggedOut);
-                        }
-                        Err(err) => {
-                            mb_auth_error = Some(err.to_string());
-                            mb_auth_state = Some(AuthState::LoggedOut);
-                        }
-                    }
+        if let Some(auth_file) = options.auth_file.as_deref() {
+            match crate::auth::musicbrainz::ensure_access_token(auth_file).await {
+                Ok(token) => {
+                    mb_token = Some(token);
+                    mb_auth_state = Some(AuthState::LoggedIn);
                 }
                 Err(err) => {
                     mb_auth_error = Some(err.to_string());
@@ -1285,15 +1269,13 @@ async fn run_internal_media_tagger_impl(
         || include_user_tags
     {
         if mb_token.is_none() {
-            let runtime_root = options.runtime_root.as_deref().ok_or_else(|| {
+            let auth_file = options.auth_file.as_deref().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "MusicBrainz user-data fields are wanted but no runtime root is available"
+                    "MusicBrainz user-data fields are wanted but no auth file is available"
                 )
             })?;
-            let config = crate::auth::musicbrainz::MusicBrainzOAuthConfig::from_env()
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
             mb_token = Some(
-                crate::auth::musicbrainz::ensure_access_token(runtime_root, &config)
+                crate::auth::musicbrainz::ensure_access_token(auth_file)
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?,
             );
