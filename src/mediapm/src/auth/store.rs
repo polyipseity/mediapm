@@ -1,6 +1,6 @@
 //! Unversioned auth domain types and strict atomic file IO.
 //!
-//! The versioned representation is private to [`super::versions`]; every
+//! The versioned representation is private to `super::versions`; every
 //! filesystem entry point in this module goes through that bridge.
 
 use std::fmt;

@@ -3,6 +3,20 @@
 //! These structs describe the on-disk shape only. Every record is closed: an
 //! unknown field or service name fails deserialization rather than being
 //! ignored. Domain conversion lives in the parent module.
+//!
+//! ## DO NOT REMOVE: versions policy guard
+//!
+//! - This file owns only the version-1 wire records and must never import
+//!   unversioned domain structs from outside `versions/`.
+//! - A `vX` file may only reference the most recent previous version, and only
+//!   for version-to-version migration. Version 1 is the first rung and has no
+//!   previous version to reference.
+//! - Latest-version bridging to the unversioned auth domain types is owned by
+//!   `versions/mod.rs`.
+//! - Files outside `versions/` must interact with the versioned records only
+//!   through `versions/mod.rs`, never through a direct `versions::v1` path.
+//! - Do not re-export these wire structs. The `versions` module is private and
+//!   exposes only the unversioned `decode`/`encode` bridge.
 
 use serde::{Deserialize, Serialize};
 

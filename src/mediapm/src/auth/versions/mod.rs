@@ -2,6 +2,20 @@
 //!
 //! This is the only module that knows both representations: callers work with
 //! [`AuthFile`], while disk bytes always carry an integer schema version.
+//!
+//! ## DO NOT REMOVE: versions policy guard
+//!
+//! - `vX.rs` files own only version-local wire records and must never import
+//!   unversioned domain structs from outside `versions/`.
+//! - A `vX` file may only reference the most recent previous version, and only
+//!   for version-to-version migration.
+//! - This `mod.rs` is the only place where versioned auth records are bridged
+//!   to unversioned domain types, through `decode` and `encode`.
+//! - Files outside `versions/` must interact with the versioned records only
+//!   through this module's `decode`/`encode` entry points, never through a
+//!   direct `versions::vX` path.
+//! - Do not re-export `versions::vX` structs. The `versions` module is private
+//!   to `auth`, and its wire types stay inside this directory.
 
 mod v1;
 
