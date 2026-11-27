@@ -66,7 +66,7 @@ pub fn env_registry() -> &'static [EnvVarEntry] {
         EnvVarEntry {
             name: "MEDIAPM_AUTH_FILE",
             default: "",
-            doc: "Auth file path override (mediapm runtime.auth_file).",
+            doc: "Auth file path override (mediapm runtime.paths.auth_file).",
             group: EnvVarGroup::CliPaths,
         },
         EnvVarEntry {

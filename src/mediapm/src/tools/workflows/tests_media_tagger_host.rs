@@ -282,7 +282,7 @@ async fn run_tagging_step() -> String {
 
     let options = conductor_run_workflow_options(
         &MediaRuntimeStorage::default(),
-        &workspace.path().join(".mediapm"),
+        &workspace.path().join(".mediapm/auth.json"),
         None,
         None,
     )
@@ -327,5 +327,33 @@ async fn the_tagging_step_tags_in_process() {
     assert!(
         document.contains(&format!("MUSICBRAINZ_RECORDINGID={RECORDING_MBID}")),
         "the recording id the run resolved must reach the document, got: {document}",
+    );
+}
+
+/// The workflow-options path must carry the effective auth file into the
+/// media-tagger host builtin. A path recomputed from the runtime root cannot
+/// express `runtime.paths.auth_file`, so this assertion fails when the
+/// override is dropped.
+///
+/// The builtin is inspected through its `Debug` implementation, which is part
+/// of the `HostBuiltin` trait bound: no production accessor is needed to look
+/// at the path the runner will use.
+#[test]
+fn workflow_options_carry_the_effective_auth_file_into_host_builtins() {
+    let workspace = mediapm_utils::temp::output_dir().expect("artifact dir");
+    let auth_file = workspace.path().join("credentials").join("custom.auth.json");
+
+    let options =
+        conductor_run_workflow_options(&MediaRuntimeStorage::default(), &auth_file, None, None)
+            .expect("the host builtins must register");
+
+    let builtin = options
+        .host_builtins
+        .get("media-tagger")
+        .expect("every run must carry the media-tagger runner");
+    let debug = format!("{builtin:?}");
+    assert!(
+        debug.contains(&format!("auth_file: Some({auth_file:?})")),
+        "the workflow-options builtin must hold {auth_file:?}, got: {debug}",
     );
 }

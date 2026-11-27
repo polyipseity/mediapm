@@ -590,9 +590,11 @@ pub(crate) fn append_unique_env_var_names(target: &mut Vec<String>, source: &[St
 /// a workflow step naming one runs in-process. The registry is the single place
 /// that assembly happens: a run started any other way would reach the run-start
 /// check without an implementation for a builtin its own workflow names.
-/// `runtime_storage` supplies the retry policy and the resolved
-/// platform-inherited environment variable map the run's host-side runtime
-/// children use.
+/// `runtime_storage` supplies the resolved platform-inherited environment
+/// variable map the run's host-side runtime children use. `auth_file` is the
+/// effective credential path: it is handed to the host builtins as-is, so a
+/// `runtime.paths.auth_file` override reaches a workflow run rather than a
+/// path recomputed from the runtime root.
 ///
 /// # Errors
 ///
@@ -601,7 +603,7 @@ pub(crate) fn append_unique_env_var_names(target: &mut Vec<String>, source: &[St
 /// bug in this crate rather than a condition a run can recover from.
 pub(crate) fn conductor_run_workflow_options(
     runtime_storage: &MediaRuntimeStorage,
-    runtime_root: &std::path::Path,
+    auth_file: &Path,
     progress_group: Option<Arc<dyn mediapm_utils::progress::ProgressScreenApi + Send + Sync>>,
     overall_bar: Option<Arc<dyn mediapm_utils::progress::ProgressBarApi>>,
 ) -> Result<mediapm_conductor::RunWorkflowOptions, MediaPmError> {
@@ -610,13 +612,12 @@ pub(crate) fn conductor_run_workflow_options(
     Ok(mediapm_conductor::RunWorkflowOptions {
         progress_group,
         overall_bar,
-        host_builtins: crate::builtins::host_builtins(
-            env_pairs,
-            Some(runtime_root.join("auth.json")),
-        )
-        .map_err(|error| {
-            MediaPmError::Workflow(format!("builtin runner registry rejected its entries: {error}"))
-        })?,
+        host_builtins: crate::builtins::host_builtins(env_pairs, Some(auth_file.to_path_buf()))
+            .map_err(|error| {
+                MediaPmError::Workflow(format!(
+                    "builtin runner registry rejected its entries: {error}"
+                ))
+            })?,
         ..mediapm_conductor::RunWorkflowOptions::default()
     })
 }
