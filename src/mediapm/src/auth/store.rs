@@ -111,9 +111,10 @@ impl fmt::Debug for AcoustIdCredential {
 
 /// Writes an auth file atomically with mode `0600` on Unix.
 ///
-/// The serialized bytes go to `path.with_extension("json.tmp")` first; the
-/// rename replaces any previous file. A failed write removes the temporary
-/// sibling so a retry starts clean.
+/// The serialized bytes go to `path.with_extension("json.tmp")` first; that
+/// file is created with mode `0600` on Unix, then chmodded, then renamed over
+/// `path`, and the mode is reasserted on the destination. A failed write,
+/// chmod, or rename removes the temporary sibling so a retry starts clean.
 ///
 /// # Errors
 ///
@@ -126,8 +127,10 @@ pub fn save_auth_file(path: &Path, auth: &AuthFile) -> Result<(), AuthError> {
     }
     let bytes = versions::encode(auth)?;
     let tmp_path = path.with_extension("json.tmp");
-    std::fs::write(&tmp_path, &bytes)
-        .map_err(|source| AuthError::Write { path: tmp_path.clone(), source })?;
+    if let Err(source) = write_auth_bytes(&tmp_path, &bytes) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(AuthError::Write { path: tmp_path, source });
+    }
     #[cfg(unix)]
     {
         if let Err(source) = restrict_permissions(&tmp_path) {
@@ -145,6 +148,30 @@ pub fn save_auth_file(path: &Path, auth: &AuthFile) -> Result<(), AuthError> {
             .map_err(|source| AuthError::Write { path: path.to_path_buf(), source })?;
     }
     Ok(())
+}
+
+/// Creates and fills the temporary auth file with owner-only permissions on
+/// Unix, so credential bytes are never briefly readable by other users.
+///
+/// The explicit chmod in [`save_auth_file`] still covers a pre-existing
+/// temporary file, whose creation mode is not controlled by this function.
+#[cfg(unix)]
+fn write_auth_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)
+}
+
+/// Creates and fills the temporary auth file on non-Unix platforms.
+#[cfg(not(unix))]
+fn write_auth_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
 }
 
 /// Restricts a file to owner read/write on Unix.
@@ -219,6 +246,36 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_auth_write_removes_the_temporary_sibling() {
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let path = dir.path().join("auth.json");
+        let tmp_path = path.with_extension("json.tmp");
+        // Opening this symlink for creation fails because its target parent
+        // does not exist, so no regular temp file is created.
+        std::os::unix::fs::symlink(dir.path().join("missing-parent/auth.json.tmp"), &tmp_path)
+            .expect("seed broken temp symlink");
+        assert!(save_auth_file(&path, &AuthFile::default()).is_err());
+        assert!(
+            std::fs::symlink_metadata(&tmp_path).is_err(),
+            "failed write must remove the temporary sibling"
+        );
+        assert!(!path.exists(), "failed write must not publish the auth file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auth_temp_file_is_created_with_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let tmp_path = dir.path().join("auth.json.tmp");
+        write_auth_bytes(&tmp_path, b"credential bytes").expect("write temp");
+        let mode =
+            std::fs::metadata(&tmp_path).expect("temp metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "temp file must be 0600 at creation, before chmod");
     }
 
     #[test]
