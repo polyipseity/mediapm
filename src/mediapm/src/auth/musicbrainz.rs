@@ -136,6 +136,11 @@ fn cannot_revoke_error() -> AuthError {
     )
 }
 
+/// Explains that credentials exist but there is no token to revoke.
+fn no_token_to_revoke_error() -> AuthError {
+    AuthError::Service("no user token to revoke; use --offline to remove locally".to_owned())
+}
+
 fn not_logged_in_error() -> AuthError {
     AuthError::Service(
         "not logged in to MusicBrainz; run 'mediapm auth musicbrainz login'".to_owned(),
@@ -520,7 +525,7 @@ async fn logout_with_base(
         return Err(cannot_revoke_error());
     };
     let Some(token) = credential.token.as_ref() else {
-        return Err(cannot_revoke_error());
+        return Err(no_token_to_revoke_error());
     };
     if credential.client_id.trim().is_empty() || credential.client_secret.trim().is_empty() {
         return Err(cannot_revoke_error());
@@ -1172,9 +1177,6 @@ mod tests {
         let credentials_only = dir.path().join("credentials-only.json");
         save_auth_file(&credentials_only, &seeded_auth(None)).expect("seed");
         let error = logout(&credentials_only, false).await.expect_err("no token to revoke");
-        assert_eq!(
-            error.to_string(),
-            "cannot revoke without stored client credentials; use --offline to remove locally"
-        );
+        assert_eq!(error.to_string(), "no user token to revoke; use --offline to remove locally");
     }
 }
