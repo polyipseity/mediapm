@@ -97,7 +97,7 @@ fn hermetic_options(
             include_user_collections: false,
             include_user_tags: false,
         },
-        runtime_root: None,
+        auth_file: None,
     }
 }
 
@@ -620,7 +620,7 @@ async fn disabling_tag_saving_preserves_existing_global_tags_when_requested() {
             include_user_tags: false,
         },
 
-        runtime_root: None,
+        auth_file: None,
     };
 
     run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
@@ -680,7 +680,7 @@ async fn disabling_tag_saving_drops_existing_global_tags_when_not_preserved() {
             include_user_tags: false,
         },
 
-        runtime_root: None,
+        auth_file: None,
     };
 
     run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
@@ -840,7 +840,7 @@ async fn deselected_user_data_is_silent_without_login() {
     let endpoint = format!("{}/ws/2", musicbrainz.uri());
     let mut options = hermetic_options(workspace.path(), &endpoint, DEFAULT_CAA_ENDPOINT);
     options.enable_logged_in_features_musicbrainz = true;
-    options.runtime_root = None;
+    options.auth_file = None;
     options.metadata_selection = MetadataSelection {
         include_user_genres: false,
         include_user_ratings: false,
@@ -891,7 +891,7 @@ async fn wanted_user_data_errors_when_musicbrainz_login_unavailable() {
     let mut options = hermetic_options(workspace.path(), &endpoint, DEFAULT_CAA_ENDPOINT);
     options.enable_logged_in_features_musicbrainz = true;
     options.metadata_selection = MetadataSelection::default();
-    options.runtime_root = None;
+    options.auth_file = None;
 
     let err =
         run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())

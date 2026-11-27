@@ -286,7 +286,7 @@ fn options_from_args(
             )?,
             include_user_tags: flag(args, "include_user_tags", DEFAULT_INCLUDE_USER_TAGS)?,
         },
-        runtime_root,
+        auth_file: runtime_root.map(|root| root.join("auth.json")),
     })
 }
 
