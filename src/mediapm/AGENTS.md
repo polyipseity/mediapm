@@ -8,6 +8,7 @@ Media orchestration facade over `mediapm-cas` and `mediapm-conductor`: library s
 | --- | --- |
 | `config/` | `mediapm.ncl` model, defaults, Nickel I/O, versioned schema, validation. |
 | `state/` | `state.json` serialization/version dispatch. |
+| `auth/` | Unified versioned `auth.json` store and `mediapm auth` actions; credential rules live in `.agents/instructions/state-and-versioning.instructions.md` and `.agents/instructions/tool-provisioning.instructions.md`. |
 | `service.rs` | `MediaPmService` orchestration and standalone helpers. |
 | `conductor_bridge/` | Conductor integration, tool reconciliation, generated doc/state writes. |
 | `tools/` | Managed tool preset/provider dispatch and workflow synthesis. |
@@ -42,7 +43,7 @@ All carry explicit top-level `version`. Active config schema is v4; v1-v3 readab
 
 ## CLI overview
 
-`mediapm [global flags] <subcommand>` with `sync`, `tool`, `media`, `hierarchy`, `cas`, `conductor`, `global`, `completions`. Flag resolution: CLI arg > `MEDIAPM_*` env > config > default. Definitions in `mediapm-cli`; dispatch in `main.rs`.
+`mediapm [global flags] <subcommand>` with `sync`, `tool`, `media`, `hierarchy`, `cas`, `conductor`, `global`, `auth`, `completions`. Flag resolution: CLI arg > `MEDIAPM_*` env > config > default. Definitions in `mediapm-cli`; dispatch in `main.rs`.
 
 ## Conductor integration
 

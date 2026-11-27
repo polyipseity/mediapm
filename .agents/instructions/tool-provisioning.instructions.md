@@ -67,7 +67,8 @@ Merged guidance for tool sync coordination, identity, 3-phase provisioning, prov
 ## Credentials and login gates
 
 - Login-gated tagger work resolves through `resolve_gate` (`src/mediapm/src/builtins/media_tagger/gate.rs`) at the point of need: `Need::None` and a disabled `enable_logged_in_features_<service>` flag never read auth state, a wanted optional field under a disabled flag is dropped with an info log, a required need under a disabled flag errors regardless of login, and an enabled flag with a wanted/required need and no login errors. There is no startup precheck and no degrade to an unauthenticated fetch.
-- OAuth client credentials come from the runtime dotenv (`MUSICBRAINZ_OAUTH_CLIENT_ID` / `MUSICBRAINZ_OAUTH_CLIENT_SECRET`); absence is a hard error naming the registration URL, never a silent no-op. Tokens live in `.mediapm/auth/musicbrainz.json`, never `state.json`, and require no schema/version bump.
+- Client credentials and API keys enter only through hidden prompts on `mediapm auth <musicbrainz|acoustid> login` and are stored in the unified `auth.json`. There is no `ACOUSTID_API_KEY` or MusicBrainz OAuth environment fallback; missing credentials are a hard error naming the login command (and the registration URL for MusicBrainz), never a silent no-op or a dotenv read. `--offline` skips remote validation and revocation; AcoustID logout has no revocation step either way.
+- `MEDIAPM_ACOUSTID_BASE` is a debug-only probe-endpoint seam, read per call and ignored in release builds. It redirects the key-validation lookup to a test server; it is not a credential source.
 
 ## Testing and hermeticity
 

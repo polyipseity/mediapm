@@ -22,7 +22,8 @@ applyTo: "src/**/*.rs, **/*.ncl"
 
 ## Credentials outside state
 
-- MusicBrainz OAuth tokens, expiry and scopes live in `.mediapm/auth/musicbrainz.json` (atomic write, mode 0600 on Unix, gitignored), never in `state.json`. Credentials are not workflow state: adding or changing that file needs no `MEDIAPM_STATE_VERSION` bump, no migration, and no Nickel contract change.
+- Every service credential lives in one versioned `auth.json`, default `<runtime_root>/auth.json` and overridable in full by `runtime.paths.auth_file`, `--auth-file`, or `MEDIAPM_AUTH_FILE`. The current schema is integer v1: closed typed records under `services.musicbrainz` and `services.acoustid`. A missing file means all services are logged out; a missing record logs out that one service. Unknown fields or services, malformed JSON, a non-integer version, and an unknown version are errors, never a silent logged-out state.
+- Writes go through a `*.json.tmp` sibling renamed onto the file, with mode `0600` on Unix and secrets redacted from `Debug`. Credentials are not workflow state: changing `auth.json` needs no state, config, conductor-state, or instance-key-version bump, and no migration or Nickel contract change.
 
 ## mediapm state shape
 

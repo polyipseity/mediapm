@@ -95,7 +95,7 @@ The test-runner `test` subcommand runs gates last: nextest, then the unprefixed-
 
 Cache directories are method outputs, not fields: `workspace_cache_dir()`, `workspace_cache_store_dir()`, `workspace_yt_dlp_cache_dir()`, `workspace_media_tagger_cache_dir()`, `workspace_mediapm_cache_dir()`. They derive from `runtime_root` and cannot be overridden.
 
-`MediaPmPathOverrides` resolve relative to the `mediapm.ncl` parent. `schema_export_dir`: `None` means computed default, `Some(None)` disables export, `Some(Some(path))` uses the resolved override.
+`MediaPmPathOverrides` resolve relative to the `mediapm.ncl` parent. `schema_export_dir`: `None` means computed default, `Some(None)` disables export, `Some(Some(path))` uses the resolved override. `auth_file` names the whole credential file, not a directory: it comes from `runtime.paths.auth_file` in `mediapm.ncl`, or from `--auth-file` / `MEDIAPM_AUTH_FILE`, and a relative value resolves against that parent.
 
 Invariants:
 
