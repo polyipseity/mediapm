@@ -131,4 +131,5 @@ target
 # self {
 **/examples/outputs/
 /.bin/
+/.worktrees/
 # }
