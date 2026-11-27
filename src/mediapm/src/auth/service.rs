@@ -103,6 +103,7 @@ fn stub_error(action: &'static str) -> AuthError {
     AuthError::Service(format!("{action} is not available in this build"))
 }
 
+/// Temporary placeholder for `MusicBrainz` login; Task 6 replaces it with the real service call.
 fn musicbrainz_login(
     _auth_file: &Path,
     _prompt: &dyn SecretPrompt,
@@ -111,14 +112,17 @@ fn musicbrainz_login(
     Err(stub_error("MusicBrainz login"))
 }
 
+/// Temporary placeholder for `MusicBrainz` status; Task 6 replaces it with the real service call.
 fn musicbrainz_status(_auth_file: &Path) -> Result<AuthOutcome, AuthError> {
     Err(stub_error("MusicBrainz status"))
 }
 
+/// Temporary placeholder for `MusicBrainz` logout; Task 6 replaces it with the real service call.
 fn musicbrainz_logout(_auth_file: &Path, _offline: bool) -> Result<AuthOutcome, AuthError> {
     Err(stub_error("MusicBrainz logout"))
 }
 
+/// Temporary placeholder for `AcoustID` login; Task 5 replaces it with the real service call.
 fn acoustid_login(
     _auth_file: &Path,
     _prompt: &dyn SecretPrompt,
@@ -127,10 +131,12 @@ fn acoustid_login(
     Err(stub_error("AcoustID login"))
 }
 
+/// Temporary placeholder for `AcoustID` status; Task 5 replaces it with the real service call.
 fn acoustid_status(_auth_file: &Path) -> Result<AuthOutcome, AuthError> {
     Err(stub_error("AcoustID status"))
 }
 
+/// Temporary placeholder for `AcoustID` logout; Task 5 replaces it with the real service call.
 fn acoustid_logout(_auth_file: &Path) -> Result<AuthOutcome, AuthError> {
     Err(stub_error("AcoustID logout"))
 }
