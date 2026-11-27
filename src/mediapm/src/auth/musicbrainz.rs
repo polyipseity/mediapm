@@ -1025,6 +1025,44 @@ mod tests {
         assert_eq!(token.refresh_token.as_deref(), Some("refresh-1"));
     }
 
+    /// Pins that a rejected token exchange names the service without echoing
+    /// the credentials supplied to the prompt.
+    #[tokio::test]
+    async fn login_failure_error_contains_no_credentials_or_tokens() {
+        let mock = MockMusicBrainz::start().await;
+        mock.mount_oauth_authorize_redirect("test-code").await;
+        Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/oauth2/token"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "invalid_grant"
+            })))
+            .mount(mock.server())
+            .await;
+
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let path = dir.path().join("auth.json");
+        let prompt =
+            RecordingPrompt::new(vec!["prompted-id".to_owned(), "prompted-secret".to_owned()]);
+        let error = login_with_base(&path, &prompt, true, &mock.server().uri(), |url| {
+            let url = url.to_owned();
+            std::thread::spawn(move || {
+                let client = reqwest::blocking::Client::builder()
+                    .redirect(reqwest::redirect::Policy::limited(5))
+                    .build()
+                    .expect("client");
+                let _ = client.get(url).send();
+            });
+            Ok(())
+        })
+        .await
+        .expect_err("a failed token exchange must fail login");
+        let message = error.to_string();
+        assert!(message.contains("MusicBrainz"), "{message}");
+        assert!(message.contains("token endpoint"), "{message}");
+        assert!(!message.contains("prompted-id"), "client id leaked: {message}");
+        assert!(!message.contains("prompted-secret"), "client secret leaked: {message}");
+    }
+
     #[tokio::test]
     async fn refreshes_when_near_expiry_and_persists_rotation() {
         let mock = MockMusicBrainz::start().await;
@@ -1085,6 +1123,37 @@ mod tests {
         );
         let loaded = load_auth_file(&path).expect("load").expect("file");
         assert!(loaded.services.musicbrainz.is_none(), "expired refresh should drop the record");
+    }
+
+    /// Pins that a failed refresh reports the service without echoing stored
+    /// credentials or tokens.
+    #[tokio::test]
+    async fn refresh_failure_error_contains_no_stored_secrets() {
+        let mock = MockMusicBrainz::start().await;
+        Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/oauth2/token"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "error": "server_error"
+            })))
+            .mount(mock.server())
+            .await;
+
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let path = dir.path().join("auth.json");
+        let mut expired = seeded_auth(Some(sample_token(current_unix_time().saturating_sub(10))));
+        if let Some(token) = expired.services.musicbrainz.as_mut().and_then(|c| c.token.as_mut()) {
+            token.refresh_token = Some("refresh-1".to_owned());
+        }
+        save_auth_file(&path, &expired).expect("save");
+
+        let error = ensure_access_token_with_base(&path, &mock.server().uri())
+            .await
+            .expect_err("failed refresh must surface");
+        let message = error.to_string();
+        assert!(message.contains("token endpoint"), "{message}");
+        assert!(!message.contains("stored-secret"), "client secret leaked: {message}");
+        assert!(!message.contains("refresh-1"), "refresh token leaked: {message}");
+        assert!(!message.contains("access-token"), "access token leaked: {message}");
     }
 
     #[tokio::test]
