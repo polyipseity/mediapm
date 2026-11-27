@@ -4,11 +4,10 @@ Crate: `mediapm-conductor-builtin-echo`
 
 ## Parameters
 
-- `message: String` (required): The string to echo.
-- `output: String`: Where to write (stdout/stderr/file). Defaults to stdout.
+- `message: String` (required): string to echo.
+- `output: String`: stdout/stderr/file; defaults to stdout.
 
 ## Contract
 
-- **Purity**: Pure — deterministic; same input always produces same output.
-- **Side effects**: Zero (unless output is a file).
-- **Failure**: Never fails under normal conditions (no I/O errors).
+- Pure: deterministic, no side effects unless output is a file.
+- Never fails under normal conditions (no I/O errors).

@@ -1,22 +1,14 @@
-//! Budget gates for agent-facing documentation.
+//! Combined budget gate for agent-facing documentation.
 //!
-//! These files are loaded into every agent session, so their size is a direct
-//! context cost. The budgets are intentionally tight: regrowth must fail CI.
-//!
-//! Measured starting point when these gates were added: `.agents/instructions/`
-//! was 417,406 B across 30 files, and the workspace/root + `src/**/AGENTS.md`
-//! files were 226,291 B across 15 files.
+//! Project instructions and AGENTS.md files all load into agent sessions, so
+//! their combined byte count is the context cost this gate controls. The limit
+//! is 100_000 bytes with no per-file cap.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const INSTRUCTION_BUDGET: usize = 100_000;
-const INSTRUCTION_FILE_CAP: usize = 16_000;
-const AGENTS_BUDGET: usize = 50_000;
-const AGENTS_FILE_CAP: usize = 12_000;
+const COMBINED_BUDGET: usize = 100_000;
 
-/// Returns the repository root (the directory containing `Cargo.toml` and
-/// `.agents/`), derived from this crate's manifest directory.
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -24,7 +16,6 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Recursively collects files under `dir` whose name matches `predicate`.
 fn collect_files(dir: &Path, predicate: &dyn Fn(&Path) -> bool, out: &mut Vec<PathBuf>) {
     let entries = fs::read_dir(dir)
         .unwrap_or_else(|err| panic!("failed to read directory {}: {err}", dir.display()));
@@ -44,88 +35,60 @@ fn collect_files(dir: &Path, predicate: &dyn Fn(&Path) -> bool, out: &mut Vec<Pa
     }
 }
 
-/// Returns the byte length of `path`.
-fn file_len(path: &Path) -> usize {
-    fs::metadata(path)
-        .unwrap_or_else(|err| panic!("failed to read metadata for {}: {err}", path.display()))
-        .len()
-        .try_into()
-        .unwrap_or_else(|err| panic!("file size does not fit usize for {}: {err}", path.display()))
-}
-
-/// Renders a path relative to the repository root when possible.
 fn display_path(path: &Path, root: &Path) -> String {
     path.strip_prefix(root).unwrap_or(path).display().to_string().replace('\\', "/")
 }
 
-/// Asserts every file is within `file_cap` and the total is within `budget`.
-fn assert_budget(set_name: &str, files: &[PathBuf], root: &Path, budget: usize, file_cap: usize) {
-    let mut total: usize = 0;
-    for path in files {
-        let size = file_len(path);
-        total = total.saturating_add(size);
-        assert!(
-            size <= file_cap,
-            "{set_name}: {} is {size} B, per-file cap is {file_cap} B, overage is {} B",
-            display_path(path, root),
-            size - file_cap,
-        );
-    }
-    assert!(
-        total <= budget,
-        "{set_name} total exceeds budget: total is {total} B, budget is {budget} B, overage is {} B across {} files",
-        total - budget,
-        files.len(),
-    );
-}
-
 #[test]
-fn instruction_files_stay_within_budget() {
+fn agent_docs_stay_within_combined_budget() {
     let root = repo_root();
-    let instructions_dir = root.join(".agents").join("instructions");
     let mut files = Vec::new();
     collect_files(
-        &instructions_dir,
+        &root.join(".agents").join("instructions"),
         &|path| path.extension().is_some_and(|ext| ext == "md"),
         &mut files,
     );
-    files.sort();
-    assert!(
-        !files.is_empty(),
-        "instruction files budget guard found no files under {}",
-        instructions_dir.display()
+    collect_files(
+        &root.join("src"),
+        &|path| path.file_name().is_some_and(|name| name == "AGENTS.md"),
+        &mut files,
     );
-    assert_budget("instruction files", &files, &root, INSTRUCTION_BUDGET, INSTRUCTION_FILE_CAP);
-}
-
-#[test]
-fn agents_files_stay_within_budget() {
-    let root = repo_root();
-    let mut files = Vec::new();
 
     let workspace_agents = root.join("AGENTS.md");
     assert!(
         workspace_agents.is_file(),
-        "AGENTS.md budget guard missing workspace file {}",
+        "combined docs gate missing workspace file {}",
         workspace_agents.display()
     );
-    files.push(workspace_agents.clone());
+    files.push(workspace_agents);
 
-    let src_dir = root.join("src");
-    collect_files(
-        &src_dir,
-        &|path| path.file_name().is_some_and(|name| name == "AGENTS.md"),
-        &mut files,
-    );
     files.sort();
     files.dedup();
+    assert!(files.len() > 1, "combined docs gate found too few files: {}", files.len());
 
-    let src_agents_count = files.iter().filter(|path| *path != &workspace_agents).count();
+    let mut total = 0usize;
+    let mut largest = (0usize, PathBuf::new());
+    for path in &files {
+        let size = fs::metadata(path)
+            .unwrap_or_else(|err| panic!("failed to read metadata for {}: {err}", path.display()))
+            .len()
+            .try_into()
+            .unwrap_or_else(|err| {
+                panic!("file size does not fit usize for {}: {err}", path.display())
+            });
+        total = total.saturating_add(size);
+        if size > largest.0 {
+            largest = (size, path.clone());
+        }
+    }
+
     assert!(
-        src_agents_count >= 1,
-        "AGENTS.md budget guard found no src/**/AGENTS.md files under {}",
-        src_dir.display()
+        total <= COMBINED_BUDGET,
+        "agent docs total exceeds budget: total is {total} B, budget is {COMBINED_BUDGET} B, \
+         overage is {} B across {} files; largest is {} at {}",
+        total - COMBINED_BUDGET,
+        files.len(),
+        largest.0,
+        display_path(&largest.1, &root),
     );
-
-    assert_budget("AGENTS.md files", &files, &root, AGENTS_BUDGET, AGENTS_FILE_CAP);
 }
