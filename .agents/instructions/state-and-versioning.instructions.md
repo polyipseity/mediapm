@@ -23,7 +23,7 @@ applyTo: "src/**/*.rs, **/*.ncl"
 ## Credentials outside state
 
 - Every service credential lives in one versioned `auth.json`, default `<runtime_root>/auth.json` and overridable in full by `runtime.paths.auth_file`, `--auth-file`, or `MEDIAPM_AUTH_FILE`. The current schema is integer v1: closed typed records under `services.musicbrainz` and `services.acoustid`. A missing file means all services are logged out; a missing record logs out that one service. Unknown fields or services, malformed JSON, a non-integer version, and an unknown version are errors, never a silent logged-out state. An auth file outside the runtime root is user-managed: the generated runtime gitignore protects only the default path under `runtime_root`.
-- Writes go through a `*.json.tmp` sibling renamed onto the file, with mode `0600` on Unix and secrets redacted from `Debug`. Credentials are not workflow state: changing `auth.json` needs no state, config, conductor-state, or instance-key-version bump, and no migration or Nickel contract change.
+- Writes go through a `*.json.tmp` sibling renamed onto the file, with mode `0600` on Unix and secrets redacted from `Debug`. Windows ACL hardening is out of scope. Credentials are not workflow state: changing `auth.json` needs no state, config, conductor-state, or instance-key-version bump, and no migration or Nickel contract change.
 
 ## mediapm state shape
 

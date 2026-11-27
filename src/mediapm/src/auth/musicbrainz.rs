@@ -908,6 +908,17 @@ mod tests {
             credentials(&path).expect("the auth file is the only credential source"),
             ("stored-id".to_owned(), "stored-secret".to_owned())
         );
+        let missing = dir.path().join("missing-auth.json");
+        let error = credentials(&missing).expect_err("no credential source besides the auth file");
+        let message = error.to_string();
+        assert!(
+            message.contains("mediapm auth musicbrainz login"),
+            "the error must name the login command: {message}"
+        );
+        assert!(
+            message.contains(MUSICBRAINZ_APP_REGISTRATION_URL),
+            "the error must name the registration URL: {message}"
+        );
         drop(override_env);
 
         let _lock = crate::example_isolation::lock_process_env();
