@@ -155,11 +155,13 @@ pub fn save_auth_file(path: &Path, auth: &AuthFile) -> Result<(), AuthError> {
 /// Unix, so credential bytes are never briefly readable by other users.
 ///
 /// `OpenOptions::mode` applies only on creation, so an existing temporary file
-/// is restricted on the open handle before any credential bytes are written.
+/// is restricted on the open handle before any credential bytes are written. A
+/// symlink at the temporary path is rejected before the path is opened.
 #[cfg(unix)]
 fn write_auth_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    reject_temp_symlink(path)?;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -174,6 +176,21 @@ fn write_auth_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn write_auth_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, bytes)
+}
+
+/// Rejects a symlink at the auth temp path before any write opens it.
+#[cfg(unix)]
+fn reject_temp_symlink(path: &Path) -> std::io::Result<()> {
+    use std::io::ErrorKind;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(std::io::Error::new(
+            ErrorKind::AlreadyExists,
+            "auth temporary file must not be a symlink",
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 /// Restricts a file to owner read/write on Unix.
@@ -266,6 +283,27 @@ mod tests {
             "failed write must remove the temporary sibling"
         );
         assert!(!path.exists(), "failed write must not publish the auth file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_auth_temp_file_is_rejected_without_touching_the_target() {
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let auth_path = dir.path().join("auth.json");
+        let tmp_path = auth_path.with_extension("json.tmp");
+        let target_path = dir.path().join("outside.json");
+        std::fs::write(&target_path, b"untouched").expect("seed target");
+        std::os::unix::fs::symlink(&target_path, &tmp_path).expect("seed temp symlink");
+
+        let auth = AuthFile {
+            services: AuthServices {
+                acoustid: Some(AcoustIdCredential { api_key: "secret-key".to_owned() }),
+                ..AuthServices::default()
+            },
+        };
+        assert!(save_auth_file(&auth_path, &auth).is_err());
+        assert_eq!(std::fs::read(&target_path).expect("target bytes"), b"untouched");
+        assert!(!auth_path.exists(), "a rejected temp path must not publish the auth file");
     }
 
     #[cfg(unix)]
