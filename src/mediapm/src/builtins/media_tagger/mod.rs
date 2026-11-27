@@ -727,8 +727,9 @@ use self::util::{
     write_ffmetadata_document,
 };
 
-/// Default AcoustID lookup endpoint used by the internal tagger.
-pub const DEFAULT_ACOUSTID_ENDPOINT: &str = "https://api.acoustid.org/v2/lookup";
+/// Canonical `AcoustID` lookup endpoint owned by the always-compiled auth module.
+pub use crate::auth::acoustid::DEFAULT_ACOUSTID_ENDPOINT;
+
 /// Default MusicBrainz API endpoint; its host\[:port\] selects the fetch domain.
 pub const DEFAULT_MUSICBRAINZ_ENDPOINT: &str = "https://musicbrainz.org/ws/2";
 /// Default Cover Art Archive endpoint; scheme and host are both honored.

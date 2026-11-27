@@ -13,7 +13,12 @@ use super::error::AuthError;
 use super::prompt::SecretPrompt;
 use super::service::{AuthOutcome, AuthServiceId};
 use super::store::{AcoustIdCredential, load_auth_file, remove_service, save_auth_file};
-use crate::builtins::media_tagger::DEFAULT_ACOUSTID_ENDPOINT;
+
+/// Canonical `AcoustID` lookup endpoint.
+///
+/// This lives in the always-compiled auth module so the auth service compiles
+/// without the `media-tagger` feature.
+pub const DEFAULT_ACOUSTID_ENDPOINT: &str = "https://api.acoustid.org/v2/lookup";
 
 /// Debug-only seam redirecting the lookup probe to a test server.
 const ENDPOINT_ENV: &str = "MEDIAPM_ACOUSTID_BASE";
@@ -193,6 +198,19 @@ mod tests {
     use std::ffi::OsString;
 
     use crate::auth::store::{AuthFile, AuthServices};
+
+    /// Guards the always-compiled auth module against importing a gated builtin.
+    #[test]
+    fn endpoint_constant_does_not_depend_on_the_media_tagger_feature() {
+        let source = include_str!("acoustid.rs");
+        // Built from parts so the guard's own source does not match the needle.
+        let forbidden_import = concat!("crate::builtins::", "media_tagger");
+        assert!(
+            !source.contains(forbidden_import),
+            "auth must not import a feature-gated builtin module"
+        );
+        assert_eq!(DEFAULT_ACOUSTID_ENDPOINT, "https://api.acoustid.org/v2/lookup");
+    }
 
     #[tokio::test]
     async fn strict_probe_accepts_an_ok_response() {
