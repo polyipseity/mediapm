@@ -246,6 +246,61 @@ mod tests {
         assert!(!message.contains(PROBE_KEY), "probe key leaked into error: {message}");
     }
 
+    /// Pins the non-OK body branch: an HTTP 200 alone does not accept a key.
+    #[tokio::test]
+    async fn strict_probe_rejects_a_200_response_without_ok_status() {
+        const KEY: &str = "non-ok-key-that-must-not-leak";
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::query_param("client", KEY))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "error", "results": []
+            })))
+            .mount(&server)
+            .await;
+
+        let error =
+            validate_api_key(&server.uri(), KEY).await.expect_err("non-ok status must fail");
+        let message = error.to_string();
+        assert!(message.contains("status 'error'"), "{message}");
+        assert!(!message.contains(KEY), "probe key leaked into error: {message}");
+    }
+
+    /// Pins redaction of the probe query key when the endpoint is unreachable.
+    ///
+    /// The socket is bound and immediately closed so the request fails before
+    /// any HTTP response exists; a stopped mock server can still answer.
+    #[tokio::test]
+    async fn strict_probe_redacts_the_key_on_transport_failure() {
+        const KEY: &str = "transport-key-that-must-not-leak";
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bound socket");
+        let uri = format!("http://{}", listener.local_addr().expect("bound address"));
+        drop(listener);
+
+        let error = validate_api_key(&uri, KEY).await.expect_err("transport failure must surface");
+        let message = error.to_string();
+        assert!(message.contains("AcoustID request failed"), "{message}");
+        assert!(!message.contains(KEY), "probe key leaked into transport error: {message}");
+    }
+
+    /// Pins JSON-decode failure behavior and key redaction for a malformed body.
+    #[tokio::test]
+    async fn strict_probe_rejects_malformed_json_without_leaking_the_key() {
+        const KEY: &str = "json-key-that-must-not-leak";
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::query_param("client", KEY))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("not json"))
+            .mount(&server)
+            .await;
+
+        let error =
+            validate_api_key(&server.uri(), KEY).await.expect_err("malformed JSON must fail");
+        let message = error.to_string();
+        assert!(message.contains("response JSON was invalid"), "{message}");
+        assert!(!message.contains(KEY), "probe key leaked into JSON error: {message}");
+    }
+
     #[tokio::test]
     async fn offline_login_stores_a_key_without_a_probe() {
         let dir = mediapm_utils::temp::output_dir().expect("temp dir");
