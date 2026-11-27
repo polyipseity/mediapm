@@ -1,10 +1,8 @@
 //! Auth command dispatch over the two supported services.
 //!
 //! Every CLI action maps to exactly one pair of service and action through
-//! [`run_auth_action`]. The six service functions below are temporary stubs
-//! until Tasks 5 and 6 replace their bodies with the real service-module
-//! calls; each stub returns [`AuthError::Service`] instead of claiming
-//! success or touching the auth file.
+//! [`run_auth_action`], which calls the matching `musicbrainz` or `acoustid`
+//! service function. All six pairs are explicit; there is no fallback.
 
 use std::path::Path;
 
@@ -70,12 +68,6 @@ pub struct AuthOutcome {
 ///
 /// Returns the error from the selected service action. All six pairs have an
 /// explicit arm; there is no fallback that can silently succeed.
-// The dispatch signature is async by contract. Tasks 5 and 6 replace the
-// synchronous stubs with async service calls, which restores a real await.
-#[expect(
-    clippy::unused_async,
-    reason = "run_auth_action is async by contract while the six service stubs are temporary synchronous placeholders; Tasks 5 and 6 remove this expectation when the real async service calls land"
-)]
 pub async fn run_auth_action(
     service: AuthServiceId,
     action: AuthAction,
@@ -84,61 +76,32 @@ pub async fn run_auth_action(
 ) -> Result<AuthOutcome, AuthError> {
     match (service, action) {
         (AuthServiceId::Musicbrainz, AuthAction::Login) => {
-            musicbrainz_login(runtime.auth_file, runtime.prompt, options.offline)
+            super::musicbrainz::login(runtime.auth_file, runtime.prompt, options.offline).await
         }
-        (AuthServiceId::Musicbrainz, AuthAction::Status) => musicbrainz_status(runtime.auth_file),
+        (AuthServiceId::Musicbrainz, AuthAction::Status) => {
+            super::musicbrainz::status(runtime.auth_file)
+        }
         (AuthServiceId::Musicbrainz, AuthAction::Logout) => {
-            musicbrainz_logout(runtime.auth_file, options.offline)
+            super::musicbrainz::logout(runtime.auth_file, options.offline).await
         }
         (AuthServiceId::Acoustid, AuthAction::Login) => {
-            acoustid_login(runtime.auth_file, runtime.prompt, options.offline)
+            super::acoustid::login(runtime.auth_file, runtime.prompt, options.offline).await
         }
-        (AuthServiceId::Acoustid, AuthAction::Status) => acoustid_status(runtime.auth_file),
-        (AuthServiceId::Acoustid, AuthAction::Logout) => acoustid_logout(runtime.auth_file),
+        (AuthServiceId::Acoustid, AuthAction::Status) => super::acoustid::status(runtime.auth_file),
+        (AuthServiceId::Acoustid, AuthAction::Logout) => {
+            let outcome = super::acoustid::logout(runtime.auth_file)?;
+            if options.offline {
+                Ok(AuthOutcome {
+                    message: format!(
+                        "{} (--offline has no separate revocation step)",
+                        outcome.message
+                    ),
+                })
+            } else {
+                Ok(outcome)
+            }
+        }
     }
-}
-
-/// Builds the loud failure used by every not-yet-implemented service action.
-fn stub_error(action: &'static str) -> AuthError {
-    AuthError::Service(format!("{action} is not available in this build"))
-}
-
-/// Temporary placeholder for `MusicBrainz` login; Task 6 replaces it with the real service call.
-fn musicbrainz_login(
-    _auth_file: &Path,
-    _prompt: &dyn SecretPrompt,
-    _offline: bool,
-) -> Result<AuthOutcome, AuthError> {
-    Err(stub_error("MusicBrainz login"))
-}
-
-/// Temporary placeholder for `MusicBrainz` status; Task 6 replaces it with the real service call.
-fn musicbrainz_status(_auth_file: &Path) -> Result<AuthOutcome, AuthError> {
-    Err(stub_error("MusicBrainz status"))
-}
-
-/// Temporary placeholder for `MusicBrainz` logout; Task 6 replaces it with the real service call.
-fn musicbrainz_logout(_auth_file: &Path, _offline: bool) -> Result<AuthOutcome, AuthError> {
-    Err(stub_error("MusicBrainz logout"))
-}
-
-/// Temporary placeholder for `AcoustID` login; Task 5 replaces it with the real service call.
-fn acoustid_login(
-    _auth_file: &Path,
-    _prompt: &dyn SecretPrompt,
-    _offline: bool,
-) -> Result<AuthOutcome, AuthError> {
-    Err(stub_error("AcoustID login"))
-}
-
-/// Temporary placeholder for `AcoustID` status; Task 5 replaces it with the real service call.
-fn acoustid_status(_auth_file: &Path) -> Result<AuthOutcome, AuthError> {
-    Err(stub_error("AcoustID status"))
-}
-
-/// Temporary placeholder for `AcoustID` logout; Task 5 replaces it with the real service call.
-fn acoustid_logout(_auth_file: &Path) -> Result<AuthOutcome, AuthError> {
-    Err(stub_error("AcoustID logout"))
 }
 
 #[cfg(test)]

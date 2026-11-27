@@ -24,6 +24,8 @@ mod tool_sync;
 /// All-platform document structure integration: verifies that managed
 /// tools have per-OS content-map entries and non-empty command selectors.
 mod all_platform;
+/// Offline auth commands reaching the configured auth file through the API.
+mod auth_commands;
 /// A test or example may not resolve the default user download cache root;
 /// the scan allowlists the lines that legitimately name it (spec S4).
 mod cache_root_guard;

@@ -17,6 +17,8 @@ use mediapm::MediaPmService;
 #[cfg(feature = "cli")]
 use mediapm::ToolRecheck;
 #[cfg(feature = "cli")]
+use mediapm::auth::service::{AuthAction, AuthServiceId};
+#[cfg(feature = "cli")]
 use mediapm::config::{RuntimeMaterializationConfig, RuntimePathsConfig};
 use mediapm::output::{
     StatusIcon, print_error, print_hint, print_result, print_status_report, print_warning,
@@ -551,66 +553,51 @@ async fn main_cli() -> anyhow::Result<()> {
             passthrough_conductor(&args.args, &effective_paths).await
         }
         Command::Auth { offline, command } => {
+            use mediapm::auth::service::{AuthOptions, AuthRuntime, run_auth_action};
+
             let root = &cli.root;
             let paths = resolve_effective_paths_for_root(root, &rt);
             load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
-            match command {
-                AuthCommand::Musicbrainz { command } => {
-                    use mediapm::auth::service::{
-                        AuthAction, AuthOptions, AuthOutcome, AuthRuntime, AuthServiceId,
-                        run_auth_action,
-                    };
-
-                    let action = match command {
-                        MusicbrainzAuthCommand::Login => AuthAction::Login,
-                        MusicbrainzAuthCommand::Status => AuthAction::Status,
-                        MusicbrainzAuthCommand::Logout => AuthAction::Logout,
-                    };
-                    let prompt = mediapm::auth::prompt::ConsoleSecretPrompt::new();
-                    let runtime = AuthRuntime { auth_file: &paths.auth_file, prompt: &prompt };
-                    let outcome = run_auth_action(
-                        AuthServiceId::Musicbrainz,
-                        action,
-                        AuthOptions { offline },
-                        &runtime,
-                    )
-                    .await
-                    .map_err(|error| anyhow::anyhow!("{error}"))?;
-                    let AuthOutcome { message } = outcome;
-                    println!("{message}");
-                    Ok(())
-                }
-                AuthCommand::Acoustid { command } => {
-                    use mediapm::auth::service::{
-                        AuthAction, AuthOptions, AuthOutcome, AuthRuntime, AuthServiceId,
-                        run_auth_action,
-                    };
-
-                    let action = match command {
-                        AcoustidAuthCommand::Login => AuthAction::Login,
-                        AcoustidAuthCommand::Status => AuthAction::Status,
-                        AcoustidAuthCommand::Logout => AuthAction::Logout,
-                    };
-                    let prompt = mediapm::auth::prompt::ConsoleSecretPrompt::new();
-                    let runtime = AuthRuntime { auth_file: &paths.auth_file, prompt: &prompt };
-                    let outcome = run_auth_action(
-                        AuthServiceId::Acoustid,
-                        action,
-                        AuthOptions { offline },
-                        &runtime,
-                    )
-                    .await
-                    .map_err(|error| anyhow::anyhow!("{error}"))?;
-                    let AuthOutcome { message } = outcome;
-                    println!("{message}");
-                    Ok(())
-                }
-            }
+            let (service, action) = auth_service_and_action(command);
+            let prompt = mediapm::auth::prompt::ConsoleSecretPrompt::new();
+            let runtime = AuthRuntime { auth_file: &paths.auth_file, prompt: &prompt };
+            let outcome = run_auth_action(service, action, AuthOptions { offline }, &runtime)
+                .await
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            println!("{}", outcome.message);
+            Ok(())
         }
         Command::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "mediapm", &mut std::io::stdout());
             Ok(())
         }
+    }
+}
+
+/// Maps each parsed auth subcommand to the service and action the API runs.
+///
+/// Kept separate from the command arm so the six pairs are asserted by the
+/// parse test instead of only by a live invocation.
+#[cfg(feature = "cli")]
+#[must_use]
+fn auth_service_and_action(command: AuthCommand) -> (AuthServiceId, AuthAction) {
+    match command {
+        AuthCommand::Musicbrainz { command } => (
+            AuthServiceId::Musicbrainz,
+            match command {
+                MusicbrainzAuthCommand::Login => AuthAction::Login,
+                MusicbrainzAuthCommand::Status => AuthAction::Status,
+                MusicbrainzAuthCommand::Logout => AuthAction::Logout,
+            },
+        ),
+        AuthCommand::Acoustid { command } => (
+            AuthServiceId::Acoustid,
+            match command {
+                AcoustidAuthCommand::Login => AuthAction::Login,
+                AcoustidAuthCommand::Status => AuthAction::Status,
+                AcoustidAuthCommand::Logout => AuthAction::Logout,
+            },
+        ),
     }
 }
 
@@ -925,6 +912,62 @@ mod tests {
         inject_cas_passthrough_defaults, inject_conductor_passthrough_defaults, sync_exit_status,
         tool_sync_exit_status,
     };
+
+    /// Every supported service/action pair parses, carries its own offline
+    /// flag, and maps to the auth API pair the CLI dispatches to.
+    #[test]
+    fn auth_cli_parses_every_service_action_with_the_offline_flag() {
+        let cases = [
+            (
+                vec!["mediapm", "auth", "--offline", "acoustid", "login"],
+                true,
+                mediapm::auth::service::AuthServiceId::Acoustid,
+                mediapm::auth::service::AuthAction::Login,
+            ),
+            (
+                vec!["mediapm", "auth", "acoustid", "status"],
+                false,
+                mediapm::auth::service::AuthServiceId::Acoustid,
+                mediapm::auth::service::AuthAction::Status,
+            ),
+            (
+                vec!["mediapm", "auth", "acoustid", "logout"],
+                false,
+                mediapm::auth::service::AuthServiceId::Acoustid,
+                mediapm::auth::service::AuthAction::Logout,
+            ),
+            (
+                vec!["mediapm", "auth", "--offline", "musicbrainz", "login"],
+                true,
+                mediapm::auth::service::AuthServiceId::Musicbrainz,
+                mediapm::auth::service::AuthAction::Login,
+            ),
+            (
+                vec!["mediapm", "auth", "musicbrainz", "status"],
+                false,
+                mediapm::auth::service::AuthServiceId::Musicbrainz,
+                mediapm::auth::service::AuthAction::Status,
+            ),
+            (
+                vec!["mediapm", "auth", "--offline", "musicbrainz", "logout"],
+                true,
+                mediapm::auth::service::AuthServiceId::Musicbrainz,
+                mediapm::auth::service::AuthAction::Logout,
+            ),
+        ];
+        for (argv, expected_offline, expected_service, expected_action) in cases {
+            let parsed = Cli::try_parse_from(argv.clone()).expect("auth command must parse");
+            let Command::Auth { offline, command } = parsed.command else {
+                panic!("expected auth command")
+            };
+            assert_eq!(offline, expected_offline, "argv: {argv:?}");
+            assert_eq!(
+                super::auth_service_and_action(command),
+                (expected_service, expected_action),
+                "argv: {argv:?}"
+            );
+        }
+    }
 
     #[test]
     fn offline_flag_parses_at_the_auth_level() {
