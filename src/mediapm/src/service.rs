@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use mediapm_cas::{CasApi, CasMaintenanceApi, ConstraintApi, FileSystemCas, InMemoryCas};
 use mediapm_conductor::cache::{Cache, CacheDomainConfig, ENTRY_TTL_SECONDS};
@@ -108,6 +109,25 @@ impl WorkspaceProvisioningCas for InMemoryCas {
     }
 }
 
+/// Tracks whether an awaited [`MediaPmService::shutdown`] has completed.
+#[derive(Debug, Default)]
+struct ServiceShutdownState {
+    /// Set only after the conductor shutdown future resolves successfully.
+    complete: AtomicBool,
+}
+
+impl ServiceShutdownState {
+    /// Returns true when shutdown has completed successfully.
+    fn is_complete(&self) -> bool {
+        self.complete.load(Ordering::Acquire)
+    }
+
+    /// Records successful shutdown completion.
+    fn mark_complete(&self) {
+        self.complete.store(true, Ordering::Release);
+    }
+}
+
 /// Composes CAS + Conductor into the media-facing API and CLI scaffold.
 ///
 /// Type parameter `Cas` selects the content-addressed store backend.
@@ -131,6 +151,8 @@ pub struct MediaPmService<Cas: CasApi + CasMaintenanceApi + ConstraintApi + Send
     /// each rewrite the file from their own map, so the last flush would drop
     /// the other's entries.
     metadata_cache: Arc<MetadataCache>,
+    /// Records whether the awaited shutdown has completed.
+    shutdown_state: ServiceShutdownState,
 }
 
 /// Converts a `PathBuf` into an `Option`, treating empty buffers as `None`
@@ -157,6 +179,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             paths,
             runtime_storage_overrides: MediaRuntimeStorage::default(),
             metadata_cache,
+            shutdown_state: ServiceShutdownState::default(),
         }
     }
 
@@ -168,7 +191,13 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         runtime_storage_overrides: MediaRuntimeStorage,
     ) -> Self {
         let metadata_cache = Arc::new(MetadataCache::open(&paths.workspace_mediapm_cache_dir()));
-        Self { conductor, paths, runtime_storage_overrides, metadata_cache }
+        Self {
+            conductor,
+            paths,
+            runtime_storage_overrides,
+            metadata_cache,
+            shutdown_state: ServiceShutdownState::default(),
+        }
     }
 
     /// Returns a shared reference to the paths layout.
@@ -181,6 +210,23 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     #[must_use]
     pub fn conductor(&self) -> &Conductor<Cas> {
         &self.conductor
+    }
+
+    /// Quiesces the conductor owned by this service.
+    ///
+    /// This method is idempotent after a successful shutdown. A failed
+    /// shutdown does not mark completion, so the caller can retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns the conductor shutdown error unchanged.
+    pub async fn shutdown(&self) -> Result<(), MediaPmError> {
+        if self.shutdown_state.is_complete() {
+            return Ok(());
+        }
+        self.conductor.shutdown().await?;
+        self.shutdown_state.mark_complete();
+        Ok(())
     }
 
     /// Returns a shared reference to the runtime storage overrides.
@@ -1663,6 +1709,19 @@ mod tests {
     use super::*;
     #[cfg(feature = "media-tagger")]
     use crate::config::ToolRegistryEntry;
+
+    /// An awaited shutdown is safe to repeat: the second call observes the
+    /// completion recorded by the first instead of quiescing the conductor
+    /// again.
+    #[tokio::test]
+    async fn service_shutdown_is_idempotent() {
+        let dir = mediapm_utils::temp::output_dir().expect("temp dir");
+        let service = MediaPmService::new_fs_at(dir.path()).await.expect("service opens");
+
+        service.shutdown().await.expect("first shutdown");
+        service.shutdown().await.expect("second shutdown");
+        assert!(service.shutdown_state.is_complete());
+    }
 
     /// `--no-progress` selects an inert terminal instead of a live one.
     ///
