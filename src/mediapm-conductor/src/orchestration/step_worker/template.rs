@@ -1443,7 +1443,13 @@ async fn extract_archive_to_folder(data: &[u8], target_dir: &Path) -> Result<(),
                 ConductorError::Workflow(format!("template: failed to access ZIP entry #{i}: {e}"))
             })?;
 
-            let name = file.mangled_name().to_string_lossy().to_string();
+            let name = file
+                .mangled_name()
+                .map_err(|e| {
+                    ConductorError::Workflow(format!("template: ZIP entry name error: {e}"))
+                })?
+                .to_string_lossy()
+                .to_string();
 
             // Skip directory entries.
             if file.is_dir() || name.ends_with('/') {

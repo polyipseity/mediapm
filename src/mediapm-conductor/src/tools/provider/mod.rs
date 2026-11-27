@@ -1749,8 +1749,11 @@ fn extract_zip(
         let mut file = archive
             .by_index(i)
             .map_err(|e| ConductorError::Workflow(format!("ZIP entry error: {e}")))?;
-        let out_path = target_dir.join(file.name());
-        if file.name().ends_with('/') {
+        let name = file
+            .name()
+            .map_err(|e| ConductorError::Workflow(format!("ZIP entry name error: {e}")))?;
+        let out_path = target_dir.join(&*name);
+        if name.ends_with('/') {
             std::fs::create_dir_all(&out_path)
                 .map_err(|e| ConductorError::io("create directory", &out_path, e))?;
         } else {
@@ -2982,8 +2985,16 @@ mod tests {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&zip_bytes)).unwrap();
         assert_eq!(archive.len(), 2);
 
-        let mut names: Vec<String> =
-            (0..archive.len()).map(|i| archive.by_index(i).unwrap().name().to_string()).collect();
+        let mut names: Vec<String> = (0..archive.len())
+            .map(|i| {
+                archive
+                    .by_index(i)
+                    .expect("zip fixture entry")
+                    .name()
+                    .expect("zip fixture name")
+                    .to_string()
+            })
+            .collect();
         names.sort();
         assert_eq!(names, vec!["a.txt", "sub/b.txt"]);
     }

@@ -78,7 +78,12 @@ pub(super) fn extract_zip_folder_variant_bytes(
             .by_index(i)
             .map_err(|e| MediaPmError::Workflow(format!("failed to read ZIP entry #{i}: {e}")))?;
 
-        let declared_name = entry.name().to_string();
+        let declared_name = entry
+            .name()
+            .map_err(|e| {
+                MediaPmError::Workflow(format!("failed to read ZIP entry #{i} name: {e}"))
+            })?
+            .to_string();
         if declared_member_is_absolute(&declared_name) {
             return Err(MediaPmError::Workflow(format!(
                 "refusing ZIP member '{declared_name}' (#{i}): the declared name is absolute"
@@ -106,10 +111,15 @@ pub(super) fn extract_zip_folder_variant_bytes(
             let mut entry_reader = archive.by_index(i).map_err(|e| {
                 MediaPmError::Workflow(format!("failed to re-open ZIP entry #{i}: {e}"))
             })?;
+            let entry_reader_name = entry_reader
+                .name()
+                .map_err(|e| {
+                    MediaPmError::Workflow(format!("failed to read ZIP entry #{i} name: {e}"))
+                })?
+                .to_string();
             std::io::Read::read_to_end(&mut entry_reader, &mut bytes).map_err(|e| {
                 MediaPmError::Workflow(format!(
-                    "failed to read ZIP entry '{}' (#{i}): {e}",
-                    entry_reader.name()
+                    "failed to read ZIP entry '{entry_reader_name}' (#{i}): {e}"
                 ))
             })?;
             files.push((renamed, bytes));
@@ -299,12 +309,16 @@ fn declared_member_is_absolute(raw_name: &str) -> bool {
 /// # Errors
 ///
 /// Returns a message naming the offending member when the declared name is
-/// absolute, or when [`ZipFile::enclosed_name`] returns `None`.
+/// absolute, when it cannot be decoded, or when [`ZipFile::enclosed_name`]
+/// returns `None`.
 fn enclosed_member_name<R: Read + Seek>(
     entry: &ZipFile<'_, R>,
     index: usize,
 ) -> Result<String, String> {
-    let raw = entry.name().to_string();
+    let raw = entry
+        .name()
+        .map_err(|e| format!("reading ZIP entry #{index} name failed: {e}"))?
+        .to_string();
     if declared_member_is_absolute(&raw) {
         return Err(format!(
             "refusing ZIP member '{raw}' (#{index}): the declared name is absolute"

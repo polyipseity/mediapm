@@ -599,7 +599,7 @@ mod tests {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(data.as_ref())).unwrap();
         assert_eq!(archive.len(), 1);
         let mut entry = archive.by_index(0).unwrap();
-        assert_eq!(entry.name(), "downloads/video.en.vtt");
+        assert_eq!(entry.name().expect("zip fixture entry name"), "downloads/video.en.vtt");
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
         assert_eq!(bytes, b"WEBVTT");
@@ -661,7 +661,14 @@ mod tests {
         assert_eq!(archive.len(), 2);
         let mut names = Vec::new();
         for index in 0..archive.len() {
-            names.push(archive.by_index(index).unwrap().name().to_string());
+            names.push(
+                archive
+                    .by_index(index)
+                    .expect("zip fixture entry")
+                    .name()
+                    .expect("zip fixture entry name")
+                    .to_string(),
+            );
         }
         assert!(names.contains(&"subdir/a.txt".to_string()));
         assert!(names.contains(&"subdir/b.txt".to_string()));
@@ -835,12 +842,15 @@ mod tests {
             cas.get(outputs.records["with_top"].hash_nk.expect("hash")).await.expect("stored");
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(with_top.as_ref())).unwrap();
         assert_eq!(archive.len(), 1);
-        assert_eq!(archive.by_index(0).unwrap().name(), "subdir/a.txt");
+        assert_eq!(
+            archive.by_index(0).unwrap().name().expect("zip fixture entry name"),
+            "subdir/a.txt"
+        );
 
         let flat = cas.get(outputs.records["flat"].hash_nk.expect("hash")).await.expect("stored");
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(flat.as_ref())).unwrap();
         assert_eq!(archive.len(), 1);
-        assert_eq!(archive.by_index(0).unwrap().name(), "a.txt");
+        assert_eq!(archive.by_index(0).unwrap().name().expect("zip fixture entry name"), "a.txt");
     }
 
     /// A `folder_regex:` capture keeps matched sandbox-relative paths as archive
@@ -890,12 +900,18 @@ mod tests {
             cas.get(outputs.records["with_top"].hash_nk.expect("hash")).await.expect("stored");
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(with_top.as_ref())).unwrap();
         assert_eq!(archive.len(), 1);
-        assert_eq!(archive.by_index(0).unwrap().name(), "downloads/video.en.vtt");
+        assert_eq!(
+            archive.by_index(0).unwrap().name().expect("zip fixture entry name"),
+            "downloads/video.en.vtt"
+        );
 
         let flat = cas.get(outputs.records["flat"].hash_nk.expect("hash")).await.expect("stored");
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(flat.as_ref())).unwrap();
         assert_eq!(archive.len(), 1);
-        assert_eq!(archive.by_index(0).unwrap().name(), "video.en.vtt");
+        assert_eq!(
+            archive.by_index(0).unwrap().name().expect("zip fixture entry name"),
+            "video.en.vtt"
+        );
     }
 
     /// A strict `file_regex` capture that matches nothing fails the step.
