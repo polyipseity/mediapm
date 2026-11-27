@@ -95,7 +95,7 @@ mediapm-utils = { path = "src/mediapm-utils", default-features = false }
 url = "2.5.7"
 xz2 = "0.1.7"
 zerocopy = { version = "0.8", features = ["derive"] }
-zip = { version = "8.6.0", default-features = false, features = [
+zip = { version = "9.0.5", default-features = false, features = [
 	"deflate-flate2-zlib-rs",
 ] }
 proptest = "1"
