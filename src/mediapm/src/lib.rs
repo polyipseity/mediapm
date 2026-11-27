@@ -456,6 +456,7 @@ pub fn merge_runtime_storage(
                 &override_value.paths.env_generated_file,
                 &config_value.paths.env_generated_file,
             ),
+            auth_file: pick_path(&override_value.paths.auth_file, &config_value.paths.auth_file),
             mediapm_schema_dir: pick_path(
                 &override_value.paths.mediapm_schema_dir,
                 &config_value.paths.mediapm_schema_dir,

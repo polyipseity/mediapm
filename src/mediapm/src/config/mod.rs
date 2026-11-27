@@ -243,6 +243,10 @@ pub struct RuntimePathsConfig {
     pub env_file: PathBuf,
     #[serde(default)]
     pub env_generated_file: PathBuf,
+    /// Full path to the versioned credential store; empty means
+    /// `<runtime_root>/auth.json`.
+    #[serde(default)]
+    pub auth_file: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

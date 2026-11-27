@@ -73,7 +73,7 @@ The test-runner `test` subcommand runs gates last: nextest, then the unprefixed-
 
 ## Paths layout
 
-`MediaPmPaths` (`src/mediapm/src/paths.rs`) declares exactly 14 fields:
+`MediaPmPaths` (`src/mediapm/src/paths.rs`) declares exactly 15 fields:
 
 | Field | Default | Purpose |
 | --- | --- | --- |
@@ -88,6 +88,7 @@ The test-runner `test` subcommand runs gates last: nextest, then the unprefixed-
 | `mediapm_state_json` | `{runtime_root}/state.json` | MediaPM machine state |
 | `env_file` | `{runtime_root}/.env` | User-authored dotenv |
 | `env_generated_file` | `{runtime_root}/.env.generated` | Machine-generated dotenv |
+| `auth_file` | `{runtime_root}/auth.json` | Versioned credential store; full path override |
 | `schema_export_dir` | `Some({runtime_root}/config/mediapm/)` | MediaPM Nickel contract sources; `None` skips export |
 | `hierarchy_root_dir` | `{root_dir}` | Materialized media library root |
 | `tools_dir` | `{runtime_root}/tools/` | Tool-content unpack directory |

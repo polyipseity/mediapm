@@ -284,11 +284,13 @@ fn spelled_path(knob: &str) -> String {
 /// Every knob absent from `deviations` is written out explicitly — the scalar
 /// ones from [`defaults`], the path ones from
 /// `spelled_path_layout` — so the produced document documents the whole
-/// runtime surface rather than only the interesting parts. Two knobs are left
+/// runtime surface rather than only the interesting parts. Three knobs are left
 /// absent instead: the staging default, because absent already means `in_place`
 /// and spelling it out would restate the default rather than record a decision,
-/// and `path_sanitization`, because the boundary carries no deviation for it and
-/// an absent record means the names are not rewritten.
+/// `path_sanitization`, because the boundary carries no deviation for it and
+/// an absent record means the names are not rewritten, and `auth_file`, because
+/// its default follows the effective `mediapm_dir` rather than a fixed
+/// workspace-relative path.
 #[must_use]
 pub fn runtime_boundary(deviations: RuntimeBoundaryDeviations) -> MediaRuntimeStorageLatest {
     let RuntimeBoundaryDeviations {
@@ -320,6 +322,7 @@ pub fn runtime_boundary(deviations: RuntimeBoundaryDeviations) -> MediaRuntimeSt
             mediapm_schema_dir: Some(spelled_path("mediapm_schema_dir")),
             env_file: Some(spelled_path("env_file")),
             env_generated_file: Some(spelled_path("env_generated_file")),
+            auth_file: None,
         },
         materialization: RuntimeMaterializationConfigLatest {
             materialization_preference_order: Some(
@@ -619,16 +622,16 @@ pub fn evaluate_mod_ncl_expression(expr: &str) -> Result<Value, MediaPmError> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use super::v_latest::{
         MediaRuntimeStorageLatest, RuntimeLifecycleConfigLatest, RuntimePathsConfigLatest,
     };
     use super::{
         RuntimeBoundaryDeviations, resolve_materialization_preference_order,
-        resolve_runtime_storage, runtime_boundary, spelled_path,
+        resolve_runtime_storage, runtime_boundary, spelled_path, validate_v5_document,
     };
-    use crate::config::{MediaRuntimeStorage, RuntimeBasePaths};
+    use crate::config::{MediaPmDocument, MediaRuntimeStorage, RuntimeBasePaths};
     use crate::paths::MediaPmPaths;
 
     /// Verifies an unset boundary path resolves to an empty `PathBuf` rather
@@ -657,6 +660,7 @@ mod tests {
             &resolved.paths.mediapm_schema_dir,
             &resolved.paths.env_file,
             &resolved.paths.env_generated_file,
+            &resolved.paths.auth_file,
         ] {
             assert!(path.as_os_str().is_empty(), "unset boundary path must resolve to empty");
         }
@@ -705,6 +709,33 @@ mod tests {
             MediaRuntimeStorage::default().paths.mediapm_dir,
             "spelled-out paths must survive the round trip into the resolved model"
         );
+    }
+
+    /// Verifies a v5 document can state `runtime.paths.auth_file` and the
+    /// stated path reaches the resolved model.
+    ///
+    /// The Nickel contract closes `runtime.paths` and the Rust boundary uses
+    /// `deny_unknown_fields`, so a key missing from either side would make a
+    /// legal document fail to load or silently fall back to the default auth
+    /// file.
+    #[test]
+    fn parity_v5_runtime_paths_auth_file_reaches_resolved_paths() {
+        let source = r#"{
+          version = 5,
+          runtime = { paths = { auth_file = "/state/custom-auth.json" } },
+        }"#;
+        let value = validate_v5_document(source)
+            .expect("the active Nickel contract must accept runtime.paths.auth_file");
+        assert_eq!(value["runtime"]["paths"]["auth_file"], "/state/custom-auth.json");
+
+        let document: MediaPmDocument = serde_json::from_value(value)
+            .expect("the strict Rust boundary must accept the contract's auth_file key");
+        let resolved = resolve_runtime_storage(
+            &document.runtime,
+            &RuntimeBasePaths { workspace_root: "/w".into(), mediapm_dir: "/m".into() },
+        );
+
+        assert_eq!(resolved.paths.auth_file, PathBuf::from("/state/custom-auth.json"));
     }
 
     /// Verifies a document that states a background GC interval keeps it.

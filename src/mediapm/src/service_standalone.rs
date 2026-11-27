@@ -69,6 +69,7 @@ pub fn resolve_effective_paths_for_root(
         media_state_config: opt_path(&runtime_storage_overrides.paths.mediapm_state_config),
         env_file: opt_path(&runtime_storage_overrides.paths.env_file),
         env_generated_file: opt_path(&runtime_storage_overrides.paths.env_generated_file),
+        auth_file: opt_path(&runtime_storage_overrides.paths.auth_file),
         mediapm_schema_dir: if runtime_storage_overrides
             .paths
             .mediapm_schema_dir
@@ -101,6 +102,20 @@ mod tests {
             !ids.iter().any(|id| id == "flaky@v1"),
             "the flaky test double must never be offered to a document writer"
         );
+    }
+
+    #[test]
+    fn auth_file_override_reaches_effective_paths() {
+        let mut rt = MediaRuntimeStorage::default();
+        rt.paths.auth_file = std::path::PathBuf::from("/elsewhere/auth.json");
+        let paths = resolve_effective_paths_for_root(std::path::Path::new("/workspace"), &rt);
+        assert_eq!(paths.auth_file, std::path::PathBuf::from("/elsewhere/auth.json"));
+    }
+
+    #[test]
+    fn auth_file_defaults_inside_the_runtime_root() {
+        let paths = crate::paths::MediaPmPaths::from_root("/workspace");
+        assert_eq!(paths.auth_file, paths.runtime_root.join("auth.json"));
     }
 
     /// Ensures `resolve_effective_paths_for_root` works with overrides.

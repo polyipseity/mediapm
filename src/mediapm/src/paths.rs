@@ -28,6 +28,8 @@ pub struct MediaPmPathOverrides {
     pub env_file: Option<PathBuf>,
     /// Override for env generated file path.
     pub env_generated_file: Option<PathBuf>,
+    /// Override for the versioned credential store path.
+    pub auth_file: Option<PathBuf>,
     /// Override for the directory the `mediapm.ncl` contract sources are
     /// exported to (`None` = skip the export).
     #[expect(
@@ -60,6 +62,8 @@ pub struct MediaPmPaths {
     pub env_file: PathBuf,
     /// Machine-generated runtime dotenv file.
     pub env_generated_file: PathBuf,
+    /// Versioned credential store (`auth.json`).
+    pub auth_file: PathBuf,
     /// Runtime root for `mediapm`-owned state under the workspace.
     pub runtime_root: PathBuf,
     /// Directory the Nickel contract sources for `mediapm.ncl` are exported
@@ -79,6 +83,7 @@ impl MediaPmPaths {
         let root_dir = root_dir.into();
         let runtime_root = root_dir.join(".mediapm");
         let conductor_tmp_dir = mediapm_utils::temp::runtime_dir_for_workspace(&root_dir);
+        let auth_file = runtime_root.join("auth.json");
 
         Self {
             mediapm_ncl: root_dir.join("mediapm.ncl"),
@@ -93,6 +98,7 @@ impl MediaPmPaths {
             schema_export_dir: Some(runtime_root.join("config").join("mediapm")),
             hierarchy_root_dir: root_dir.clone(),
             tools_dir: runtime_root.join("tools"),
+            auth_file,
             runtime_root,
             root_dir,
         }
@@ -203,6 +209,11 @@ impl MediaPmPaths {
             Some(Some(raw)) => Some(resolve_path(config_dir, raw)),
         };
 
+        let auth_file = overrides
+            .auth_file
+            .clone()
+            .map_or_else(|| runtime_root.join("auth.json"), |raw| resolve_path(config_dir, raw));
+
         Self {
             root_dir: self.root_dir.clone(),
             mediapm_ncl: self.mediapm_ncl.clone(),
@@ -218,6 +229,7 @@ impl MediaPmPaths {
             runtime_root: runtime_root.clone(),
             hierarchy_root_dir,
             tools_dir: runtime_root.join("tools"),
+            auth_file,
         }
     }
 }
@@ -296,6 +308,7 @@ mod tests {
             media_state_config: Some(PathBuf::from("state/custom.state.mediapm.ncl")),
             env_file: Some(PathBuf::from("state/custom.env")),
             env_generated_file: None,
+            auth_file: Some(PathBuf::from("credentials/custom.auth.json")),
             mediapm_schema_dir: Some(Some(PathBuf::from("schemas/mediapm"))),
         };
 
@@ -323,6 +336,7 @@ mod tests {
             root.path().join("state").join("custom.state.mediapm.ncl")
         );
         assert_eq!(resolved.env_file, root.path().join("state").join("custom.env"));
+        assert_eq!(resolved.auth_file, root.path().join("credentials").join("custom.auth.json"));
 
         let resolved_no_schema =
             MediaPmPaths::from_root(root.path()).with_overrides(&MediaPmPathOverrides {
@@ -337,6 +351,7 @@ mod tests {
                     media_state_config: None,
                     env_file: None,
                     env_generated_file: None,
+                    auth_file: None,
                     mediapm_schema_dir: Some(None),
                 }
             });

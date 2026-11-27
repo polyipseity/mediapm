@@ -60,6 +60,10 @@ pub struct RuntimePathsConfigLatest {
     pub env_file: Option<String>,
     #[serde(default)]
     pub env_generated_file: Option<String>,
+    /// Full path to the versioned credential store; `None` leaves the
+    /// `MediaPmPaths` default (`<runtime_root>/auth.json`) in charge.
+    #[serde(default)]
+    pub auth_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -276,6 +280,12 @@ pub fn resolve_runtime_storage(
             env_generated_file: latest
                 .paths
                 .env_generated_file
+                .clone()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_default(),
+            auth_file: latest
+                .paths
+                .auth_file
                 .clone()
                 .map(std::path::PathBuf::from)
                 .unwrap_or_default(),

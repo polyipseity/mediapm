@@ -78,7 +78,7 @@ fn sync_progress_terminal(overrides: SyncProgressOverrides, no_progress: bool) -
 /// at service construction time. Keeps generated, machine-managed, and
 /// local credential files out of version control.
 const MEDIAPM_EXTRA_GITIGNORE: &str =
-    concat!("/cache/\n", "/tools/\n", "/.env.example\n", "/auth/\n");
+    concat!("/cache/\n", "/tools/\n", "/.env.example\n", "/auth.json\n");
 
 /// Resolves the workspace CAS store used for tool payload import and materialization.
 pub(crate) trait WorkspaceProvisioningCas:
@@ -210,6 +210,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             media_state_config: pathbuf_to_opt(merged.paths.mediapm_state_config.clone()),
             env_file: pathbuf_to_opt(merged.paths.env_file.clone()),
             env_generated_file: pathbuf_to_opt(merged.paths.env_generated_file.clone()),
+            auth_file: pathbuf_to_opt(merged.paths.auth_file.clone()),
             mediapm_schema_dir: pathbuf_to_opt(merged.paths.mediapm_schema_dir.clone()).map(Some),
         };
         Ok(self.paths.with_overrides(&overrides))
@@ -1918,10 +1919,10 @@ mod tests {
     }
 
     /// The runtime .gitignore must keep local credentials and generated env
-    /// files out of version control, including the auth token directory.
+    /// files out of version control, including the auth token file.
     #[test]
     fn mediapm_runtime_gitignore_covers_env_and_auth_paths() {
-        for required in ["/.env", "/.env.generated", "/.env.example", "/auth/"] {
+        for required in ["/.env", "/.env.generated", "/.env.example", "/auth.json"] {
             assert!(
                 MEDIAPM_EXTRA_GITIGNORE.contains(required)
                     || mediapm_conductor::runtime_env::CONDUCTOR_GITIGNORE_CONTENT
@@ -1941,7 +1942,7 @@ mod tests {
 
         let content =
             std::fs::read_to_string(runtime_root.join(".gitignore")).expect("read .gitignore");
-        for required in ["/.env", "/.env.generated", "/.env.example", "/auth/"] {
+        for required in ["/.env", "/.env.generated", "/.env.example", "/auth.json"] {
             assert!(
                 content.contains(required),
                 "written runtime .gitignore must contain {required}\ncontent:\n{content}"

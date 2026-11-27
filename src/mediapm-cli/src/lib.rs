@@ -126,6 +126,9 @@ pub struct Cli {
     /// Override for `runtime.env_generated_file`.
     #[arg(long, env = "MEDIAPM_ENV_GENERATED_FILE")]
     pub env_generated_file: Option<PathBuf>,
+    /// Override for `runtime.auth_file`.
+    #[arg(long, env = "MEDIAPM_AUTH_FILE")]
+    pub auth_file: Option<PathBuf>,
     /// Override for `runtime.mediapm_schema_dir`.
     #[arg(long, env = "MEDIAPM_MEDIAPM_SCHEMA_DIR")]
     pub mediapm_schema_dir: Option<PathBuf>,
@@ -436,6 +439,23 @@ pub enum AuthCommand {
         #[command(subcommand)]
         command: MusicbrainzAuthCommand,
     },
+    /// `AcoustID` API key authentication.
+    Acoustid {
+        /// `AcoustID` auth subcommand selector.
+        #[command(subcommand)]
+        command: AcoustidAuthCommand,
+    },
+}
+
+/// `AcoustID` authentication subcommands.
+#[derive(Debug, Subcommand)]
+pub enum AcoustidAuthCommand {
+    /// Store an `AcoustID` API key supplied by a hidden prompt.
+    Login,
+    /// Show whether an `AcoustID` API key is stored.
+    Status,
+    /// Remove the stored `AcoustID` API key.
+    Logout,
 }
 
 /// `MusicBrainz` OAuth subcommands.

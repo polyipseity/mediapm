@@ -287,6 +287,7 @@ let RuntimePathsConfigV5 = {
   mediapm_schema_dir | String | optional,
   env_file | String | optional,
   env_generated_file | String | optional,
+  auth_file | String | optional,
 }
 in
 

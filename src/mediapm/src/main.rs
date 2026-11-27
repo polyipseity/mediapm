@@ -161,6 +161,7 @@ async fn main_cli() -> anyhow::Result<()> {
             mediapm_schema_dir: cli.mediapm_schema_dir.clone().unwrap_or_default(),
             env_file: cli.env_file.clone().unwrap_or_default(),
             env_generated_file: cli.env_generated_file.clone().unwrap_or_default(),
+            auth_file: cli.auth_file.clone().unwrap_or_default(),
         },
         materialization: RuntimeMaterializationConfig::default(),
         cache_root_override: cli_tool_cache_dir.clone(),
@@ -608,6 +609,12 @@ async fn main_cli() -> anyhow::Result<()> {
                         Ok(())
                     }
                 },
+                // The subcommand tree is defined here so the CLI surface is
+                // parseable; the auth dispatch owns the behaviour and is
+                // wired in the following task. Fail closed until then.
+                AuthCommand::Acoustid { .. } => {
+                    anyhow::bail!("acoustid auth is not available in this build")
+                }
             }
         }
         Command::Completions { shell } => {
@@ -929,6 +936,20 @@ mod tests {
         inject_cas_passthrough_defaults, inject_conductor_passthrough_defaults, sync_exit_status,
         tool_sync_exit_status,
     };
+
+    #[test]
+    fn auth_file_cli_flag_is_wired() {
+        let parsed = Cli::try_parse_from([
+            "mediapm",
+            "--auth-file",
+            "/tmp/custom-auth.json",
+            "auth",
+            "acoustid",
+            "status",
+        ])
+        .expect("auth file flag must parse");
+        assert_eq!(parsed.auth_file, Some(std::path::PathBuf::from("/tmp/custom-auth.json")));
+    }
 
     /// Protects no-backcompat policy by rejecting removed hidden internal route.
     #[test]
