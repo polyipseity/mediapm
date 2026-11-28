@@ -2,7 +2,7 @@
 //!
 //! Project instructions and AGENTS.md files all load into agent sessions, so
 //! their combined byte count is the context cost this gate controls. The limit
-//! is 100_000 bytes with no per-file cap.
+//! is `100_000` bytes with no per-file cap.
 
 use std::fs;
 use std::path::{Path, PathBuf};

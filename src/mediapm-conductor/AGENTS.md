@@ -27,11 +27,13 @@
 
 Scrub ambient env; pass only declared names from platform defaults (`runtime.environment.platform_inherited_env_vars`, host entry), `inherited_env_vars`, literal `env_vars`. Literal outranks inherited/platform key; empty value = host value. Non-empty literals inlined as key material; inherited/empty reads provenance only; `conductor tool run` uses same resolver. `mediapm_utils::child_env`; helpers `config/mod.rs` (`default_platform_inherited_env_var_names`, `default_runtime_inherited_env_vars`); resolution `orchestration/step_worker/`, `env_registry.rs`, `cli.rs`.
 
-## Instance key v8
+## Instance key v9 and the instance key secret
 
-- `INSTANCE_KEY_VERSION` + derivation in `src/mediapm-conductor/src/instance_key.rs` (domain `mediapm/conductor/tool call instances/v8`).
-- Covers tool-call id, command key material, declared builtin inputs, env_vars map, v8 output spec, staged `materialized_inputs` (ordered as implemented). Output hashes, timestamps, persistence/save facts, inherited host env values are results/provenance.
-- Forward-only moves; records carry `key_version`/`attempted_key_version_nk`. Pointers `instance_key.rs`, `orchestration/step_worker/cache.rs`, `state/`.
+- `INSTANCE_KEY_VERSION = 9` with derivation in `src/mediapm-conductor/src/instance_key.rs` (domain `mediapm/conductor/tool call instances/v9`). Versions `7` and `8` remain migration inputs only. Records carry `key_version`/`attempted_key_version_nk`.
+- Keyed mode reads the sibling `instance-key-secret.hex` beside the conductor state file. The file holds 64 lowercase hex characters plus one newline, is published through a sibling temporary and rename with Unix mode `0600`, and passes a byte-frequency sanity check under the strict generated format; relaxed loads accept uppercase hex without the newline. State stores only a `KeyedHash` verifier with the `blake3-keyed:` prefix. CAS hashes keep `blake3:`.
+- Force-generate replaces the file and verifier when state records no verifier. Force-disable permits unkeyed mode only with the file gone and overrides a stored verifier. A verifier mismatch is an error.
+- Keyed v9 cannot migrate older unkeyed material: those records miss and re-execute rather than being retroactively privatized. Output hashes, timestamps, persistence facts, and inherited host env values stay results, not key material.
+- Pointers: `instance_key.rs`, `instance_key_secret.rs`, `keyed_hash.rs`, `derived_hash.rs`, `orchestration/step_worker/cache.rs`, `state/`.
 
 ## Locking and workspace safety
 

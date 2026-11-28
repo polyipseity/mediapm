@@ -11,6 +11,12 @@ applyTo: "src/**/*.rs, **/*.ncl"
 - Schema, wire, domain-separator, key-scheme, migration versions are integers: `v1 -> v2 -> v3`; never `v2.1`. SemVer packages/upstream tags out of scope. Scheme change = new integer; delete compatibility branches for unreleased revisions.
 - Keep scheme/schema versions separate when independent; runtime scheme constant belongs to deriving module, not `versions/` wire module.
 
+## Conductor state v7 and instance keys
+
+- Conductor state is V7: `instance_key_secret_verifier` holds a keyed verifier or explicit `null`, and older states migrate to V7 on load. The verifier is not the secret.
+- The active instance-key version is integer `9`. Versions `7` and `8` stay as migration inputs only; new keys are derived at `9`.
+- Keyed digests use the `blake3-keyed:` prefix and can occupy derived key fields. CAS hashes keep `blake3:` and are never keyed.
+
 ## State format reality
 
 - `state.json`: machine-managed pretty JSON, always written (audit, no byte-change detection), not Nickel.
