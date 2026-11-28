@@ -126,10 +126,45 @@ mod tests {
 
     #[test]
     fn keyed_hash_uses_distinct_prefix() {
+        assert_eq!(KEYED_HASH_PREFIX, "blake3-keyed:");
         let value = KeyedHash::hash(&secret(), "test/purpose", b"payload");
         let encoded = serde_json::to_string(&value).expect("keyed hash encodes");
-        assert_eq!(encoded, format!("\"{KEYED_HASH_PREFIX}{}\"", value.as_hex()));
+        assert!(encoded.starts_with("\"blake3-keyed:"));
+        assert_eq!(encoded, format!("\"blake3-keyed:{}\"", value.as_hex()));
         assert!(!encoded.contains("\"blake3:"));
+    }
+
+    #[test]
+    fn composite_separates_tagged_keyed_and_unkeyed_parts() {
+        let bytes = [0x5au8; 32];
+        let keyed = KeyedHash(bytes);
+        let unkeyed = Hash::from_bytes(bytes);
+        let ordered =
+            KeyedHash::composite(&[KeyedHashPart::Keyed(&keyed), KeyedHashPart::Unkeyed(&unkeyed)]);
+        let ordered_again =
+            KeyedHash::composite(&[KeyedHashPart::Keyed(&keyed), KeyedHashPart::Unkeyed(&unkeyed)]);
+        let reversed =
+            KeyedHash::composite(&[KeyedHashPart::Unkeyed(&unkeyed), KeyedHashPart::Keyed(&keyed)]);
+        assert_eq!(ordered, ordered_again);
+        assert_ne!(ordered, reversed);
+        assert_ne!(ordered, keyed);
+        assert_eq!(
+            ordered.as_hex(),
+            "ecdd543ce3c7d4fccda6be2a80cefee026a247812757463b668fbf37d27b57e1"
+        );
+    }
+
+    #[test]
+    fn keyed_hash_rejects_malformed_wire_text_and_round_trips_display() {
+        let uppercase = format!("{KEYED_HASH_PREFIX}{}", "A".repeat(64));
+        let too_short = format!("{KEYED_HASH_PREFIX}{}", "0".repeat(63));
+        let too_long = format!("{KEYED_HASH_PREFIX}{}", "0".repeat(65));
+        for malformed in [uppercase, too_short, too_long] {
+            assert!(malformed.parse::<KeyedHash>().is_err(), "malformed wire text accepted");
+        }
+        let value = KeyedHash::hash(&secret(), "test/purpose", b"payload");
+        let rendered = value.to_string();
+        assert_eq!(rendered.parse::<KeyedHash>().expect("display round trip"), value);
     }
 
     #[test]

@@ -18,13 +18,30 @@ pub struct InstanceKeySecret([u8; 32]);
 impl InstanceKeySecret {
     /// Generates a secret from the operating system CSPRNG.
     ///
+    /// A draw that repeats any byte value more than three times is discarded and
+    /// replaced with a fresh `OsRng` draw until the shared sanity check passes.
+    ///
     /// # Errors
     ///
     /// Reserved for entropy failures; the current implementation always returns `Ok`.
+    /// Redraws are silent and bounded only by the sampler reaching an acceptable draw.
     pub fn generate() -> Result<Self, ConductorError> {
-        let mut bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut bytes);
-        Ok(Self(bytes))
+        loop {
+            let mut bytes = [0u8; 32];
+            OsRng.fill_bytes(&mut bytes);
+            if Self::has_acceptable_byte_distribution(&bytes) {
+                return Ok(Self(bytes));
+            }
+        }
+    }
+
+    /// Applies the byte-frequency sanity check shared by generation and parsing.
+    fn has_acceptable_byte_distribution(bytes: &[u8; 32]) -> bool {
+        let mut counts = [0u8; 256];
+        for byte in *bytes {
+            counts[usize::from(byte)] = counts[usize::from(byte)].saturating_add(1);
+        }
+        counts.into_iter().all(|count| count <= 3)
     }
 
     /// Builds a secret from already-decoded test material.
@@ -55,11 +72,7 @@ impl InstanceKeySecret {
                 "instance key secret must use lowercase hex".to_owned(),
             ));
         }
-        let mut counts = [0u8; 256];
-        for byte in secret.0 {
-            counts[usize::from(byte)] = counts[usize::from(byte)].saturating_add(1);
-        }
-        if counts.into_iter().any(|count| count > 3) {
+        if !Self::has_acceptable_byte_distribution(&secret.0) {
             return Err(ConductorError::Internal(
                 "instance key secret fails the min-entropy sanity check".to_owned(),
             ));
@@ -123,12 +136,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generated_secret_round_trips() {
-        let secret = InstanceKeySecret::generate().expect("secret generates");
-        let encoded = secret.to_generated_bytes();
-        assert_eq!(encoded.len(), 65);
-        assert!(encoded.ends_with(b"\n"));
-        assert_eq!(InstanceKeySecret::parse_generated(&encoded).unwrap(), secret);
+    fn generated_secret_round_trips_under_strict_parse() {
+        for _ in 0..256 {
+            let secret = InstanceKeySecret::generate().expect("secret generates");
+            let encoded = secret.to_generated_bytes();
+            assert_eq!(encoded.len(), 65);
+            assert!(encoded.ends_with(b"\n"));
+            assert_eq!(
+                InstanceKeySecret::parse_generated(&encoded)
+                    .expect("generated secret parses strictly"),
+                secret
+            );
+        }
+    }
+
+    #[test]
+    fn byte_distribution_check_allows_three_repeats_and_rejects_four() {
+        let mut bytes = [0u8; 32];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            *byte = u8::try_from(index / 3).expect("index fits in u8");
+        }
+        assert!(InstanceKeySecret::has_acceptable_byte_distribution(&bytes));
+        bytes[31] = 0;
+        assert!(!InstanceKeySecret::has_acceptable_byte_distribution(&bytes));
+    }
+
+    #[test]
+    fn verifier_is_stable_per_secret_and_differs_between_secrets() {
+        let secret = InstanceKeySecret::from_bytes_for_test([0x11u8; 32]);
+        let other = InstanceKeySecret::from_bytes_for_test([0x22u8; 32]);
+        assert_eq!(secret.verifier(), secret.verifier());
+        assert_ne!(secret.verifier(), other.verifier());
     }
 
     #[test]
