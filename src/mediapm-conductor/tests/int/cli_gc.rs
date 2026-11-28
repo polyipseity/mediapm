@@ -11,7 +11,9 @@
 //! staged blobs, and the state file through the same `encode_state_json` the
 //! conductor saves with - so no in-process conductor exists and no background
 //! pass can race the fixture. The state file is the contract between the two
-//! processes, which is exactly what it is for an operator too.
+//! processes, which is exactly what it is for an operator too. The spawned
+//! invocations run unkeyed because these fixtures store a null verifier, which
+//! keyed boot refuses without replacing the secret.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -139,7 +141,7 @@ async fn the_spawned_gc_pass_starts_the_clock_then_reclaims_the_aged_record() {
     // the record may go in this process or the next. The clock contract
     // itself is pinned in process by `gc.rs`; what this path must show is
     // that the invocation judges and persists the clock.
-    let first = run_binary(&["--conductor-dir", dir_arg, "gc"]);
+    let first = run_binary(&["--no-use-instance-key-secret", "--conductor-dir", dir_arg, "gc"]);
     assert!(
         first.success,
         "the first `conductor gc` must exit successfully; stderr: {}",
@@ -158,7 +160,7 @@ async fn the_spawned_gc_pass_starts_the_clock_then_reclaims_the_aged_record() {
 
     // Pass two: the clock is running by now, so the record's age counts and
     // it goes with its blob, while the seeded record stays.
-    let second = run_binary(&["--conductor-dir", dir_arg, "gc"]);
+    let second = run_binary(&["--no-use-instance-key-secret", "--conductor-dir", dir_arg, "gc"]);
     assert!(
         second.success,
         "the second `conductor gc` must exit successfully; stderr: {}",
@@ -218,7 +220,7 @@ async fn the_spawned_gc_pass_abstains_on_a_workflow_that_never_ran() {
     drop(store);
 
     let dir_arg = dir.path().to_str().expect("tempdir path is utf-8");
-    let run = run_binary(&["--conductor-dir", dir_arg, "gc"]);
+    let run = run_binary(&["--no-use-instance-key-secret", "--conductor-dir", dir_arg, "gc"]);
     assert!(
         run.success,
         "an abstention is a legitimate outcome, so the command exits successfully; stderr: {}",
