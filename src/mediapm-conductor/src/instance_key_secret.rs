@@ -243,11 +243,16 @@ pub fn resolve_secret_mode(
         if present {
             messages
                 .push("instance key secret file is present while secrets are disabled".to_owned());
-            let bytes = std::fs::read(&secret_path).map_err(|err| {
-                ConductorError::Internal(format!("reading instance key secret failed: {err}"))
-            })?;
-            if InstanceKeySecret::parse_relaxed(&bytes).is_err() {
-                messages.push("invalid instance key secret".to_owned());
+            match std::fs::read(&secret_path) {
+                Ok(bytes) => {
+                    if InstanceKeySecret::parse_relaxed(&bytes).is_err() {
+                        messages.push("invalid instance key secret".to_owned());
+                    }
+                }
+                Err(err) => {
+                    // Report only the IO failure, never any file contents.
+                    messages.push(format!("reading instance key secret failed: {err}"));
+                }
             }
         }
         if stored_verifier.is_some() && !policy.force_disable {
@@ -527,15 +532,32 @@ mod tests {
     }
 
     #[test]
+    fn relaxed_keyed_load_accepts_uppercase_hex_without_newline() {
+        let root = mediapm_utils::temp::output_dir().expect("temp root");
+        let state_path = root.path().join("state.conductor.json");
+        let uppercase = b"0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+        std::fs::write(secret_path_for_state(&state_path), uppercase).expect("secret bytes wrote");
+        let (mode, verifier) = resolve_secret_mode(
+            InstanceKeySecretPolicy {
+                use_secret: true,
+                require_generated_format: false,
+                force_generate: false,
+                force_disable: false,
+            },
+            &state_path,
+            None,
+        )
+        .expect("relaxed load accepts uppercase hex without a newline");
+        assert!(matches!(mode, ResolvedSecretMode::Keyed(_)), "{mode:?}");
+        assert!(verifier.is_some());
+    }
+
+    #[test]
     fn disabled_secret_with_invalid_present_secret_reports_both_errors() {
         let root = mediapm_utils::temp::output_dir().expect("temp root");
         let state_path = root.path().join("state.conductor.json");
         let secret_path = secret_path_for_state(&state_path);
-        std::fs::write(
-            &secret_path,
-            InstanceKeySecret::from_bytes_for_test([0x22; 32]).to_generated_bytes(),
-        )
-        .unwrap();
+        std::fs::write(&secret_path, b"not-hex-at-all\n").expect("invalid bytes wrote");
         let secret = InstanceKeySecret::from_bytes_for_test([7; 32]);
         let error = resolve_secret_mode(
             InstanceKeySecretPolicy {
@@ -547,13 +569,41 @@ mod tests {
             &state_path,
             Some(secret.verifier()),
         )
-        .expect_err("both errors are reported");
+        .expect_err("all applicable reasons are reported");
         let message = error.to_string();
         assert!(
             message.contains("instance key secret file is present while secrets are disabled"),
             "{message}"
         );
         assert!(message.contains("state used an instance key secret"), "{message}");
+        assert!(message.contains("invalid instance key secret"), "{message}");
+    }
+
+    #[test]
+    fn disabled_secret_with_unreadable_file_reports_all_reasons() {
+        let root = mediapm_utils::temp::output_dir().expect("temp root");
+        let state_path = root.path().join("state.conductor.json");
+        let secret_path = secret_path_for_state(&state_path);
+        std::fs::create_dir(&secret_path).expect("a directory cannot be read as secret bytes");
+        let secret = InstanceKeySecret::from_bytes_for_test([7; 32]);
+        let error = resolve_secret_mode(
+            InstanceKeySecretPolicy {
+                use_secret: false,
+                require_generated_format: true,
+                force_generate: false,
+                force_disable: false,
+            },
+            &state_path,
+            Some(secret.verifier()),
+        )
+        .expect_err("all applicable reasons are reported");
+        let message = error.to_string();
+        assert!(
+            message.contains("instance key secret file is present while secrets are disabled"),
+            "{message}"
+        );
+        assert!(message.contains("state used an instance key secret"), "{message}");
+        assert!(message.contains("reading instance key secret failed"), "{message}");
     }
 
     #[cfg(unix)]
