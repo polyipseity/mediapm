@@ -262,13 +262,15 @@ mod tests {
                 &parts,
                 &resolved.values,
                 &bindings,
-                &BTreeMap::new()
+                &BTreeMap::new(),
+                &crate::instance_key_secret::ResolvedSecretMode::Unkeyed
             ),
             crate::instance_key::key_material_for_tool(
                 &parts,
                 &other_values,
                 &bindings,
-                &BTreeMap::new()
+                &BTreeMap::new(),
+                &crate::instance_key_secret::ResolvedSecretMode::Unkeyed
             ),
             "a binding that reads only the host must key its text, not the branch it selects",
         );
@@ -281,7 +283,8 @@ mod tests {
                 &parts,
                 &resolved.values,
                 &bindings,
-                &BTreeMap::new()
+                &BTreeMap::new(),
+                &crate::instance_key_secret::ResolvedSecretMode::Unkeyed
             )[1],
             composed,
             "the term is the binding's text composed with the part that reads it",

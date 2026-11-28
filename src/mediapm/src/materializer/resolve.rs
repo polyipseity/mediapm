@@ -3,8 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
+use mediapm_conductor::instance_key_secret::ResolvedSecretMode;
 use mediapm_conductor::{
-    ConductorState, NickelDocument, ToolCallInstance, merge_step_input_bindings,
+    ConductorState, DerivedHash, NickelDocument, ToolCallInstance, merge_step_input_bindings,
 };
 
 use crate::conductor_bridge::sync::{ToolDeployments, find_active_tool_spec};
@@ -719,6 +720,9 @@ async fn derive_step_work_material(
         &step.outputs,
         &merged_step_inputs,
         &resolved_values.values,
+        // The service constructs its conductor in unkeyed mode; the oracle must
+        // match the mode used for execution.
+        &ResolvedSecretMode::Unkeyed,
     );
     Ok(WorkMaterialResolution { material: Some(material), unresolved })
 }
@@ -759,7 +763,7 @@ async fn resolve_step_output_hashes(
     let required_output_names =
         required_step_output_names.get(&step.id).cloned().unwrap_or_default();
 
-    let candidates: Vec<(&Hash, &ToolCallInstance)> = state
+    let candidates: Vec<(&DerivedHash, &ToolCallInstance)> = state
         .tool_call_instances
         .iter()
         .filter(|(_, instance)| {
@@ -772,7 +776,12 @@ async fn resolve_step_output_hashes(
 
     if let Some(material) = &work.material
         && let Some((_, instance)) = candidates.iter().find(|(key, instance)| {
-            mediapm_conductor::instance_matches_work(**key, instance, material)
+            mediapm_conductor::instance_matches_work(
+                **key,
+                instance,
+                material,
+                &ResolvedSecretMode::Unkeyed,
+            )
         })
     {
         return Ok(Some(output_hashes_from_instance(instance)));
@@ -1353,7 +1362,7 @@ mod tests {
     }
 
     /// Returns the recorded key of the fixture's import instance.
-    fn import_instance_key(state: &ConductorState) -> Hash {
+    fn import_instance_key(state: &ConductorState) -> DerivedHash {
         *state
             .tool_call_instances
             .iter()
@@ -1470,9 +1479,10 @@ mod tests {
             .find(|(_, instance)| instance.tool_call_id == "import@v1")
             .map(|(_, instance)| instance.clone())
             .expect("recorded import instance");
-        duplicated
-            .tool_call_instances
-            .insert(Hash::from_content(b"a-second-record-for-the-same-tool"), recorded);
+        duplicated.tool_call_instances.insert(
+            DerivedHash::from(Hash::from_content(b"a-second-record-for-the-same-tool")),
+            recorded,
+        );
 
         let after = resolve_workflow_step_output_hashes(
             &cas,
@@ -1601,8 +1611,13 @@ mod tests {
                 &values.values,
                 &merged,
                 &mediapm_conductor::tool_literal_env_vars(tool_spec),
+                &ResolvedSecretMode::Unkeyed,
             );
-            let instance_key = derive_tool_call_instance_key(tool_call_id, &key_material);
+            let instance_key = derive_tool_call_instance_key(
+                tool_call_id,
+                &key_material,
+                &ResolvedSecretMode::Unkeyed,
+            );
 
             let mut outputs = BTreeMap::new();
             for output_name in step.outputs.keys() {
@@ -1837,6 +1852,7 @@ mod tests {
             &ffmpeg_step.outputs,
             &merged_ffmpeg_inputs,
             &resolved_values.values,
+            &ResolvedSecretMode::Unkeyed,
         );
         let ffmpeg_instance = state
             .tool_call_instances
@@ -1844,7 +1860,12 @@ mod tests {
             .find(|(instance_key, instance)| {
                 (instance.tool_call_id == ffmpeg_step.tool
                     || instance.tool_call_id == *conductor_tool_key)
-                    && mediapm_conductor::instance_matches_work(**instance_key, instance, &material)
+                    && mediapm_conductor::instance_matches_work(
+                        **instance_key,
+                        instance,
+                        &material,
+                        &ResolvedSecretMode::Unkeyed,
+                    )
             })
             .expect("ffmpeg instance matching step inputs");
         assert!(ffmpeg_instance.1.outputs.contains_key("primary"));
@@ -2277,6 +2298,43 @@ mod tests {
     /// its declared inputs' slots: a dropped slot would let two inputs collide
     /// under distinct names.
     ///
+    /// The oracle reprojects one step's command terms, capture tokens and
+    /// staged inputs in both digest modes. Keyed mode changes the instance key,
+    /// but the CAS hashes the captures record stay ordinary unkeyed hashes.
+    #[test]
+    fn v9_oracle_reprojects_the_same_work_in_both_modes() {
+        use mediapm_conductor::instance_key_secret::{InstanceKeySecret, ResolvedSecretMode};
+
+        let command_terms = vec![DerivedHash::Unkeyed(Hash::from_content(b"part"))];
+        let tokens = BTreeMap::from([("out".to_owned(), "capture-token".to_owned())]);
+        let staged = BTreeMap::from([("dest".to_owned(), Hash::from_content(b"staged bytes"))]);
+        let unkeyed = mediapm_conductor::derive_instance_key_v9(
+            "tool@v1",
+            &command_terms,
+            &tokens,
+            &staged,
+            ResolvedSecretMode::Unkeyed,
+        );
+        let secret = InstanceKeySecret::parse_relaxed(&[b'1'; 64])
+            .expect("a relaxed test secret is valid hex");
+        let keyed = mediapm_conductor::derive_instance_key_v9(
+            "tool@v1",
+            &command_terms,
+            &tokens,
+            &staged,
+            ResolvedSecretMode::Keyed(secret.clone()),
+        );
+        assert_ne!(unkeyed, keyed, "the digest mode is part of instance identity");
+        assert!(keyed.to_string().starts_with("blake3-keyed:"));
+        assert!(unkeyed.to_string().starts_with("blake3:"));
+
+        let captured = Hash::from_content(b"captured bytes");
+        assert!(
+            captured.to_string().starts_with("blake3:"),
+            "capture output hashes are CAS hashes in both modes",
+        );
+    }
+
     /// The composition is written out here rather than delegated to
     /// `key_material_for_tool`: a test that calls the code under test cannot
     /// detect that code being wrong. Resolution — which bytes a binding names —
@@ -2413,10 +2471,10 @@ mod tests {
         generated: &NickelDocument,
         state: &ConductorState,
         workflow: &mediapm_conductor::WorkflowSpec,
-    ) -> Result<Vec<(String, String, Hash)>, String> {
+    ) -> Result<Vec<(String, String, DerivedHash)>, String> {
         let mut step_outputs = StepOutputHashes::new();
-        let mut claimed: BTreeSet<Hash> = BTreeSet::new();
-        let mut paired = Vec::new();
+        let mut claimed: BTreeSet<DerivedHash> = BTreeSet::new();
+        let mut paired: Vec<(String, String, DerivedHash)> = Vec::new();
 
         for step in &workflow.steps {
             let (tool_call_id, tool_spec) =
@@ -2484,7 +2542,7 @@ mod tests {
                     continue;
                 }
                 let derived = oracle_instance_key(instance, &key_material);
-                diagnostics.push(format!("{} -> {}", stored_key.to_hex(), derived.to_hex()));
+                diagnostics.push(format!("{stored_key} -> {derived}"));
                 if derived == *stored_key {
                     candidates.push((stored_key, instance));
                 }
@@ -2508,7 +2566,7 @@ mod tests {
                 .tool_call_instances
                 .keys()
                 .filter(|key| !claimed.contains(key))
-                .map(Hash::to_hex)
+                .map(|key: &DerivedHash| key.to_string())
                 .collect::<Vec<_>>();
             return Err(format!(
                 "{} recorded instance(s) are claimed by no workflow step: {unpaired:?}",
@@ -2585,17 +2643,14 @@ mod tests {
         for (step_id, tool_call_id, key) in &paired {
             let instance = state.tool_call_instances.get(key).unwrap_or_else(|| {
                 panic!(
-                    "step '{step_id}' ({tool_call_id}) derives key {} that the fixture does not \
+                    "step '{step_id}' ({tool_call_id}) derives key {key} that the fixture does not \
                      record",
-                    key.to_hex(),
                 )
             });
             assert_eq!(
-                instance.tool_call_id,
-                *tool_call_id,
+                instance.tool_call_id, *tool_call_id,
                 "step '{step_id}' derives key {} but the fixture records tool '{}' under it",
-                key.to_hex(),
-                instance.tool_call_id,
+                key, instance.tool_call_id,
             );
         }
     }
@@ -2667,7 +2722,8 @@ mod tests {
             .expect("recorded import instance");
         let import_instance =
             state.tool_call_instances.remove(&import_key).expect("recorded import instance");
-        let stale_key = Hash::from_content(b"task-6-oracle-stale-key-perturbation");
+        let stale_key =
+            DerivedHash::from(Hash::from_content(b"task-6-oracle-stale-key-perturbation"));
         assert_ne!(stale_key, import_key, "the perturbation must move the key");
         state.tool_call_instances.insert(stale_key, import_instance);
 
@@ -2698,7 +2754,7 @@ mod tests {
 
         let import_key = import_instance_key(&state);
         let stray = state.tool_call_instances[&import_key].clone();
-        let stray_key = Hash::from_content(b"task-4-oracle-unclaimed-instance");
+        let stray_key = DerivedHash::from(Hash::from_content(b"task-4-oracle-unclaimed-instance"));
         assert_ne!(stray_key, import_key, "the stray record needs a key of its own");
         state.tool_call_instances.insert(stray_key, stray);
 
@@ -2710,7 +2766,7 @@ mod tests {
             "the diagnostic must report the unclaimed count: {error}",
         );
         assert!(
-            error.contains(&stray_key.to_hex()),
+            error.contains(&stray_key.to_string()),
             "the diagnostic must name the unclaimed instance: {error}",
         );
     }
@@ -2725,7 +2781,7 @@ mod tests {
     #[derive(Debug)]
     struct DemoInstanceKeyRewrite {
         /// Key the claiming steps' inputs derive today.
-        current_key: Hash,
+        current_key: DerivedHash,
         /// Steps whose recorded `step_ids` names this instance, in id order.
         claiming_steps: BTreeSet<String>,
     }
@@ -2800,6 +2856,7 @@ mod tests {
             &step.outputs,
             &merged,
             &resolved_values.values,
+            &ResolvedSecretMode::Unkeyed,
         ))
     }
 
@@ -2842,9 +2899,9 @@ mod tests {
         generated: &NickelDocument,
         state: &ConductorState,
         workflow: &mediapm_conductor::WorkflowSpec,
-    ) -> Result<BTreeMap<Hash, DemoInstanceKeyRewrite>, String> {
+    ) -> Result<BTreeMap<DerivedHash, DemoInstanceKeyRewrite>, String> {
         let mut step_outputs: BTreeMap<String, BTreeMap<String, Option<Hash>>> = BTreeMap::new();
-        let mut rewrites: BTreeMap<Hash, DemoInstanceKeyRewrite> = BTreeMap::new();
+        let mut rewrites: BTreeMap<DerivedHash, DemoInstanceKeyRewrite> = BTreeMap::new();
         for step in &workflow.steps {
             let Some(active_tool_key) =
                 find_active_tool_spec(generated, &ToolDeployments::empty(), &step.tool)
@@ -2874,20 +2931,15 @@ mod tests {
                 return Err(format!(
                     "step '{}' pairs with instance {} recorded for tool '{}', but the step's \
                      active tool is '{}'",
-                    step.id,
-                    stored_key.to_hex(),
-                    instance.tool_call_id,
-                    active_tool_key,
+                    step.id, stored_key, instance.tool_call_id, active_tool_key,
                 ));
             }
             let current_key = key_material
-                .key_at(&instance.tool_call_id, instance.key_version)
+                .key_at(&instance.tool_call_id, instance.key_version, &ResolvedSecretMode::Unkeyed)
                 .ok_or_else(|| {
                     format!(
                         "step '{}' cannot derive key version {} for instance {}",
-                        step.id,
-                        instance.key_version,
-                        stored_key.to_hex(),
+                        step.id, instance.key_version, stored_key,
                     )
                 })?;
             if let Some(rewrite) = rewrites.get_mut(stored_key) {
@@ -2896,10 +2948,7 @@ mod tests {
                     return Err(format!(
                         "steps '{known_step}' and '{}' disagree about instance {}'s key: {} and \
                          {}",
-                        step.id,
-                        stored_key.to_hex(),
-                        rewrite.current_key.to_hex(),
-                        current_key.to_hex(),
+                        step.id, stored_key, rewrite.current_key, current_key,
                     ));
                 }
                 rewrite.claiming_steps.insert(step.id.clone());
@@ -2954,20 +3003,16 @@ mod tests {
         );
         for (stored_key, rewrite) in &rewrites {
             assert_eq!(
-                rewrite.current_key,
-                *stored_key,
+                rewrite.current_key, *stored_key,
                 "steps {:?} derive {} for the instance the fixture records under {}, so either \
                  the derived key or the pairing is wrong",
-                rewrite.claiming_steps,
-                rewrite.current_key.to_hex(),
-                stored_key.to_hex(),
+                rewrite.claiming_steps, rewrite.current_key, stored_key,
             );
             let instance = &state.tool_call_instances[stored_key];
             for step_id in &rewrite.claiming_steps {
                 assert!(
                     records_step(instance, step_id),
-                    "step {step_id} claims instance {} it did not record",
-                    stored_key.to_hex(),
+                    "step {step_id} claims instance {stored_key} it did not record",
                 );
             }
         }
@@ -3001,7 +3046,7 @@ mod tests {
             "the diagnostic must name the second step: {error}",
         );
         assert!(
-            error.contains(&import_instance_key(&state).to_hex()),
+            error.contains(&import_instance_key(&state).to_string()),
             "the diagnostic must name the instance: {error}",
         );
     }
@@ -3112,7 +3157,7 @@ mod tests {
             .expect_err("an instance recorded for another tool must be refused");
         assert!(error.contains(IMPORT_STEP_ID), "the diagnostic must name the step: {error}");
         assert!(
-            error.contains(&import_key.to_hex()),
+            error.contains(&import_key.to_string()),
             "the diagnostic must name the instance: {error}",
         );
         assert!(
@@ -3236,13 +3281,12 @@ mod tests {
                 rewrites.contains_key(stored_key),
                 "instance {} ({}) is claimed by no step's recorded provenance; \
                  refusing to rewrite a key this fixture cannot prove the instance owns",
-                stored_key.to_hex(),
+                stored_key,
                 instance.tool_call_id,
             );
             assert!(
                 !instance.step_ids_nk.is_empty(),
-                "instance {} records no step, so no step can pair with it",
-                stored_key.to_hex(),
+                "instance {stored_key} records no step, so no step can pair with it",
             );
         }
         for (stored_key, rewrite) in &rewrites {
@@ -3253,8 +3297,7 @@ mod tests {
             for step_id in &rewrite.claiming_steps {
                 assert!(
                     records_step(instance, step_id),
-                    "instance {} must name step '{step_id}' as a step it served",
-                    stored_key.to_hex(),
+                    "instance {stored_key} must name step '{step_id}' as a step it served",
                 );
             }
         }
@@ -3265,9 +3308,7 @@ mod tests {
             .map(|(stored_key, rewrite)| {
                 format!(
                     "{} (steps {:?}) derives {}",
-                    stored_key.to_hex(),
-                    rewrite.claiming_steps,
-                    rewrite.current_key.to_hex(),
+                    stored_key, rewrite.claiming_steps, rewrite.current_key,
                 )
             })
             .collect();
@@ -3306,7 +3347,7 @@ mod tests {
     fn rewrite_demo_conductor_state_fixture(
         path: &Path,
         state: &ConductorState,
-        rewrites: &BTreeMap<Hash, DemoInstanceKeyRewrite>,
+        rewrites: &BTreeMap<DerivedHash, DemoInstanceKeyRewrite>,
     ) {
         let original_bytes = std::fs::read(path).expect("read demo conductor state fixture");
         let mut rewritten =
@@ -3319,16 +3360,13 @@ mod tests {
         let mut changed = 0usize;
         for (stored_key, rewrite) in rewrites {
             if rewrite.current_key == *stored_key {
-                println!(
-                    "steps {:?}: {} already current",
-                    rewrite.claiming_steps,
-                    stored_key.to_hex(),
-                );
+                println!("steps {:?}: {} already current", rewrite.claiming_steps, stored_key);
                 continue;
             }
-            let instance = rewritten.tool_call_instances.remove(stored_key).unwrap_or_else(|| {
-                panic!("instance key {} is not in the fixture", stored_key.to_hex())
-            });
+            let instance = rewritten
+                .tool_call_instances
+                .remove(stored_key)
+                .unwrap_or_else(|| panic!("instance key {stored_key} is not in the fixture"));
             for steps in rewritten.step_instances.values_mut() {
                 for key in steps.values_mut() {
                     if *key == *stored_key {
@@ -3339,13 +3377,11 @@ mod tests {
             assert!(
                 rewritten.tool_call_instances.insert(rewrite.current_key, instance).is_none(),
                 "instance key {} is already recorded",
-                rewrite.current_key.to_hex(),
+                rewrite.current_key,
             );
             println!(
                 "steps {:?}: {} -> {}",
-                rewrite.claiming_steps,
-                stored_key.to_hex(),
-                rewrite.current_key.to_hex(),
+                rewrite.claiming_steps, stored_key, rewrite.current_key,
             );
             changed += 1;
         }
@@ -3613,7 +3649,7 @@ mod tests {
 
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
-            primary_key,
+            DerivedHash::from(primary_key),
             infojson_instance(
                 primary_hash,
                 2_000_000_000,
@@ -3621,7 +3657,7 @@ mod tests {
             ),
         );
         state.tool_call_instances.insert(
-            sidecar_key,
+            DerivedHash::from(sidecar_key),
             infojson_instance(
                 sidecar_hash,
                 1_000_000_000,
@@ -3684,11 +3720,11 @@ mod tests {
 
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
-            Hash::from_content(b"first-instance"),
+            DerivedHash::from(Hash::from_content(b"first-instance")),
             infojson_instance(hash, 2, Some(infojson_step_ref("mediapm.media.test"))),
         );
         state.tool_call_instances.insert(
-            Hash::from_content(b"second-instance"),
+            DerivedHash::from(Hash::from_content(b"second-instance")),
             infojson_instance(hash, 1, Some(infojson_step_ref("mediapm.media.test"))),
         );
 
@@ -3779,7 +3815,7 @@ mod tests {
 
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
-            Hash::from_content(b"empty-infojson-instance"),
+            DerivedHash::from(Hash::from_content(b"empty-infojson-instance")),
             ToolCallInstance {
                 key_version: 8,
                 attempted_key_version_nk: 8,
@@ -3888,12 +3924,13 @@ mod tests {
 
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
-            Hash::from_content(b"named-instance"),
+            DerivedHash::from(Hash::from_content(b"named-instance")),
             infojson_instance(named_hash, 1, Some(infojson_step_ref("mediapm.media.test"))),
         );
-        state
-            .tool_call_instances
-            .insert(Hash::from_content(b"other-instance"), infojson_instance(other_hash, 2, None));
+        state.tool_call_instances.insert(
+            DerivedHash::from(Hash::from_content(b"other-instance")),
+            infojson_instance(other_hash, 2, None),
+        );
 
         let workflow = infojson_workflow();
         let step_outputs = resolve_workflow_step_output_hashes(
@@ -3932,7 +3969,7 @@ mod tests {
 
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
-            Hash::from_content(b"legacy-instance"),
+            DerivedHash::from(Hash::from_content(b"legacy-instance")),
             infojson_instance(hash, 1, Some(infojson_step_ref(""))),
         );
         // The tool has to resolve for the pass to run at all, and the record
@@ -3974,7 +4011,7 @@ mod tests {
 
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
-            Hash::from_content(b"primary-instance"),
+            DerivedHash::from(Hash::from_content(b"primary-instance")),
             infojson_instance(
                 primary_hash,
                 2_000_000_000,
@@ -3982,7 +4019,7 @@ mod tests {
             ),
         );
         state.tool_call_instances.insert(
-            Hash::from_content(b"sidecar-instance"),
+            DerivedHash::from(Hash::from_content(b"sidecar-instance")),
             infojson_instance(
                 sidecar_hash,
                 1_000_000_000,
@@ -4494,7 +4531,9 @@ mod tests {
         instance.step_ids_nk.insert(infojson_step_ref("mediapm.media.second"));
 
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(Hash::from_content(b"two-workflow-instance"), instance);
+        state
+            .tool_call_instances
+            .insert(DerivedHash::from(Hash::from_content(b"two-workflow-instance")), instance);
 
         let named = |name: &str| {
             let mut workflow = infojson_workflow();
@@ -4555,7 +4594,7 @@ mod tests {
 
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
-            Hash::from_content(b"other-workflow-instance"),
+            DerivedHash::from(Hash::from_content(b"other-workflow-instance")),
             infojson_instance(other_hash, 1, Some(infojson_step_ref("mediapm.media.other"))),
         );
 
@@ -4639,11 +4678,12 @@ mod tests {
         let second_key = Hash::from_content(b"second-two-output-instance");
 
         let mut state = ConductorState::new_empty();
-        state
-            .tool_call_instances
-            .insert(first_key, two_output_instance(shared_hash, first_description, 2_000_000_000));
         state.tool_call_instances.insert(
-            second_key,
+            DerivedHash::from(first_key),
+            two_output_instance(shared_hash, first_description, 2_000_000_000),
+        );
+        state.tool_call_instances.insert(
+            DerivedHash::from(second_key),
             two_output_instance(shared_hash, second_description, 1_000_000_000),
         );
 
@@ -4703,7 +4743,7 @@ mod tests {
         let media_id = "youtube.dQw4w9WgXcQ";
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
-            Hash::from_content(b"lone-instance"),
+            DerivedHash::from(Hash::from_content(b"lone-instance")),
             infojson_instance(
                 lost_hash,
                 1,
@@ -4813,7 +4853,7 @@ mod tests {
         let media_id = "youtube.dQw4w9WgXcQ";
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
-            Hash::from_content(b"corrupt-instance"),
+            DerivedHash::from(Hash::from_content(b"corrupt-instance")),
             infojson_instance(
                 unreadable,
                 1,
@@ -4963,7 +5003,7 @@ mod tests {
         let mut state = ConductorState::new_empty();
         let instance_key = Hash::from_content(b"infojson-instance");
         state.tool_call_instances.insert(
-            instance_key,
+            DerivedHash::from(instance_key),
             ToolCallInstance {
                 key_version: 8,
                 attempted_key_version_nk: 8,
@@ -5099,7 +5139,7 @@ mod tests {
 
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
-            Hash::from_content(b"primary-download-instance"),
+            DerivedHash::from(Hash::from_content(b"primary-download-instance")),
             ToolCallInstance {
                 key_version: 8,
                 attempted_key_version_nk: 8,
@@ -5264,7 +5304,7 @@ mod tests {
         let instance_key = Hash::from_content(b"versioned-yt-dlp-instance");
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
-            instance_key,
+            DerivedHash::from(instance_key),
             ToolCallInstance {
                 key_version: 8,
                 attempted_key_version_nk: 8,
@@ -5590,10 +5630,15 @@ mod tests {
             &step.outputs,
             &merged,
             &BTreeMap::new(),
+            &ResolvedSecretMode::Unkeyed,
         );
         let conductor_tool_key = "yt-dlp".to_string();
         let stored_key = material
-            .key_at(&conductor_tool_key, mediapm_conductor::INSTANCE_KEY_VERSION)
+            .key_at(
+                &conductor_tool_key,
+                mediapm_conductor::INSTANCE_KEY_VERSION,
+                &ResolvedSecretMode::Unkeyed,
+            )
             .expect("v8 key");
 
         let mut state = ConductorState::new_empty();
@@ -5638,16 +5683,16 @@ mod tests {
 
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
-            old_key,
+            DerivedHash::from(old_key),
             infojson_instance(old_hash, 1, Some(infojson_step_ref(&workflow.name))),
         );
         state.tool_call_instances.insert(
-            new_key,
+            DerivedHash::from(new_key),
             infojson_instance(new_hash, 2, Some(infojson_step_ref(&workflow.name))),
         );
         state.step_instances.insert(
             workflow.name.clone(),
-            BTreeMap::from([(INFOJSON_STEP_ID.to_string(), new_key)]),
+            BTreeMap::from([(INFOJSON_STEP_ID.to_string(), DerivedHash::from(new_key))]),
         );
 
         let resolved = resolve_workflow_step_output_hashes(

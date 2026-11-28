@@ -150,6 +150,7 @@ pub(crate) async fn spawn_step_worker_pool<C: CasApi + ConstraintApi + Send + Sy
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::derived_hash::DerivedHash;
     use crate::instance_key::derive_instance_key;
     use crate::orchestration::protocol::StepOutputs;
     use crate::state::ResolvedInput;
@@ -187,11 +188,21 @@ mod tests {
     #[test]
     fn derive_instance_key_is_deterministic() {
         let inputs = [ResolvedInput { key: "message".to_string(), value: "hello".to_string() }];
-        let args: Vec<Hash> =
-            inputs.iter().map(|i| Hash::from_content(i.value.as_bytes())).collect();
+        let args: Vec<DerivedHash> = inputs
+            .iter()
+            .map(|i| DerivedHash::from(Hash::from_content(i.value.as_bytes())))
+            .collect();
 
-        let key1 = derive_instance_key("test_tool", &args);
-        let key2 = derive_instance_key("test_tool", &args);
+        let key1 = derive_instance_key(
+            "test_tool",
+            &args,
+            crate::instance_key_secret::ResolvedSecretMode::Unkeyed,
+        );
+        let key2 = derive_instance_key(
+            "test_tool",
+            &args,
+            crate::instance_key_secret::ResolvedSecretMode::Unkeyed,
+        );
         assert_eq!(key1, key2);
     }
 

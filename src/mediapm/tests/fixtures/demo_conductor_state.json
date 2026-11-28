@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "conductor_gc_ran_at": 0,
   "step_instances": {
     "mediapm.media.demo.local.dQw4w9WgXcQ": {
@@ -278,5 +278,6 @@
         }
       ]
     }
-  }
+  },
+  "instance_key_secret_verifier": null
 }

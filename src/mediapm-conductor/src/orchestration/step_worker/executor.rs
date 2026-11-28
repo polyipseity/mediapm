@@ -14,7 +14,11 @@ use mediapm_utils::Timestamp;
 use crate::config::OutputCaptureSpec;
 use crate::derived_hash::DerivedHash;
 use crate::error::ConductorError;
-use crate::instance_key::{INSTANCE_KEY_VERSION, input_binding_to_string};
+use crate::instance_key::{
+    INSTANCE_KEY_VERSION, derive_instance_key_v9, input_binding_to_string,
+    instance_key_hash_from_resolved_value_bytes,
+};
+use crate::instance_key_secret::ResolvedSecretMode;
 use crate::orchestration::protocol::{
     StepExecutionBundle, StepExecutionRequest, UnifiedToolSpec, find_tool_entry_by_name,
 };
@@ -42,9 +46,9 @@ struct DispatchedExecution {
     /// Key material in order, one hash per key-material part (a builtin's
     /// inputs by name; a command's parts in argv order).
     ///
-    /// Hashes alone, and exactly the list the instance key composes, so the
-    /// recorded argv and the key material cannot drift apart.
-    command_args: Vec<Hash>,
+    /// Digests in the run's mode, and exactly the list the instance key
+    /// composes, so the recorded argv and the key material cannot drift apart.
+    command_args: Vec<DerivedHash>,
     /// Inputs the command's selectors staged, keyed by sandbox-relative
     /// destination (empty for a builtin, which has no command parts).
     materialized_inputs: BTreeMap<String, Hash>,
@@ -58,7 +62,7 @@ async fn dispatch_tool_execution<C: CasApi + ConstraintApi + Send + Sync>(
     request: &StepExecutionRequest,
     resolved_inputs: &[ResolvedInput],
     sandbox_dir: &Path,
-    key_material: &[Hash],
+    key_material: &[DerivedHash],
 ) -> Result<DispatchedExecution, ConductorError> {
     if tool_spec.command_parts.is_empty() {
         let args: BTreeMap<String, String> =
@@ -154,8 +158,8 @@ struct PreparedStep<'a> {
     tool_call_id: String,
     /// The resolved tool specification.
     tool_spec: &'a UnifiedToolSpec,
-    /// Command key material in argv order.
-    key_material: Vec<Hash>,
+    /// Command key material in argv order, in the run's digest mode.
+    key_material: Vec<DerivedHash>,
     /// Names this execution can produce, each with its producing spec.
     producible_outputs: BTreeMap<String, OutputCaptureSpec>,
     /// Merged tool and step output declarations.
@@ -163,7 +167,9 @@ struct PreparedStep<'a> {
     /// Current execution material used for cache lookup.
     current: CurrentMaterial,
     /// Latest-version instance key for this step execution.
-    k_latest: Hash,
+    k_latest: DerivedHash,
+    /// Resolved digest mode for this run.
+    mode: ResolvedSecretMode,
     /// Timestamp recorded for impure provenance and fresh executions.
     executed_at: Timestamp,
     /// Environment variables for the dispatched tool execution.
@@ -193,7 +199,7 @@ fn prepare_step_execution<'a>(
         })?;
     let tool_call_id = request.step.tool.clone();
 
-    // Key material (argv/inputs) and current material for v8 lookup/derivation.
+    // Key material (argv/inputs) and current material for v9 lookup/derivation.
     let mut raw_bindings = request.step.inputs.clone();
     for (key, binding) in &tool_spec.default_inputs {
         raw_bindings.entry(key.clone()).or_insert_with(|| input_binding_to_string(binding));
@@ -213,17 +219,21 @@ fn prepare_step_execution<'a>(
         &request.step.outputs,
         &raw_bindings,
         &input_values,
+        &request.instance_key_mode,
     );
-    let k_latest = material.key_at(&tool_call_id, INSTANCE_KEY_VERSION).ok_or_else(|| {
-        ConductorError::Internal(format!(
-            "failed to derive v{INSTANCE_KEY_VERSION} instance key for tool '{tool_call_id}'"
-        ))
-    })?;
+    let k_latest = material
+        .key_at(&tool_call_id, INSTANCE_KEY_VERSION, &request.instance_key_mode)
+        .ok_or_else(|| {
+            ConductorError::Internal(format!(
+                "failed to derive v{INSTANCE_KEY_VERSION} instance key for tool '{tool_call_id}'"
+            ))
+        })?;
     let key_material = material.command_args.clone();
     let current = CurrentMaterial {
         command_args: material.command_args,
         output_tokens: material.output_tokens,
         materialized_inputs: material.materialized_inputs,
+        mode: request.instance_key_mode.clone(),
     };
 
     // Tool-level capture defaults merged with the step's own declarations, for
@@ -232,7 +242,11 @@ fn prepare_step_execution<'a>(
     let producible_outputs = producible_output_specs(&merged_outputs);
 
     let executed_at = request.impure_timestamp.unwrap_or_else(Timestamp::now);
-    let env_vars = build_env_vars(&tool_spec.execution_env_vars, &tool_spec.literal_env_vars);
+    let env_vars = build_env_vars(
+        &tool_spec.execution_env_vars,
+        &tool_spec.literal_env_vars,
+        &request.instance_key_mode,
+    );
 
     let required_output_specs: BTreeMap<String, OutputCaptureSpec> = request
         .required_output_names
@@ -248,6 +262,7 @@ fn prepare_step_execution<'a>(
         merged_outputs,
         current,
         k_latest,
+        mode: request.instance_key_mode.clone(),
         executed_at,
         env_vars,
         required_output_specs,
@@ -261,9 +276,9 @@ enum CacheDecision {
     /// The step must execute, carrying lookup-maintenance side effects.
     Execute {
         /// Side-effect mutations to instances other than the settled one.
-        lookup_side_effects: BTreeMap<Hash, ToolCallInstance>,
+        lookup_side_effects: BTreeMap<DerivedHash, ToolCallInstance>,
         /// A maintenance re-key to preserve when a hit fell back to execution.
-        maintenance_rekey: Option<(Hash, Hash)>,
+        maintenance_rekey: Option<(DerivedHash, DerivedHash)>,
     },
 }
 
@@ -324,8 +339,8 @@ async fn execute_prepared_step<C: CasApi + ConstraintApi + Send + Sync>(
     request: &StepExecutionRequest,
     prepared: &PreparedStep<'_>,
     resolved_inputs: &[ResolvedInput],
-    lookup_side_effects: BTreeMap<Hash, ToolCallInstance>,
-    maintenance_rekey: Option<(Hash, Hash)>,
+    lookup_side_effects: BTreeMap<DerivedHash, ToolCallInstance>,
+    maintenance_rekey: Option<(DerivedHash, DerivedHash)>,
 ) -> Result<StepExecutionBundle, ConductorError> {
     execute_miss(cas, request, prepared, resolved_inputs, lookup_side_effects, maintenance_rekey)
         .await
@@ -365,8 +380,8 @@ async fn execute_miss<C: CasApi + ConstraintApi + Send + Sync>(
     request: &StepExecutionRequest,
     prepared: &PreparedStep<'_>,
     resolved_inputs: &[ResolvedInput],
-    lookup_side_effects: BTreeMap<Hash, ToolCallInstance>,
-    maintenance_rekey: Option<(Hash, Hash)>,
+    lookup_side_effects: BTreeMap<DerivedHash, ToolCallInstance>,
+    maintenance_rekey: Option<(DerivedHash, DerivedHash)>,
 ) -> Result<StepExecutionBundle, ConductorError> {
     let tool_call_id = &prepared.tool_call_id;
     let tool_spec = prepared.tool_spec;
@@ -374,10 +389,14 @@ async fn execute_miss<C: CasApi + ConstraintApi + Send + Sync>(
     let producible_outputs = &prepared.producible_outputs;
     let merged_outputs = &prepared.merged_outputs;
     let k_latest = prepared.k_latest;
+    let mode = &prepared.mode;
     let executed_at = prepared.executed_at;
     let env_vars = prepared.env_vars.clone();
-    // Sandbox is named by the predicted LATEST key for determinism.
-    let sandbox_dir = create_sandbox(&request.conductor_tmp_dir, &k_latest).await?;
+    // Sandbox is named by the predicted LATEST key for determinism. Hashing
+    // the key's rendered form keeps the path name in CAS-hash shape for both
+    // modes while distinguishing a keyed key from an unkeyed one.
+    let sandbox_name = Hash::from_content(k_latest.to_string().as_bytes());
+    let sandbox_dir = create_sandbox(&request.conductor_tmp_dir, &sandbox_name).await?;
     prepare_tool_payload(cas, tool_spec, &sandbox_dir).await?;
 
     let dispatched = dispatch_tool_execution(
@@ -392,25 +411,22 @@ async fn execute_miss<C: CasApi + ConstraintApi + Send + Sync>(
 
     let captured = capture_outputs(cas, merged_outputs, &dispatched.result, &sandbox_dir).await?;
 
-    // Derive the stored v8 key from actual material (actual staged inputs).
+    // Derive the stored v9 key from actual material (actual staged inputs).
     let actual_output_tokens = output_tokens(producible_outputs);
     let actual_materialized_inputs = dispatched.materialized_inputs.clone();
-    let actual_key = crate::instance_key::derive_instance_key_for_version(
-        INSTANCE_KEY_VERSION,
+    let actual_key = derive_instance_key_v9(
         tool_call_id,
         &dispatched.command_args,
-        Some(&crate::instance_key::V8KeyMaterial {
-            output_tokens: &actual_output_tokens,
-            materialized_inputs: &actual_materialized_inputs,
-        }),
-    )
-    .unwrap_or(k_latest);
+        &actual_output_tokens,
+        &actual_materialized_inputs,
+        mode.clone(),
+    );
 
     let instance = ToolCallInstance {
         key_version: INSTANCE_KEY_VERSION,
         attempted_key_version_nk: INSTANCE_KEY_VERSION,
         tool_call_id: tool_call_id.clone(),
-        command_args: dispatched.command_args.into_iter().map(DerivedHash::from).collect(),
+        command_args: dispatched.command_args,
         env_vars_ck: env_vars,
         materialized_inputs: actual_materialized_inputs,
         outputs: captured.records,
@@ -486,6 +502,7 @@ async fn required_output_blobs_exist<C: CasApi>(
 fn build_env_vars(
     execution_env_vars: &BTreeMap<String, String>,
     literal_env_vars: &BTreeMap<String, String>,
+    mode: &ResolvedSecretMode,
 ) -> BTreeMap<String, crate::state::EnvVarEntry> {
     use crate::state::{EnvVarEntry, EnvVarSource};
 
@@ -501,7 +518,13 @@ fn build_env_vars(
             (
                 name.clone(),
                 EnvVarEntry {
-                    hash_ck: DerivedHash::from(Hash::from_content(value.as_bytes())),
+                    hash_ck: instance_key_hash_from_resolved_value_bytes(
+                        name,
+                        "",
+                        value.as_bytes(),
+                        mode,
+                    )
+                    .expect("an empty binding source is deterministic"),
                     source_nk,
                 },
             )
@@ -605,6 +628,27 @@ mod tests {
         step_outputs: BTreeMap<String, OutputCaptureSpec>,
         required: BTreeSet<String>,
     ) -> StepExecutionBundle {
+        execute_echo_step_with_mode(
+            cas,
+            state,
+            step_id,
+            tool_defaults,
+            step_outputs,
+            required,
+            crate::instance_key_secret::ResolvedSecretMode::Unkeyed,
+        )
+        .await
+    }
+
+    async fn execute_echo_step_with_mode(
+        cas: &mediapm_cas::InMemoryCas,
+        state: ConductorState,
+        step_id: &str,
+        tool_defaults: BTreeMap<String, OutputCaptureSpec>,
+        step_outputs: BTreeMap<String, OutputCaptureSpec>,
+        required: BTreeSet<String>,
+        mode: crate::instance_key_secret::ResolvedSecretMode,
+    ) -> StepExecutionBundle {
         let tmp = mediapm_utils::temp::output_dir().expect("temp dir");
         let tool_id = "echo@v1";
         let tool = UnifiedToolSpec {
@@ -650,8 +694,44 @@ mod tests {
             step_outputs: Arc::new(BTreeMap::new()),
             required_output_names: required,
             force_rerun: false,
+            instance_key_mode: mode,
         };
         execute_step(cas, request).await.expect("the echo builtin runs")
+    }
+
+    /// A keyed run keeps CAS output hashes unkeyed while every identity digest
+    /// is keyed, so the secret never becomes a content hash or a stored value.
+    #[tokio::test]
+    async fn keyed_run_records_a_keyed_instance_key_and_plain_cas_hashes() {
+        use crate::instance_key_secret::{InstanceKeySecret, ResolvedSecretMode};
+
+        let secret = InstanceKeySecret::from_bytes_for_test([11; 32]);
+        let cas = mediapm_cas::new_in_memory_cas();
+        let tool_defaults =
+            BTreeMap::from([("result".to_string(), stream_spec("result", "stdout"))]);
+        let bundle = execute_echo_step_with_mode(
+            &cas,
+            ConductorState::new_empty(),
+            "step-keyed",
+            tool_defaults,
+            BTreeMap::new(),
+            BTreeSet::from(["result".to_string()]),
+            ResolvedSecretMode::Keyed(secret),
+        )
+        .await;
+
+        assert!(matches!(bundle.instance_key, DerivedHash::Keyed(_)));
+        assert!(bundle.instance_key.to_string().starts_with("blake3-keyed:"));
+        assert_eq!(bundle.instance.key_version, crate::instance_key::INSTANCE_KEY_VERSION);
+        assert!(
+            bundle.instance.command_args.iter().all(|term| matches!(term, DerivedHash::Keyed(_))),
+            "keyed command terms must stay keyed in the persisted record",
+        );
+        let output_hash = bundle.instance.outputs["result"].hash_nk.expect("recorded output hash");
+        assert!(
+            output_hash.to_string().starts_with("blake3:"),
+            "captured bytes remain ordinary CAS hashes in keyed mode",
+        );
     }
 
     /// The declared output specification is key material in v8.
@@ -675,12 +755,10 @@ mod tests {
         assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
 
         let mut state = ConductorState::new_empty();
-        state
-            .tool_call_instances
-            .insert(DerivedHash::from(first.instance_key), first.instance.clone());
+        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
         state.step_instances.insert(
             "test-workflow".to_string(),
-            BTreeMap::from([("step-a-echo".to_string(), DerivedHash::from(first.instance_key))]),
+            BTreeMap::from([("step-a-echo".to_string(), first.instance_key)]),
         );
 
         let second = execute_echo_step(
@@ -791,9 +869,7 @@ mod tests {
         );
 
         let mut state = ConductorState::new_empty();
-        state
-            .tool_call_instances
-            .insert(DerivedHash::from(first.instance_key), first.instance.clone());
+        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
         let second = execute_echo_step(
             &cas,
             state,
@@ -826,8 +902,7 @@ mod tests {
     #[tokio::test]
     async fn blob_missing_migrated_hit_preserves_rekey_maintenance() {
         use crate::instance_key::{
-            INSTANCE_KEY_VERSION, V7_INSTANCE_KEY_VERSION, V8KeyMaterial,
-            derive_instance_key_for_version, derive_instance_key_v7,
+            INSTANCE_KEY_VERSION, V7_INSTANCE_KEY_VERSION, derive_instance_key_v7, migrate_v8_to_v9,
         };
 
         let cas = mediapm_cas::new_in_memory_cas();
@@ -861,21 +936,15 @@ mod tests {
         let v7_key = derive_instance_key_v7(&downgraded.tool_call_id, &unkeyed_args);
         assert_ne!(v7_key, first.instance_key);
 
-        let output_tokens: BTreeMap<String, String> = downgraded
-            .outputs
-            .iter()
-            .map(|(name, recorded)| (name.clone(), recorded.capture.clone()))
-            .collect();
-        let migrated_v8_key = derive_instance_key_for_version(
-            INSTANCE_KEY_VERSION,
+        let migrated_v8_key = migrate_v8_to_v9(
             &downgraded.tool_call_id,
-            &unkeyed_args,
-            Some(&V8KeyMaterial {
-                output_tokens: &output_tokens,
-                materialized_inputs: &downgraded.materialized_inputs,
-            }),
+            &unkeyed_args.iter().copied().map(DerivedHash::from).collect::<Vec<_>>(),
+            &downgraded.outputs,
+            &downgraded.materialized_inputs,
+            crate::instance_key_secret::ResolvedSecretMode::Unkeyed,
         )
-        .expect("v8 key derivable for migrated record");
+        .expect("v9 key derivable for migrated record")
+        .key;
 
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(DerivedHash::from(v7_key), downgraded);
@@ -891,7 +960,7 @@ mod tests {
         assert!(!bundle.cache_hit, "missing blobs must force fresh execution");
         assert_eq!(
             bundle.maintenance_rekey,
-            Some((v7_key, migrated_v8_key)),
+            Some((DerivedHash::from(v7_key), migrated_v8_key)),
             "migrated blob-missing hit must preserve its re-key maintenance",
         );
         let maintained = bundle
@@ -967,9 +1036,7 @@ mod tests {
         .await;
 
         let mut state = ConductorState::new_empty();
-        state
-            .tool_call_instances
-            .insert(DerivedHash::from(first.instance_key), first.instance.clone());
+        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
 
         let second = execute_echo_step(
             &cas,
@@ -1048,9 +1115,7 @@ mod tests {
         assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
 
         let mut state = ConductorState::new_empty();
-        state
-            .tool_call_instances
-            .insert(DerivedHash::from(first.instance_key), first.instance.clone());
+        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
 
         let second = execute_echo_step(
             &cas,
@@ -1104,9 +1169,7 @@ mod tests {
         assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
 
         let mut state = ConductorState::new_empty();
-        state
-            .tool_call_instances
-            .insert(DerivedHash::from(first.instance_key), first.instance.clone());
+        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
 
         let second = execute_echo_step(
             &cas,
@@ -1297,9 +1360,7 @@ mod tests {
         );
 
         let mut state = ConductorState::new_empty();
-        state
-            .tool_call_instances
-            .insert(DerivedHash::from(first.instance_key), first.instance.clone());
+        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
 
         let second = execute_echo_step(
             &cas,
@@ -1326,9 +1387,7 @@ mod tests {
             "the reusing step must be recorded beside the step that executed the work",
         );
 
-        state
-            .tool_call_instances
-            .insert(DerivedHash::from(second.instance_key), second.instance.clone());
+        state.tool_call_instances.insert(second.instance_key, second.instance.clone());
         let third =
             execute_echo_step(&cas, state, "step-b-echo", tool_defaults, BTreeMap::new(), required)
                 .await;
@@ -1351,6 +1410,7 @@ mod tests {
                 ("EMPTY".to_string(), String::new()),
             ]),
             &BTreeMap::new(),
+            &crate::instance_key_secret::ResolvedSecretMode::Unkeyed,
         );
         assert_eq!(records.len(), 1);
         assert!(records.contains_key("KEEP"));
@@ -1362,15 +1422,27 @@ mod tests {
         let records = build_env_vars(
             &BTreeMap::from([("FOO".to_string(), "raw-secret".to_string())]),
             &BTreeMap::new(),
+            &crate::instance_key_secret::ResolvedSecretMode::Unkeyed,
         );
         let record = &records["FOO"];
-        assert_eq!(record.hash_ck, DerivedHash::from(Hash::from_content(b"raw-secret")));
+        assert_ne!(record.hash_ck, DerivedHash::from(Hash::from_content(b"raw-secret")));
+        assert!(
+            record.hash_ck.to_string().starts_with("blake3:"),
+            "the recorded hash must be an ordinary unkeyed digest in unkeyed mode"
+        );
         assert_ne!(record.hash_ck, DerivedHash::from(Hash::from_content(b"raw-secret-other")));
     }
 
     #[test]
     fn env_vars_empty_input_yields_empty_records() {
-        assert!(build_env_vars(&BTreeMap::new(), &BTreeMap::new()).is_empty());
+        assert!(
+            build_env_vars(
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &crate::instance_key_secret::ResolvedSecretMode::Unkeyed,
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -1381,6 +1453,7 @@ mod tests {
                 ("HOST".to_string(), "ambient".to_string()),
             ]),
             &BTreeMap::from([("DOC".to_string(), "fixed".to_string())]),
+            &crate::instance_key_secret::ResolvedSecretMode::Unkeyed,
         );
 
         assert_eq!(
@@ -1393,15 +1466,15 @@ mod tests {
             Some(crate::state::EnvVarSource::Inherited),
             "an execution env var not fixed by the document must record inherited provenance",
         );
-        assert_eq!(
+        assert_ne!(
             records["DOC"].hash_ck,
             DerivedHash::from(Hash::from_content(b"fixed")),
-            "literal entries are still hashed, never stored literally",
+            "literal entries are hashed with their name, never stored literally",
         );
-        assert_eq!(
+        assert_ne!(
             records["HOST"].hash_ck,
             DerivedHash::from(Hash::from_content(b"ambient")),
-            "inherited entries are still hashed, never stored literally",
+            "inherited entries are hashed with their name, never stored literally",
         );
     }
 
@@ -1490,6 +1563,7 @@ mod tests {
             step_outputs: Arc::new(BTreeMap::new()),
             required_output_names: BTreeSet::from(["sidecar".to_string()]),
             force_rerun: false,
+            instance_key_mode: crate::instance_key_secret::ResolvedSecretMode::Unkeyed,
         };
         execute_step(cas, request).await
     }

@@ -272,14 +272,14 @@ async fn run_step(
         step_outputs: Arc::new(BTreeMap::new()),
         required_output_names: BTreeSet::from(["out".to_string()]),
         force_rerun: false,
+        instance_key_mode: crate::instance_key_secret::ResolvedSecretMode::Unkeyed,
     };
     let bundle = execute_step(&fixture.cas, request).await?;
     // The sandbox is named for the instance key, so the answer names the tree the
     // run actually used rather than whichever tree a directory scan finds first.
-    let sandbox = fixture
-        .runtime_root
-        .join("sandbox")
-        .join(super::sandbox::sanitize_for_path(&bundle.instance_key.to_hex()));
+    let sandbox = fixture.runtime_root.join("sandbox").join(super::sandbox::sanitize_for_path(
+        &mediapm_cas::Hash::from_content(bundle.instance_key.to_string().as_bytes()).to_hex(),
+    ));
     Ok((bundle, sandbox))
 }
 

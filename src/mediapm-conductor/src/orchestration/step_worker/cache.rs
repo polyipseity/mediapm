@@ -11,46 +11,42 @@ use mediapm_cas::Hash;
 use crate::config::OutputCaptureSpec;
 use crate::derived_hash::DerivedHash;
 use crate::instance_key::{
-    INSTANCE_KEY_VERSION, V8KeyMaterial, derive_instance_key_for_version, migrate_terms,
+    INSTANCE_KEY_VERSION, V7_INSTANCE_KEY_VERSION, V8_INSTANCE_KEY_VERSION, V9KeyMaterial,
+    derive_instance_key_for_version, migrate_v8_to_v9,
 };
+use crate::instance_key_secret::ResolvedSecretMode;
 use crate::state::{ConductorState, ToolCallInstance};
 
 /// Current execution material needed to derive keys for lookup and migration.
 #[derive(Debug, Clone)]
 pub(super) struct CurrentMaterial {
     /// Key material in argv order (the stored `command_args` for a derived key).
-    pub command_args: Vec<Hash>,
-    /// Capture token per declared/producible output name (v8 output spec).
+    pub command_args: Vec<DerivedHash>,
+    /// Capture token per declared/producible output name.
     pub output_tokens: BTreeMap<String, String>,
-    /// Predicted staged inputs: sandbox-relative destination to staged hash (v8).
+    /// Predicted staged inputs: sandbox-relative destination to staged hash.
     pub materialized_inputs: BTreeMap<String, Hash>,
+    /// Digest mode the run resolved at boot; keyed runs never migrate old keys.
+    pub mode: ResolvedSecretMode,
 }
 
 impl CurrentMaterial {
-    fn v8_material(&self) -> V8KeyMaterial<'_> {
-        V8KeyMaterial {
+    fn v9_material(&self) -> V9KeyMaterial<'_> {
+        V9KeyMaterial {
             output_tokens: &self.output_tokens,
             materialized_inputs: &self.materialized_inputs,
         }
     }
 
-    pub(super) fn key(&self, tool_call_id: &str, version: u32) -> Option<Hash> {
+    pub(super) fn key(&self, tool_call_id: &str, version: u32) -> Option<DerivedHash> {
         derive_instance_key_for_version(
             version,
             tool_call_id,
             &self.command_args,
-            Some(&self.v8_material()),
+            Some(&self.v9_material()),
+            &self.mode,
         )
     }
-}
-
-/// Returns unkeyed command arguments for the legacy derivation helpers.
-///
-/// V7 state can store either digest mode, but the migration ladder in this
-/// module still derives v8 keys from plain CAS hashes; a keyed digest cannot
-/// participate in that derivation.
-fn unkeyed_command_args(args: &[DerivedHash]) -> Vec<Hash> {
-    args.iter().map(|value| value.as_unkeyed().expect("a legacy key argument is unkeyed")).collect()
 }
 
 /// Outcome of instance lookup.
@@ -62,15 +58,15 @@ pub(super) enum LookupResult {
         /// `last_referenced_at_nk` and the settling step id).
         instance: Box<ToolCallInstance>,
         /// Key the instance is filed under (new key when re-keyed).
-        instance_key: Hash,
+        instance_key: DerivedHash,
         /// Previous key to remove when the instance was re-keyed.
-        rekeyed_from: Option<Hash>,
+        rekeyed_from: Option<DerivedHash>,
     },
     /// No reusable instance was found.
     Miss {
         /// Side-effect mutations to other instances (e.g. `attempted_key_version_nk`
         /// advanced on a different-content miss's mapped instance).
-        side_effects: BTreeMap<Hash, ToolCallInstance>,
+        side_effects: BTreeMap<DerivedHash, ToolCallInstance>,
     },
 }
 
@@ -94,15 +90,15 @@ pub(super) fn satisfies_requirements(
 }
 
 /// Attempts migration of `instance` (filed under `*key`, key version
-/// `instance.key_version`) toward [`INSTANCE_KEY_VERSION`] using `current`.
+/// `instance.key_version`) to v9 using `current`.
 ///
-/// This performs only in-record maintenance: it never mutates
-/// `step_instances`. Settlement is responsible for persisting the returned
-/// maintenance in the same write as the instance record.
+/// Migration is non-keyed only: old records carry unkeyed material, so keying
+/// them now would claim retroactive privacy. A keyed run simply marks the
+/// attempt and leaves the record to miss and re-execute under a fresh keyed key.
 ///
-/// - **Successful re-key:** rewrites `*key` to the derived key, sets
-///   `key_version` and `attempted_key_version_nk` to [`INSTANCE_KEY_VERSION`],
-///   and returns `Some(old_key)`. Settlement must remove `old_key` and move
+/// - **Successful re-key:** rewrites `*key` to the v9 key, sets `key_version`
+///   and `attempted_key_version_nk` to [`INSTANCE_KEY_VERSION`], and returns
+///   `Some(old_key)`. Settlement must remove `old_key` and move
 ///   `step_instances[workflow][step]` to the new key in that same write so the
 ///   map never names a key that is not stored.
 /// - **No re-key (pass completed):** sets `attempted_key_version_nk` to
@@ -113,47 +109,28 @@ pub(super) fn satisfies_requirements(
 /// on unchanged material.
 fn migrate_instance(
     instance: &mut ToolCallInstance,
-    key: &mut Hash,
+    key: &mut DerivedHash,
     current: &CurrentMaterial,
-) -> Option<Hash> {
-    let source_version = instance.key_version;
+) -> Option<DerivedHash> {
     let tool_call_id = instance.tool_call_id.clone();
-    let start = instance.attempted_key_version_nk.saturating_add(1);
-    if start <= INSTANCE_KEY_VERSION {
-        for version in (start..=INSTANCE_KEY_VERSION).rev() {
-            let Some(migrated_material) = migrate_terms(
-                source_version,
-                version,
-                &unkeyed_command_args(&instance.command_args),
-                &instance.outputs,
-                &instance.materialized_inputs,
-            ) else {
-                continue;
-            };
-            let Some(migrated_key) = derive_instance_key_for_version(
-                version,
-                &tool_call_id,
-                &migrated_material.command_args,
-                Some(&V8KeyMaterial {
-                    output_tokens: &migrated_material.output_tokens,
-                    materialized_inputs: &migrated_material.materialized_inputs,
-                }),
-            ) else {
-                continue;
-            };
-            let Some(current_key) = current.key(&tool_call_id, version) else {
-                continue;
-            };
-            if migrated_key != current_key {
-                continue;
-            }
-
-            let old_key = *key;
-            *key = migrated_key;
-            instance.key_version = version;
-            instance.attempted_key_version_nk = INSTANCE_KEY_VERSION;
-            return Some(old_key);
-        }
+    if instance.attempted_key_version_nk < INSTANCE_KEY_VERSION
+        && matches!(current.mode, ResolvedSecretMode::Unkeyed)
+        && matches!(instance.key_version, V7_INSTANCE_KEY_VERSION | V8_INSTANCE_KEY_VERSION)
+        && let Some(migrated) = migrate_v8_to_v9(
+            &tool_call_id,
+            &instance.command_args,
+            &instance.outputs,
+            &instance.materialized_inputs,
+            current.mode.clone(),
+        )
+        && current.key(&tool_call_id, INSTANCE_KEY_VERSION) == Some(migrated.key)
+    {
+        let old_key = *key;
+        *key = migrated.key;
+        instance.key_version = INSTANCE_KEY_VERSION;
+        instance.command_args = migrated.command_args;
+        instance.attempted_key_version_nk = INSTANCE_KEY_VERSION;
+        return Some(old_key);
     }
 
     instance.attempted_key_version_nk = INSTANCE_KEY_VERSION;
@@ -173,11 +150,11 @@ pub(super) fn lookup_instance(
     state: &ConductorState,
     required: &BTreeMap<String, OutputCaptureSpec>,
 ) -> LookupResult {
-    let mut side_effects: BTreeMap<Hash, ToolCallInstance> = BTreeMap::new();
+    let mut side_effects: BTreeMap<DerivedHash, ToolCallInstance> = BTreeMap::new();
 
     // Fast path: K_latest.
     if let Some(k_latest) = current.key(tool_call_id, INSTANCE_KEY_VERSION)
-        && let Some(instance) = state.tool_call_instances.get(&DerivedHash::from(k_latest))
+        && let Some(instance) = state.tool_call_instances.get(&k_latest)
         && instance.key_version == INSTANCE_KEY_VERSION
         && instance.invalidated_at_nk.is_none()
         && satisfies_requirements(instance, required)
@@ -210,13 +187,12 @@ pub(super) fn lookup_instance(
         // Cannot derive key for this version from current material.
         return LookupResult::Miss { side_effects };
     };
-    if DerivedHash::from(k_current_a) != mapped_key {
+    if k_current_a != mapped_key {
         // Work changed => miss and skip migration, but mark attempted up to latest.
         if instance.attempted_key_version_nk < INSTANCE_KEY_VERSION {
             let mut updated = instance.clone();
             updated.attempted_key_version_nk = INSTANCE_KEY_VERSION;
-            side_effects
-                .insert(mapped_key.as_unkeyed().expect("a mapped legacy key is unkeyed"), updated);
+            side_effects.insert(mapped_key, updated);
         }
         return LookupResult::Miss { side_effects };
     }
@@ -234,7 +210,7 @@ pub(super) fn lookup_instance(
     // persisted even when later rejected for missing blobs; the caller settles
     // the returned instance/re-key state.
     let mut hit_instance = instance.clone();
-    let mut hit_key = mapped_key.as_unkeyed().expect("a mapped legacy key is unkeyed");
+    let mut hit_key = mapped_key;
     let rekeyed_from = migrate_instance(&mut hit_instance, &mut hit_key, current);
 
     LookupResult::Hit { instance: Box::new(hit_instance), instance_key: hit_key, rekeyed_from }
@@ -296,7 +272,12 @@ mod tests {
     ) -> CurrentMaterial {
         let output_tokens =
             outputs.iter().map(|(name, spec)| (name.clone(), spec.capture.to_token())).collect();
-        CurrentMaterial { command_args, output_tokens, materialized_inputs }
+        CurrentMaterial {
+            command_args: command_args.into_iter().map(DerivedHash::from).collect(),
+            output_tokens,
+            materialized_inputs,
+            mode: ResolvedSecretMode::Unkeyed,
+        }
     }
 
     #[test]
@@ -319,11 +300,10 @@ mod tests {
             BTreeMap::new(),
         );
         let mut state = empty_state();
-        state.tool_call_instances.insert(DerivedHash::from(k_latest), instance.clone());
-        state.step_instances.insert(
-            "wf".to_string(),
-            BTreeMap::from([("step".to_string(), DerivedHash::from(k_latest))]),
-        );
+        state.tool_call_instances.insert(k_latest, instance.clone());
+        state
+            .step_instances
+            .insert("wf".to_string(), BTreeMap::from([("step".to_string(), k_latest)]));
 
         let result = lookup_instance("wf", "step", tool_call_id, &current, &state, &outputs_spec);
         match result {
@@ -364,7 +344,7 @@ mod tests {
         let (migrated, new_key) = match result {
             LookupResult::Hit { instance, instance_key, rekeyed_from } => {
                 assert_ne!(instance_key, k7);
-                assert_eq!(rekeyed_from, Some(k7));
+                assert_eq!(rekeyed_from, Some(DerivedHash::from(k7)));
                 assert_eq!(instance.key_version, INSTANCE_KEY_VERSION);
                 assert_eq!(instance.attempted_key_version_nk, INSTANCE_KEY_VERSION);
                 assert_eq!(instance_key, current.key(tool_call_id, INSTANCE_KEY_VERSION).unwrap());
@@ -375,12 +355,12 @@ mod tests {
 
         // After settlement-like maintenance, the fast path must find it.
         state.tool_call_instances.remove(&DerivedHash::from(k7));
-        state.tool_call_instances.insert(DerivedHash::from(new_key), migrated);
+        state.tool_call_instances.insert(new_key, migrated);
         state
             .step_instances
             .get_mut("wf")
             .expect("workflow map")
-            .insert("step".to_string(), DerivedHash::from(new_key));
+            .insert("step".to_string(), new_key);
         let fast = lookup_instance("wf", "step", tool_call_id, &current, &state, &outputs_spec);
         match fast {
             LookupResult::Hit { instance_key, rekeyed_from, .. } => {
@@ -407,11 +387,10 @@ mod tests {
         );
         instance.invalidated_at_nk = Some(Timestamp::from_unix_nanos(1));
         let mut state = empty_state();
-        state.tool_call_instances.insert(DerivedHash::from(k_latest), instance);
-        state.step_instances.insert(
-            "wf".to_string(),
-            BTreeMap::from([("step".to_string(), DerivedHash::from(k_latest))]),
-        );
+        state.tool_call_instances.insert(k_latest, instance);
+        state
+            .step_instances
+            .insert("wf".to_string(), BTreeMap::from([("step".to_string(), k_latest)]));
 
         let result = lookup_instance("wf", "step", tool_call_id, &current, &state, &outputs_spec);
         assert!(matches!(result, LookupResult::Miss { .. }));
@@ -442,7 +421,9 @@ mod tests {
         let result = lookup_instance("wf", "step", tool_call_id, &current, &state, &outputs_spec);
         match result {
             LookupResult::Miss { side_effects } => {
-                let updated = side_effects.get(&k7).expect("old instance should be bumped");
+                let updated = side_effects
+                    .get(&DerivedHash::from(k7))
+                    .expect("old instance should be bumped");
                 assert_eq!(updated.attempted_key_version_nk, INSTANCE_KEY_VERSION);
             }
             LookupResult::Hit { .. } => panic!("expected miss"),
@@ -475,11 +456,10 @@ mod tests {
             BTreeMap::new(),
         );
         let mut state = empty_state();
-        state.tool_call_instances.insert(DerivedHash::from(k_latest), instance);
-        state.step_instances.insert(
-            "wf".to_string(),
-            BTreeMap::from([("step".to_string(), DerivedHash::from(k_latest))]),
-        );
+        state.tool_call_instances.insert(k_latest, instance);
+        state
+            .step_instances
+            .insert("wf".to_string(), BTreeMap::from([("step".to_string(), k_latest)]));
 
         let hit = lookup_instance(
             "wf",
@@ -560,11 +540,10 @@ mod tests {
         );
         instance.invalidated_at_nk = Some(Timestamp::from_unix_nanos(1));
         let mut state = empty_state();
-        state.tool_call_instances.insert(DerivedHash::from(k_latest), instance);
-        state.step_instances.insert(
-            "wf".to_string(),
-            BTreeMap::from([("step".to_string(), DerivedHash::from(k_latest))]),
-        );
+        state.tool_call_instances.insert(k_latest, instance);
+        state
+            .step_instances
+            .insert("wf".to_string(), BTreeMap::from([("step".to_string(), k_latest)]));
 
         let result = lookup_instance("wf", "step", tool_call_id, &current, &state, &outputs_spec);
         match result {
@@ -581,16 +560,15 @@ mod tests {
         let command_args = vec![Hash::from_content(b"arg")];
         let outputs_spec = BTreeMap::new();
         let current = current_v8(command_args.clone(), &outputs_spec, BTreeMap::new());
-        let mapped_key = Hash::from_content(b"synthetic-key");
+        let mapped_key = DerivedHash::Unkeyed(Hash::from_content(b"synthetic-key"));
         let mut instance =
             base_instance(tool_call_id, 99, command_args, BTreeMap::new(), BTreeMap::new());
         instance.attempted_key_version_nk = 99;
         let mut state = empty_state();
-        state.tool_call_instances.insert(DerivedHash::from(mapped_key), instance);
-        state.step_instances.insert(
-            "wf".to_string(),
-            BTreeMap::from([("step".to_string(), DerivedHash::from(mapped_key))]),
-        );
+        state.tool_call_instances.insert(mapped_key, instance);
+        state
+            .step_instances
+            .insert("wf".to_string(), BTreeMap::from([("step".to_string(), mapped_key)]));
 
         let result = lookup_instance("wf", "step", tool_call_id, &current, &state, &outputs_spec);
         assert!(matches!(result, LookupResult::Miss { .. }));

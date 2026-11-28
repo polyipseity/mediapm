@@ -17,6 +17,8 @@ use serde::Serialize;
 use crate::config::{
     OutputCaptureSpec, PayloadStaging, ToolInputSpec, WorkflowSpec, WorkflowStepSpec,
 };
+use crate::derived_hash::DerivedHash;
+use crate::instance_key_secret::ResolvedSecretMode;
 pub(super) use crate::state::{ConductorState, ToolCallInstance};
 
 /// Finds a tool catalog entry by its `name` field (not by map key).
@@ -201,6 +203,9 @@ pub(crate) struct StepExecutionRequest {
     /// this flag re-executes a step. Set from
     /// [`crate::RunWorkflowOptions::force_rerun`].
     pub force_rerun: bool,
+    /// Digest mode resolved at boot and shared by every step of the run, so
+    /// workers derive the same keyed or non-keyed keys the facade recorded.
+    pub instance_key_mode: ResolvedSecretMode,
 }
 
 /// Result of one worker step execution.
@@ -220,22 +225,22 @@ pub(crate) struct StepExecutionBundle {
     /// sandbox or to file the settlement has to be handed it rather than read a
     /// second copy off the record.
     ///
-    /// The key is versioned: v7 keys command material only, while v8 adds
-    /// output-spec terms (sorted output names and capture tokens) and staged
-    /// input terms (`materialized_inputs` destination/hash pairs). Derivation
-    /// is selected by key version, not inferred from outputs.
-    pub instance_key: Hash,
+    /// The key is versioned: v7/v8 are migration-only, while v9 adds keyed or
+    /// non-keyed digest modes over output-spec and staged-input terms.
+    /// Derivation is selected by key version, not inferred from outputs. A
+    /// keyed key is never a CAS content hash.
+    pub instance_key: DerivedHash,
     /// Previous key this instance was filed under before a migration re-key.
     ///
     /// When a hit migrates to a new key, settlement must remove the old entry
     /// from `tool_call_instances`, store the instance under `instance_key`, and
     /// move `step_instances` to `instance_key` in the same write.
-    pub rekeyed_from: Option<Hash>,
+    pub rekeyed_from: Option<DerivedHash>,
     /// Instance mutations produced by lookup maintenance that are not the
     /// settled instance itself (for example, `attempted_key_version_nk = LATEST`
     /// recorded on a different-content miss's mapped instance). Settlement
     /// upserts each entry after storing the settled instance.
-    pub lookup_side_effects: BTreeMap<Hash, ToolCallInstance>,
+    pub lookup_side_effects: BTreeMap<DerivedHash, ToolCallInstance>,
     /// A lookup-maintenance re-key that must be preserved when the lookup hit
     /// cannot be reused and the step falls back to execution (for example, a
     /// migrated hit rejected solely for missing blobs).
@@ -245,7 +250,7 @@ pub(crate) struct StepExecutionBundle {
     /// `new_key` if necessary so the map never names a key that is not stored.
     /// The settled step result's pointer may supersede this move in the same
     /// settlement.
-    pub maintenance_rekey: Option<(Hash, Hash)>,
+    pub maintenance_rekey: Option<(DerivedHash, DerivedHash)>,
     /// Whether this result came from a cache hit (vs. fresh execution).
     pub cache_hit: bool,
     /// The names this execution declared it could produce, each under the spec

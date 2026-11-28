@@ -282,8 +282,16 @@ where
         // never loaded from.
         let outermost_dir =
             outermost_config_dir(&config_paths, &self.storage_paths().conductor_dir);
-        let (summary, updated_state) =
-            client.run_workflow(workflow_name, options, unified, state, outermost_dir).await?;
+        let (summary, updated_state) = client
+            .run_workflow(
+                workflow_name,
+                options,
+                unified,
+                state,
+                outermost_dir,
+                self.instance_key_mode.clone(),
+            )
+            .await?;
         *self.state.lock().expect("state lock") = updated_state.clone();
         // Persist state after each run so later sessions resume from disk.
         save_state_file(self.storage_paths(), &updated_state)?;

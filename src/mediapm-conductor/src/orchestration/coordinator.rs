@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use mediapm_cas::{CasApi, CasMaintenanceApi, ConstraintApi, Hash};
+#[cfg(test)]
+use mediapm_cas::Hash;
+use mediapm_cas::{CasApi, CasMaintenanceApi, ConstraintApi};
 
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
 use mediapm_utils::Timestamp;
@@ -23,6 +25,7 @@ use super::progress_labels::WorkerBarLabel;
 use crate::config::WorkflowStepSpec;
 use crate::derived_hash::DerivedHash;
 use crate::error::ConductorError;
+use crate::instance_key_secret::ResolvedSecretMode;
 use crate::state::{ConductorState, SettlingStep, ToolCallInstance, merge_captured_outputs};
 
 use ractor::rpc::CallResult;
@@ -165,7 +168,7 @@ struct StepStateContribution {
     /// Held beside the record rather than read off it: the map key is the
     /// instance's only identity, so a scoped snapshot that rebuilt one from the
     /// record would have to invent a key the store never agreed to.
-    instance_key: Hash,
+    instance_key: DerivedHash,
 }
 
 /// Collects each step's required output names: the names its dependents
@@ -268,10 +271,9 @@ fn scoped_state_snapshot(
     let mut scoped = run_entry.clone();
     for ancestor in ancestors {
         if let Some(contribution) = contributions.get(ancestor) {
-            scoped.tool_call_instances.insert(
-                DerivedHash::from(contribution.instance_key),
-                contribution.instance.clone(),
-            );
+            scoped
+                .tool_call_instances
+                .insert(contribution.instance_key, contribution.instance.clone());
         }
     }
     scoped
@@ -325,9 +327,9 @@ fn with_accumulated_step_ids(
 /// here as a conflict: `probe_cache` already turns that into a miss, so there is
 /// no second mechanism to disagree with it.
 fn record_capture_claims(
-    claims: &mut BTreeMap<(Hash, String), (String, String)>,
+    claims: &mut BTreeMap<(DerivedHash, String), (String, String)>,
     instance: &ToolCallInstance,
-    instance_key: Hash,
+    instance_key: DerivedHash,
     step_id: &str,
 ) -> Result<(), ConductorError> {
     for (name, output) in &instance.outputs {
@@ -545,6 +547,7 @@ where
         state: &mut ConductorState,
         options: &RunWorkflowOptions,
         outermost_config_dir: &Path,
+        instance_key_mode: ResolvedSecretMode,
     ) -> Result<RunSummary, ConductorError> {
         let outcome = async {
             // The run's builtin registry, wrapped once so every step's request
@@ -654,7 +657,7 @@ where
             // second claim naming a different identity is a configuration
             // error reported at settlement, not resolved by settlement order
             // (see `record_capture_claims`).
-            let mut run_capture_claims: BTreeMap<(Hash, String), (String, String)> =
+            let mut run_capture_claims: BTreeMap<(DerivedHash, String), (String, String)> =
                 BTreeMap::new();
 
             // Ready-queue dispatch: a step becomes eligible the moment its
@@ -764,6 +767,7 @@ where
                         step_outputs: current_step_outputs,
                         required_output_names,
                         force_rerun: options.force_rerun,
+                        instance_key_mode: instance_key_mode.clone(),
                     };
 
                     let worker = self.workers[worker_idx].clone();
@@ -905,18 +909,16 @@ where
                         // pointer is written below.
                         if let Some((old_key, maintenance_new_key)) = maintenance_rekey {
                             if old_key != maintenance_new_key {
-                                state.tool_call_instances.remove(&DerivedHash::from(old_key));
+                                state.tool_call_instances.remove(&old_key);
                             }
                             if let Some(updated) = lookup_side_effects.get(&maintenance_new_key) {
-                                state
-                                    .tool_call_instances
-                                    .insert(DerivedHash::from(maintenance_new_key), updated.clone());
+                                state.tool_call_instances.insert(maintenance_new_key, updated.clone());
                             }
                             state
                                 .step_instances
                                 .entry(workflow_name.to_string())
                                 .or_default()
-                                .insert(step_id.clone(), DerivedHash::from(maintenance_new_key));
+                                .insert(step_id.clone(), maintenance_new_key);
                         }
 
                         // The two conflict rules are enforced as steps settle:
@@ -953,7 +955,7 @@ where
                         // step_instances pointer.
                         for (key, updated) in lookup_side_effects {
                             if key != instance_key {
-                                state.tool_call_instances.insert(DerivedHash::from(key), updated);
+                                state.tool_call_instances.insert(key, updated);
                             }
                         }
                         // A migration re-key moves the instance to a new key in
@@ -965,7 +967,7 @@ where
                         if let Some(old_key) = rekeyed_from
                             && old_key != instance_key
                         {
-                            state.tool_call_instances.remove(&DerivedHash::from(old_key));
+                            state.tool_call_instances.remove(&old_key);
                         }
                         // Insert executed instance into state so subsequent
                         // steps (and future runs) can find cache hits, with the
@@ -986,7 +988,7 @@ where
                         // execution produced. A replacement would drop a
                         // sibling's step-only name and put the pair on a
                         // forever-re-executing loop.
-                        let stored = state.tool_call_instances.get(&DerivedHash::from(stored_lookup_key));
+                        let stored = state.tool_call_instances.get(&stored_lookup_key);
                         let mut incoming = instance;
                         if let Some(stored) = stored {
                             // A hit produced no artifact, so it contributes only
@@ -1021,9 +1023,7 @@ where
                                 .is_some_and(|wf| wf.steps.iter().any(|s| s.id == sr.step_id))
                         });
                         let contribution = StepStateContribution { instance, instance_key };
-                        state
-                            .tool_call_instances
-                            .insert(DerivedHash::from(instance_key), contribution.instance.clone());
+                        state.tool_call_instances.insert(instance_key, contribution.instance.clone());
                         step_state_contributions.insert(step_id.clone(), contribution);
                         // `step_instances` is written only after the instance has
                         // been stored, on every successful run (hit or executed,
@@ -1033,7 +1033,7 @@ where
                             .step_instances
                             .entry(workflow_name.to_string())
                             .or_default()
-                            .insert(step_id.clone(), DerivedHash::from(instance_key));
+                            .insert(step_id.clone(), instance_key);
                         #[cfg(feature = "progress")]
                         if options.progress_group.is_some() {
                             worker_steps_succeeded[worker_idx] += 1;
@@ -1233,7 +1233,7 @@ where
                 // and drop entries for steps no longer declared. Settled
                 // contributions provide the final (possibly re-keyed) instance
                 // key for steps that ran in this pass.
-                let mut by_step: BTreeMap<String, Hash> = BTreeMap::new();
+                let mut by_step: BTreeMap<String, DerivedHash> = BTreeMap::new();
                 for step in &workflow.steps {
                     if let Some(contribution) = step_state_contributions.get(&step.id) {
                         by_step.insert(step.id.clone(), contribution.instance_key);
@@ -1244,20 +1244,15 @@ where
                         .copied()
                     {
                         // Preserve an existing pointer for a declared step not
-                        // settled in this contribution map (defensive).
-                        by_step.insert(
-                            step.id.clone(),
-                            existing.as_unkeyed().expect("a seeded instance pointer is unkeyed"),
-                        );
+                        // settled in this contribution map (defensive). Its
+                        // digest mode is carried through, never unwrapped.
+                        by_step.insert(step.id.clone(), existing);
                     }
                 }
                 if by_step.is_empty() {
                     state.step_instances.remove(workflow_name);
                 } else {
-                    state.step_instances.insert(
-                        workflow_name.to_string(),
-                        by_step.into_iter().map(|(step, key)| (step, DerivedHash::from(key))).collect(),
-                    );
+                    state.step_instances.insert(workflow_name.to_string(), by_step);
                 }
             }
 
@@ -1651,8 +1646,10 @@ mod tests {
         run_entry
             .tool_call_instances
             .insert(DerivedHash::from(run_entry_key), test_instance(run_entry_key));
-        let contribution =
-            |key: Hash| StepStateContribution { instance: test_instance(key), instance_key: key };
+        let contribution = |key: Hash| StepStateContribution {
+            instance: test_instance(key),
+            instance_key: DerivedHash::from(key),
+        };
         let contributions = BTreeMap::from([
             ("a".to_string(), contribution(ancestor_key)),
             ("c".to_string(), contribution(unrelated_key)),

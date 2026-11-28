@@ -11,6 +11,9 @@ use std::collections::BTreeMap;
 use mediapm_cas::Hash;
 
 use crate::config::{InputBinding, ToolSpec};
+use crate::derived_hash::DerivedHash;
+use crate::instance_key_secret::ResolvedSecretMode;
+use crate::keyed_hash::{KeyedHash, KeyedHashPart};
 use crate::orchestration::step_worker::template::is_deterministic_command_part;
 use crate::state::{CapturedOutput, ToolCallInstance};
 
@@ -37,10 +40,16 @@ use crate::state::{CapturedOutput, ToolCallInstance};
 /// Scheme 8 keys the output specification and the staged inputs: sorted output
 /// names with their capture tokens, then `materialized_inputs` as one composite
 /// per entry. A captured output hash never enters.
-pub const INSTANCE_KEY_VERSION: u32 = 8;
+///
+/// Scheme 9 keeps that material but renders each leaf in either keyed or
+/// non-keyed mode. Keyed leaves use a conductor-held secret and purpose tags;
+/// ordinary CAS hashes stay raw terms in the composite. Only v9 keys are newly
+/// derived; v7 and v8 remain migration-only.
+pub const INSTANCE_KEY_VERSION: u32 = 9;
 
-/// The v7 tool-call instance key version.
+/// Legacy versions retained only to migrate persisted records.
 pub const V7_INSTANCE_KEY_VERSION: u32 = 7;
+pub const V8_INSTANCE_KEY_VERSION: u32 = 8;
 
 /// Domain separator for tool-call instance keys, carrying the scheme version.
 #[must_use]
@@ -48,33 +57,121 @@ pub fn instance_key_domain(version: u32) -> String {
     format!("mediapm/conductor/tool call instances/v{version}")
 }
 
-/// Extra key material required to derive a v8 instance key.
+/// Extra key material required to derive a v9 instance key.
 ///
-/// v8 adds the output specification and the staged inputs. Output names and
+/// v9 keeps v8's output specification and staged inputs. Output names and
 /// their capture tokens are key material; captured output hashes are results
-/// and never enter. Staged inputs are keyed again on their own as one
-/// composite per entry, in destination order, even though selectors already
-/// reach `command_args`.
+/// and never enter. Staged hashes stay ordinary CAS hashes even in keyed mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct V8KeyMaterial<'a> {
+pub struct V9KeyMaterial<'a> {
     /// Capture token per output name. Derivation reads these in name order.
     pub output_tokens: &'a BTreeMap<String, String>,
     /// Staged inputs: sandbox-relative destination to staged hash.
     pub materialized_inputs: &'a BTreeMap<String, Hash>,
 }
 
-/// Returns the extra key terms for `version`.
+/// Extra key material required to derive a legacy v8 instance key.
 ///
-/// - v7: no extra terms.
-/// - v8: one `composite(hash(name), hash(capture token))` per output name, in
-///   name order, then one `composite(destination, staged hash)` per staged
-///   input, in destination order.
-/// - any other version: `None`, because the derivation cannot be evaluated.
+/// Retained only so a persisted v8 record can be re-derived during migration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct V8KeyMaterial<'a> {
+    /// Capture token per output name.
+    pub output_tokens: &'a BTreeMap<String, String>,
+    /// Staged inputs by sandbox-relative destination.
+    pub materialized_inputs: &'a BTreeMap<String, Hash>,
+}
+
+/// Hashes one byte string in the mode's digest space.
+///
+/// A purpose tag separates leaves that would otherwise share bytes, so a
+/// keyed output name cannot be substituted for a keyed tool-call id.
+fn derived_term(mode: &ResolvedSecretMode, purpose: &'static str, bytes: &[u8]) -> DerivedHash {
+    match mode {
+        ResolvedSecretMode::Unkeyed => DerivedHash::Unkeyed(Hash::from_content(bytes)),
+        ResolvedSecretMode::Keyed(secret) => {
+            DerivedHash::Keyed(KeyedHash::hash(secret, purpose, bytes))
+        }
+    }
+}
+
+/// Composes derived terms without changing their digest mode.
+///
+/// A CAS hash that entered keyed material is tagged as an ordinary part, so
+/// its bytes are mixed in but it can never be read as a keyed digest.
+fn derived_composite(mode: &ResolvedSecretMode, parts: &[DerivedHash]) -> DerivedHash {
+    match mode {
+        ResolvedSecretMode::Unkeyed => {
+            let hashes: Option<Vec<Hash>> = parts.iter().map(|part| part.as_unkeyed()).collect();
+            let hashes = hashes.expect("an unkeyed composite has only unkeyed parts");
+            DerivedHash::Unkeyed(Hash::composite(&hashes))
+        }
+        ResolvedSecretMode::Keyed(_) => {
+            let tagged: Vec<KeyedHashPart<'_>> = parts
+                .iter()
+                .map(|part| match part {
+                    DerivedHash::Unkeyed(hash) => KeyedHashPart::Unkeyed(hash),
+                    DerivedHash::Keyed(hash) => KeyedHashPart::Keyed(hash),
+                })
+                .collect();
+            DerivedHash::Keyed(KeyedHash::composite(&tagged))
+        }
+    }
+}
+
+/// Derives one v9 instance key in keyed or non-keyed mode.
+///
+/// The composite is, in order: the versioned domain separator, the tool-call
+/// id, the command terms in their declared order, one
+/// `composite(name, capture token)` per output in name order, and one
+/// `composite(destination, staged CAS hash)` per staged input in destination
+/// order. Captured output hashes, persistence facts and timestamps never enter.
 #[must_use]
-fn extra_terms(version: u32, material: Option<&V8KeyMaterial<'_>>) -> Option<Vec<Hash>> {
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the public v9 derivation API takes the resolved mode by value"
+)]
+pub fn derive_instance_key_v9(
+    tool_call_id: &str,
+    command_args: &[DerivedHash],
+    output_tokens: &BTreeMap<String, String>,
+    materialized_inputs: &BTreeMap<String, Hash>,
+    mode: ResolvedSecretMode,
+) -> DerivedHash {
+    let mut parts = Vec::with_capacity(
+        2 + command_args.len() + output_tokens.len() + materialized_inputs.len(),
+    );
+    parts.push(derived_term(
+        &mode,
+        "mediapm/conductor/v9/domain",
+        instance_key_domain(INSTANCE_KEY_VERSION).as_bytes(),
+    ));
+    parts.push(derived_term(&mode, "mediapm/conductor/v9/tool-call-id", tool_call_id.as_bytes()));
+    parts.extend(command_args.iter().copied());
+    for (name, token) in output_tokens {
+        let name_term = derived_term(&mode, "mediapm/conductor/v9/output-name", name.as_bytes());
+        let token_term = derived_term(&mode, "mediapm/conductor/v9/output-token", token.as_bytes());
+        parts.push(derived_composite(&mode, &[name_term, token_term]));
+    }
+    for (destination, staged_hash) in materialized_inputs {
+        let destination_term =
+            derived_term(&mode, "mediapm/conductor/v9/staged-destination", destination.as_bytes());
+        parts.push(derived_composite(
+            &mode,
+            &[destination_term, DerivedHash::Unkeyed(*staged_hash)],
+        ));
+    }
+    derived_composite(&mode, &parts)
+}
+
+/// Returns the legacy extra terms for `version`.
+///
+/// Legacy versions are unkeyed only: keyed material cannot reproduce a v7 or
+/// v8 record, and no new record of either version is written.
+#[must_use]
+fn extra_terms(version: u32, material: Option<&V9KeyMaterial<'_>>) -> Option<Vec<Hash>> {
     match version {
         V7_INSTANCE_KEY_VERSION => Some(Vec::new()),
-        INSTANCE_KEY_VERSION => {
+        V8_INSTANCE_KEY_VERSION => {
             let material = material?;
             let mut terms = Vec::with_capacity(
                 material.output_tokens.len() + material.materialized_inputs.len(),
@@ -97,35 +194,44 @@ fn extra_terms(version: u32, material: Option<&V8KeyMaterial<'_>>) -> Option<Vec
     }
 }
 
-/// Derives the content-addressed key of one tool-call instance for `version`.
-///
-/// The key answers whether this work has been done before, from material any
-/// party can re-derive: the tool call identity and the key material the command
-/// names. Captures are **not** key material except for their specification in
-/// v8 (names and capture tokens), never their produced hashes.
-///
-/// The composite is, in order: the versioned domain separator
-/// ([`instance_key_domain`]), the tool call id, then `command_args` (the
-/// key-material term list) in order, then the version's extra terms. Nothing
-/// here sorts `command_args`; [`key_material_for_tool`] is the one function
-/// that builds it.
-///
-/// Returns `None` when `version` is unknown or when v8 derivation lacks its
-/// required extra material.
-#[must_use]
-pub fn derive_instance_key_for_version(
-    version: u32,
-    tool_call_id: &str,
-    command_args: &[Hash],
-    v8: Option<&V8KeyMaterial<'_>>,
-) -> Option<Hash> {
-    let extra = extra_terms(version, v8)?;
+/// Composes a legacy unkeyed instance key from already-unkeyed terms.
+fn legacy_key(version: u32, tool_call_id: &str, command_args: &[Hash], extra: &[Hash]) -> Hash {
     let mut parts = Vec::with_capacity(2 + command_args.len() + extra.len());
     parts.push(Hash::from_content(instance_key_domain(version).as_bytes()));
     parts.push(Hash::from_content(tool_call_id.as_bytes()));
     parts.extend_from_slice(command_args);
-    parts.extend(extra);
-    Some(Hash::composite(&parts))
+    parts.extend_from_slice(extra);
+    Hash::composite(&parts)
+}
+
+/// Derives the key of one tool-call instance for an explicit version.
+///
+/// v7 and v8 are read paths: they reproduce stored unkeyed keys from unkeyed
+/// command terms. v9 is the only version newly written, and needs its output
+/// tokens and staged inputs. `None` means the version is unknown or its
+/// required material was not supplied.
+#[must_use]
+pub fn derive_instance_key_for_version(
+    version: u32,
+    tool_call_id: &str,
+    command_args: &[DerivedHash],
+    material: Option<&V9KeyMaterial<'_>>,
+    mode: &ResolvedSecretMode,
+) -> Option<DerivedHash> {
+    if version == INSTANCE_KEY_VERSION {
+        let material = material?;
+        return Some(derive_instance_key_v9(
+            tool_call_id,
+            command_args,
+            material.output_tokens,
+            material.materialized_inputs,
+            mode.clone(),
+        ));
+    }
+    let extra = extra_terms(version, material)?;
+    let legacy_args: Option<Vec<Hash>> =
+        command_args.iter().map(|term| term.as_unkeyed()).collect();
+    Some(DerivedHash::Unkeyed(legacy_key(version, tool_call_id, &legacy_args?, &extra)))
 }
 
 /// Derives a v7 instance key from `command_args`.
@@ -138,8 +244,7 @@ pub fn derive_instance_key_for_version(
 /// v7 derivation requires no extra material.
 #[must_use]
 pub fn derive_instance_key_v7(tool_call_id: &str, command_args: &[Hash]) -> Hash {
-    derive_instance_key_for_version(V7_INSTANCE_KEY_VERSION, tool_call_id, command_args, None)
-        .expect("v7 derivation requires no extra material")
+    legacy_key(V7_INSTANCE_KEY_VERSION, tool_call_id, command_args, &[])
 }
 
 /// Derives a v8 instance key from `command_args` and the output/staged-input
@@ -156,25 +261,76 @@ pub fn derive_instance_key_v8(
     output_tokens: &BTreeMap<String, String>,
     materialized_inputs: &BTreeMap<String, Hash>,
 ) -> Hash {
-    let material = V8KeyMaterial { output_tokens, materialized_inputs };
-    derive_instance_key_for_version(
-        INSTANCE_KEY_VERSION,
-        tool_call_id,
-        command_args,
-        Some(&material),
-    )
-    .expect("v8 derivation is defined for complete material")
+    let material = V9KeyMaterial { output_tokens, materialized_inputs };
+    let extra = extra_terms(V8_INSTANCE_KEY_VERSION, Some(&material))
+        .expect("v8 derivation is defined for complete material");
+    legacy_key(V8_INSTANCE_KEY_VERSION, tool_call_id, command_args, &extra)
 }
 
-/// Derives the content-addressed key of one tool-call instance.
+/// Derives a v9 key from command terms alone.
 ///
-/// This compatibility helper derives a v7 key, preserving pre-T5 runtime
-/// behavior while the versioned lookup/migration logic is introduced. New code
-/// that needs an explicit version should use [`derive_instance_key_for_version`],
-/// [`derive_instance_key_v7`], or [`derive_instance_key_v8`].
+/// Callers with no output-spec material use this compatibility shape: the v9
+/// derivation runs with empty output-token and staged-input maps rather than
+/// short-circuiting to a legacy version. A record with real material derives
+/// a different key, so this helper is not a substitute for
+/// [`StepWorkMaterial::key_at`](crate::work_material::StepWorkMaterial::key_at).
 #[must_use]
-pub fn derive_instance_key(tool_call_id: &str, command_args: &[Hash]) -> Hash {
-    derive_instance_key_v7(tool_call_id, command_args)
+pub fn derive_instance_key(
+    tool_call_id: &str,
+    command_args: &[DerivedHash],
+    mode: ResolvedSecretMode,
+) -> DerivedHash {
+    let tokens = BTreeMap::new();
+    let staged = BTreeMap::new();
+    derive_instance_key_v9(tool_call_id, command_args, &tokens, &staged, mode)
+}
+
+/// Material needed to re-key a v8 record into non-keyed v9.
+///
+/// Command terms keep their digest mode, output capture tokens come from the
+/// recorded outputs, and staged hashes stay CAS hashes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigratedV9Material {
+    /// Command terms rewritten for the v9 digest type.
+    pub command_args: Vec<DerivedHash>,
+    /// Capture tokens from the recorded outputs.
+    pub output_tokens: BTreeMap<String, String>,
+    /// Staged input hashes, unchanged.
+    pub materialized_inputs: BTreeMap<String, Hash>,
+    /// The v9 key the migrated material derives.
+    pub key: DerivedHash,
+}
+
+/// Migrates a v8 record's material into non-keyed v9.
+///
+/// Keyed mode deliberately returns `None`: the old record's material was
+/// unkeyed and cannot become private retroactively, so those records miss and
+/// re-execute under a fresh keyed key.
+#[must_use]
+pub fn migrate_v8_to_v9(
+    tool_call_id: &str,
+    command_args: &[DerivedHash],
+    outputs: &BTreeMap<String, CapturedOutput>,
+    materialized_inputs: &BTreeMap<String, Hash>,
+    mode: ResolvedSecretMode,
+) -> Option<MigratedV9Material> {
+    if matches!(mode, ResolvedSecretMode::Keyed(_)) {
+        return None;
+    }
+    let output_tokens = output_tokens_from_outputs(outputs)?;
+    let key = derive_instance_key_v9(
+        tool_call_id,
+        command_args,
+        &output_tokens,
+        materialized_inputs,
+        mode,
+    );
+    Some(MigratedV9Material {
+        command_args: command_args.to_vec(),
+        output_tokens,
+        materialized_inputs: materialized_inputs.clone(),
+        key,
+    })
 }
 
 /// Material produced by migrating instance-key terms between versions.
@@ -216,7 +372,7 @@ pub fn migrate_terms(
     materialized_inputs: &BTreeMap<String, Hash>,
 ) -> Option<MigratedKeyMaterial> {
     match (from_version, to_version) {
-        (V7_INSTANCE_KEY_VERSION, INSTANCE_KEY_VERSION) => Some(MigratedKeyMaterial {
+        (V7_INSTANCE_KEY_VERSION, V8_INSTANCE_KEY_VERSION) => Some(MigratedKeyMaterial {
             command_args: command_args.to_vec(),
             output_tokens: output_tokens_from_outputs(outputs)?,
             materialized_inputs: materialized_inputs.clone(),
@@ -394,12 +550,19 @@ pub fn key_material_for_builtin(
     input_values: &BTreeMap<String, Vec<u8>>,
     raw_bindings: &BTreeMap<String, String>,
     literal_env: &BTreeMap<String, String>,
-) -> Vec<Hash> {
+    mode: &ResolvedSecretMode,
+) -> Vec<DerivedHash> {
     input_values
         .keys()
         .map(|name| {
             let value = input_value_term_bytes(input_values, raw_bindings, name, literal_env);
-            Hash::composite(&[Hash::from_content(name.as_bytes()), Hash::from_content(value)])
+            derived_composite(
+                mode,
+                &[
+                    derived_term(mode, "mediapm/conductor/v9/input-name", name.as_bytes()),
+                    derived_term(mode, "mediapm/conductor/v9/input-value", value),
+                ],
+            )
         })
         .collect()
 }
@@ -431,7 +594,8 @@ pub fn key_material_for_command_parts(
     input_values: &BTreeMap<String, Vec<u8>>,
     raw_bindings: &BTreeMap<String, String>,
     literal_env: &BTreeMap<String, String>,
-) -> Vec<Hash> {
+    mode: &ResolvedSecretMode,
+) -> Vec<DerivedHash> {
     let mut material = Vec::with_capacity(command_parts.len());
     for raw_part in command_parts {
         let inlined;
@@ -446,15 +610,16 @@ pub fn key_material_for_command_parts(
         };
         let selectors = selector_sources(part);
         if selectors.is_empty() {
-            let mut parts = vec![Hash::from_content(part.as_bytes())];
+            let mut parts =
+                vec![derived_term(mode, "mediapm/conductor/v9/command-term", part.as_bytes())];
             for name in referenced_inputs(part) {
                 let value = input_value_term_bytes(input_values, raw_bindings, &name, literal_env);
-                parts.push(Hash::from_content(value));
+                parts.push(derived_term(mode, "mediapm/conductor/v9/input-value", value));
             }
-            material.push(Hash::composite(&parts));
+            material.push(derived_composite(mode, &parts));
         } else {
             for selector in selectors {
-                material.push(selector.term(input_values));
+                material.push(selector.term(input_values, mode));
             }
         }
     }
@@ -482,17 +647,23 @@ pub fn key_material_for_tool(
     input_values: &BTreeMap<String, Vec<u8>>,
     raw_bindings: &BTreeMap<String, String>,
     literal_env: &BTreeMap<String, String>,
-) -> Vec<Hash> {
+    mode: &ResolvedSecretMode,
+) -> Vec<DerivedHash> {
     let mut material = if command_parts.is_empty() {
-        key_material_for_builtin(input_values, raw_bindings, literal_env)
+        key_material_for_builtin(input_values, raw_bindings, literal_env, mode)
     } else {
-        key_material_for_command_parts(command_parts, input_values, raw_bindings, literal_env)
+        key_material_for_command_parts(command_parts, input_values, raw_bindings, literal_env, mode)
     };
     let literal_inputs: BTreeMap<String, Vec<u8>> = literal_env
         .iter()
         .map(|(name, value)| (name.clone(), value.clone().into_bytes()))
         .collect();
-    material.extend(key_material_for_builtin(&literal_inputs, &BTreeMap::new(), &BTreeMap::new()));
+    material.extend(key_material_for_builtin(
+        &literal_inputs,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        mode,
+    ));
     material
 }
 
@@ -643,11 +814,22 @@ impl SelectorSource {
     /// input value carries that hash as text when the binding names a stored
     /// object, and carries the value itself when the binding is a literal, so
     /// the parsed hash wins and the value's own hash is the fallback.
-    fn term(&self, input_values: &BTreeMap<String, Vec<u8>>) -> Hash {
-        Hash::composite(&[
-            Hash::from_content(self.destination.as_bytes()),
-            self.source_hash(input_values),
-        ])
+    fn term(
+        &self,
+        input_values: &BTreeMap<String, Vec<u8>>,
+        mode: &ResolvedSecretMode,
+    ) -> DerivedHash {
+        derived_composite(
+            mode,
+            &[
+                derived_term(
+                    mode,
+                    "mediapm/conductor/v9/staged-destination",
+                    self.destination.as_bytes(),
+                ),
+                DerivedHash::Unkeyed(self.source_hash(input_values)),
+            ],
+        )
     }
 
     /// The hash of the bytes the selector consumes.
@@ -878,9 +1060,16 @@ pub fn instance_key_hash_from_resolved_value_bytes(
     key: &str,
     raw_binding_source: &str,
     resolved_value: &[u8],
-) -> Option<Hash> {
+    mode: &ResolvedSecretMode,
+) -> Option<DerivedHash> {
     is_deterministic_binding_source(raw_binding_source).then(|| {
-        Hash::composite(&[Hash::from_content(key.as_bytes()), Hash::from_content(resolved_value)])
+        derived_composite(
+            mode,
+            &[
+                derived_term(mode, "mediapm/conductor/v9/input-name", key.as_bytes()),
+                derived_term(mode, "mediapm/conductor/v9/input-value", resolved_value),
+            ],
+        )
     })
 }
 
@@ -897,22 +1086,33 @@ pub fn instance_key_hash_from_resolved_value_bytes(
 /// against the derivation instead of against where the record is filed.
 #[must_use]
 pub fn instance_matches_stored_key(
-    stored_key: Hash,
+    stored_key: DerivedHash,
     instance: &ToolCallInstance,
-    key_material: &[Hash],
+    key_material: &[DerivedHash],
+    mode: &ResolvedSecretMode,
 ) -> bool {
-    crate::state::derive_tool_call_instance_key(&instance.tool_call_id, key_material) == stored_key
+    crate::state::derive_tool_call_instance_key(&instance.tool_call_id, key_material, mode)
+        == stored_key
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::instance_key_secret::InstanceKeySecret;
+
+    fn derived(args: impl IntoIterator<Item = Hash>) -> Vec<DerivedHash> {
+        args.into_iter().map(DerivedHash::from).collect()
+    }
+
+    fn unkeyed(args: &[DerivedHash]) -> Vec<Hash> {
+        args.iter().filter_map(|value| value.as_unkeyed()).collect()
+    }
 
     /// Deriving twice from identical material yields identical keys.
     #[test]
     fn derive_instance_key_is_deterministic() {
-        let a = derive_instance_key("echo@v1", &[]);
-        let b = derive_instance_key("echo@v1", &[]);
+        let a = derive_instance_key("echo@v1", &derived([]), ResolvedSecretMode::Unkeyed);
+        let b = derive_instance_key("echo@v1", &derived([]), ResolvedSecretMode::Unkeyed);
         assert_eq!(a, b);
     }
 
@@ -921,8 +1121,8 @@ mod tests {
     fn impure_keys_ignore_time() {
         let args = [Hash::from_content(b"arg")];
         assert_eq!(
-            derive_instance_key("tool", &args),
-            derive_instance_key("tool", &args),
+            derive_instance_key("tool", &derived(args), ResolvedSecretMode::Unkeyed),
+            derive_instance_key("tool", &derived(args), ResolvedSecretMode::Unkeyed),
             "identical material must derive identical keys regardless of wall-clock time",
         );
     }
@@ -951,8 +1151,8 @@ mod tests {
         let a = Hash::from_content(b"a");
         let b = Hash::from_content(b"b");
         assert_ne!(
-            derive_instance_key("t", &[a, b]),
-            derive_instance_key("t", &[b, a]),
+            derive_instance_key("t", &derived([a, b]), ResolvedSecretMode::Unkeyed),
+            derive_instance_key("t", &derived([b, a]), ResolvedSecretMode::Unkeyed),
             "command arg order must matter",
         );
     }
@@ -978,8 +1178,9 @@ mod tests {
         let reproduced = derive_instance_key_for_version(
             V7_INSTANCE_KEY_VERSION,
             "tool@v1",
-            &command_args,
+            &derived(command_args.iter().copied()),
             None,
+            &ResolvedSecretMode::Unkeyed,
         )
         .expect("v7 derivation needs no extra material");
         assert_eq!(stored, reproduced);
@@ -1054,24 +1255,181 @@ mod tests {
         );
     }
 
+    /// The v9 domain differs from v8 even with identical material.
+    #[test]
+    fn v9_non_keyed_differs_from_v8_domain() {
+        let args = [DerivedHash::Unkeyed(Hash::from_content(b"arg"))];
+        let tokens = BTreeMap::new();
+        let staged = BTreeMap::new();
+        let unkeyed_args: Vec<Hash> =
+            args.iter().map(|term| term.as_unkeyed().expect("unkeyed fixture")).collect();
+        let v8 = derive_instance_key_v8("tool", &unkeyed_args, &tokens, &staged);
+        let v9 =
+            derive_instance_key_v9("tool", &args, &tokens, &staged, ResolvedSecretMode::Unkeyed);
+        assert_ne!(DerivedHash::Unkeyed(v8), v9);
+    }
+
+    /// Keyed derivation moves with the secret and records a keyed digest.
+    #[test]
+    fn v9_keyed_changes_with_secret() {
+        let args = [DerivedHash::Unkeyed(Hash::from_content(b"arg"))];
+        let tokens = BTreeMap::new();
+        let staged = BTreeMap::new();
+        let a = InstanceKeySecret::from_bytes_for_test([1; 32]);
+        let b = InstanceKeySecret::from_bytes_for_test([2; 32]);
+        let ka =
+            derive_instance_key_v9("tool", &args, &tokens, &staged, ResolvedSecretMode::Keyed(a));
+        let kb =
+            derive_instance_key_v9("tool", &args, &tokens, &staged, ResolvedSecretMode::Keyed(b));
+        assert_ne!(ka, kb);
+        assert!(matches!(ka, DerivedHash::Keyed(_)));
+        assert!(ka.to_string().starts_with("blake3-keyed:"));
+    }
+
+    /// Staging hashes and captured output hashes stay ordinary CAS hashes.
+    #[test]
+    fn v9_keyed_never_keys_materialized_inputs_or_output_hashes() {
+        let staged_hash = Hash::from_content(b"staged bytes");
+        let staged = BTreeMap::from([("dest".to_owned(), staged_hash)]);
+        let outputs = BTreeMap::from([(
+            "out".to_owned(),
+            CapturedOutput {
+                capture: "file:out".to_owned(),
+                hash_nk: Some(Hash::from_content(b"captured")),
+                saved_nk: true,
+            },
+        )]);
+        let secret = InstanceKeySecret::from_bytes_for_test([3; 32]);
+        let migrated =
+            migrate_v8_to_v9("tool", &[], &outputs, &staged, ResolvedSecretMode::Keyed(secret));
+        assert!(migrated.is_none(), "old unkeyed material cannot become keyed");
+        let migrated =
+            migrate_v8_to_v9("tool", &[], &outputs, &staged, ResolvedSecretMode::Unkeyed)
+                .expect("non-keyed migration succeeds");
+        assert!(migrated.materialized_inputs.values().all(|hash| *hash == staged_hash));
+        assert!(outputs["out"].hash_nk.is_some());
+        assert!(
+            outputs["out"].hash_nk.expect("CAS output hash").to_string().starts_with("blake3:")
+        );
+    }
+
+    /// A candidate CAS hash inside a command term stays unkeyed even when the
+    /// term that selects it is keyed.
+    #[test]
+    fn v9_keyed_command_terms_keep_cas_hashes_unkeyed() {
+        let secret = InstanceKeySecret::from_bytes_for_test([5; 32]);
+        let mode = ResolvedSecretMode::Keyed(secret.clone());
+        let cas_hash = Hash::from_content(b"staged bytes");
+        let name = derived_term(&mode, "mediapm/conductor/v9/staged-destination", b"dest");
+        let plain = derived_composite(&mode, &[name, DerivedHash::Unkeyed(cas_hash)]);
+        let expected = DerivedHash::Keyed(KeyedHash::composite(&[
+            KeyedHashPart::Keyed(&match name {
+                DerivedHash::Keyed(value) => value,
+                DerivedHash::Unkeyed(_) => panic!("keyed mode must produce a keyed term"),
+            }),
+            KeyedHashPart::Unkeyed(&cas_hash),
+        ]));
+        assert_eq!(plain, expected);
+        assert_ne!(
+            plain,
+            derived_composite(
+                &mode,
+                &[
+                    name,
+                    derived_term(
+                        &mode,
+                        "a keyed copy of the CAS bytes",
+                        &cas_hash.to_hex().into_bytes()
+                    )
+                ],
+            ),
+            "keying the CAS bytes would change what the digest commits to",
+        );
+    }
+
+    /// v9 is selected only when its extra material is supplied.
+    #[test]
+    fn v9_derivation_requires_extra_material() {
+        let args = [DerivedHash::Unkeyed(Hash::from_content(b"arg"))];
+        assert!(
+            derive_instance_key_for_version(
+                INSTANCE_KEY_VERSION,
+                "tool",
+                &args,
+                None,
+                &ResolvedSecretMode::Unkeyed,
+            )
+            .is_none(),
+            "v9 cannot derive without output tokens and staged inputs",
+        );
+        let material = V9KeyMaterial {
+            output_tokens: &BTreeMap::new(),
+            materialized_inputs: &BTreeMap::new(),
+        };
+        assert_eq!(
+            derive_instance_key_for_version(
+                INSTANCE_KEY_VERSION,
+                "tool",
+                &args,
+                Some(&material),
+                &ResolvedSecretMode::Unkeyed,
+            ),
+            Some(derive_instance_key_v9(
+                "tool",
+                &args,
+                material.output_tokens,
+                material.materialized_inputs,
+                ResolvedSecretMode::Unkeyed,
+            )),
+        );
+    }
+
     /// An unknown version fails to derive.
     #[test]
     fn an_unknown_version_fails_to_derive() {
         let command_args = [Hash::from_content(b"arg")];
         assert!(
-            derive_instance_key_for_version(0, "tool@v1", &command_args, None).is_none(),
+            derive_instance_key_for_version(
+                0,
+                "tool@v1",
+                &derived(command_args),
+                None,
+                &ResolvedSecretMode::Unkeyed
+            )
+            .is_none(),
             "version 0 is not a supported derivation",
         );
         assert!(
-            derive_instance_key_for_version(6, "tool@v1", &command_args, None).is_none(),
+            derive_instance_key_for_version(
+                6,
+                "tool@v1",
+                &derived(command_args),
+                None,
+                &ResolvedSecretMode::Unkeyed
+            )
+            .is_none(),
             "an older unregistered version cannot be derived",
         );
         assert!(
-            derive_instance_key_for_version(9, "tool@v1", &command_args, None).is_none(),
-            "a newer unknown version cannot be derived",
+            derive_instance_key_for_version(
+                10,
+                "tool@v1",
+                &derived(command_args),
+                None,
+                &ResolvedSecretMode::Unkeyed
+            )
+            .is_none(),
+            "an unregistered future version cannot be derived",
         );
         assert!(
-            derive_instance_key_for_version(99, "tool@v1", &command_args, None).is_none(),
+            derive_instance_key_for_version(
+                99,
+                "tool@v1",
+                &derived(command_args),
+                None,
+                &ResolvedSecretMode::Unkeyed
+            )
+            .is_none(),
             "an unknown future version cannot be derived",
         );
     }
@@ -1085,6 +1443,10 @@ mod tests {
         );
         assert_eq!(
             instance_key_domain(INSTANCE_KEY_VERSION),
+            "mediapm/conductor/tool call instances/v9"
+        );
+        assert_eq!(
+            instance_key_domain(V8_INSTANCE_KEY_VERSION),
             "mediapm/conductor/tool call instances/v8"
         );
     }
@@ -1106,7 +1468,7 @@ mod tests {
 
         let migrated = migrate_terms(
             V7_INSTANCE_KEY_VERSION,
-            INSTANCE_KEY_VERSION,
+            V8_INSTANCE_KEY_VERSION,
             &command_args,
             &outputs,
             &materialized_inputs,
@@ -1181,8 +1543,13 @@ mod tests {
     fn literal_binding_uses_raw_source_bytes() {
         let raw = "mp4";
         let bytes = instance_key_value_bytes_for_context_only_binding(raw);
-        let key_hash = instance_key_hash_from_resolved_value_bytes("format", raw, bytes)
-            .expect("literal is deterministic");
+        let key_hash = instance_key_hash_from_resolved_value_bytes(
+            "format",
+            raw,
+            bytes,
+            &ResolvedSecretMode::Unkeyed,
+        )
+        .expect("literal is deterministic");
         assert_eq!(
             key_hash,
             Hash::composite(&[Hash::from_content(b"format"), Hash::from_content(raw.as_bytes()),])
@@ -1199,10 +1566,22 @@ mod tests {
         let first = BTreeMap::from([("out".to_string(), b"/tmp/one".to_vec())]);
         let second = BTreeMap::from([("out".to_string(), b"/tmp/two".to_vec())]);
 
-        let from_first = key_material_for_tool(&parts, &first, &bindings, &BTreeMap::new());
+        let from_first = key_material_for_tool(
+            &parts,
+            &first,
+            &bindings,
+            &BTreeMap::new(),
+            &ResolvedSecretMode::Unkeyed,
+        );
         assert_eq!(
             from_first,
-            key_material_for_tool(&parts, &second, &bindings, &BTreeMap::new()),
+            key_material_for_tool(
+                &parts,
+                &second,
+                &bindings,
+                &BTreeMap::new(),
+                &ResolvedSecretMode::Unkeyed
+            ),
             "the value the host holds is not work, so it must not move the key",
         );
         assert_eq!(
@@ -1216,7 +1595,13 @@ mod tests {
 
         let other_variable = BTreeMap::from([("out".to_string(), "${env.OTHER_OUT}".to_string())]);
         assert_ne!(
-            key_material_for_tool(&parts, &first, &other_variable, &BTreeMap::new()),
+            key_material_for_tool(
+                &parts,
+                &first,
+                &other_variable,
+                &BTreeMap::new(),
+                &ResolvedSecretMode::Unkeyed
+            ),
             from_first,
             "two variables are two jobs, so their bindings must not collapse into one key",
         );
@@ -1229,14 +1614,38 @@ mod tests {
         let literals_a = BTreeMap::from([("OUT".to_string(), "/tmp/a".to_string())]);
         let literals_b = BTreeMap::from([("OUT".to_string(), "/tmp/b".to_string())]);
         let empty = BTreeMap::new();
-        let a = key_material_for_tool(&parts, &BTreeMap::new(), &BTreeMap::new(), &literals_a);
-        let b = key_material_for_tool(&parts, &BTreeMap::new(), &BTreeMap::new(), &literals_b);
-        let inherited = key_material_for_tool(&parts, &BTreeMap::new(), &BTreeMap::new(), &empty);
+        let a = key_material_for_tool(
+            &parts,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &literals_a,
+            &ResolvedSecretMode::Unkeyed,
+        );
+        let b = key_material_for_tool(
+            &parts,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &literals_b,
+            &ResolvedSecretMode::Unkeyed,
+        );
+        let inherited = key_material_for_tool(
+            &parts,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &empty,
+            &ResolvedSecretMode::Unkeyed,
+        );
         assert_ne!(a, b, "a deterministic value changes the key");
         assert_ne!(a, inherited, "an inherited reference contributes no value");
         assert_eq!(
             inherited,
-            key_material_for_tool(&parts[..1], &BTreeMap::new(), &BTreeMap::new(), &empty),
+            key_material_for_tool(
+                &parts[..1],
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &empty,
+                &ResolvedSecretMode::Unkeyed
+            ),
             "the inherited reference contributes nothing, so its part is dropped like any other",
         );
     }
@@ -1252,13 +1661,25 @@ mod tests {
 
         let key_literal_a = derive_instance_key_v8(
             "echo@v1",
-            &key_material_for_tool(&parts, &BTreeMap::new(), &BTreeMap::new(), &literals_a),
+            &unkeyed(&key_material_for_tool(
+                &parts,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &literals_a,
+                &ResolvedSecretMode::Unkeyed,
+            )),
             &BTreeMap::new(),
             &BTreeMap::new(),
         );
         let key_literal_b = derive_instance_key_v8(
             "echo@v1",
-            &key_material_for_tool(&parts, &BTreeMap::new(), &BTreeMap::new(), &literals_b),
+            &unkeyed(&key_material_for_tool(
+                &parts,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &literals_b,
+                &ResolvedSecretMode::Unkeyed,
+            )),
             &BTreeMap::new(),
             &BTreeMap::new(),
         );
@@ -1270,21 +1691,27 @@ mod tests {
         // An inherited ${env.HOME} reference contributes no key material, so the
         // host's value is not part of derivation and cannot move the key.
         let inherited_parts = vec!["echo".to_string(), "${env.HOME}".to_string()];
-        let inherited_material =
-            key_material_for_tool(&inherited_parts, &BTreeMap::new(), &BTreeMap::new(), &empty);
+        let inherited_material = key_material_for_tool(
+            &inherited_parts,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &empty,
+            &ResolvedSecretMode::Unkeyed,
+        );
         assert_eq!(
             inherited_material,
             key_material_for_tool(
                 &["echo".to_string()],
                 &BTreeMap::new(),
                 &BTreeMap::new(),
-                &empty
+                &empty,
+                &ResolvedSecretMode::Unkeyed
             ),
             "an inherited env reference is dropped from key material",
         );
         let key_inherited = derive_instance_key_v8(
             "echo@v1",
-            &inherited_material,
+            &unkeyed(&inherited_material),
             &BTreeMap::new(),
             &BTreeMap::new(),
         );
@@ -1292,12 +1719,13 @@ mod tests {
             key_inherited,
             derive_instance_key_v8(
                 "echo@v1",
-                &key_material_for_tool(
+                &unkeyed(&key_material_for_tool(
                     &["echo".to_string()],
                     &BTreeMap::new(),
                     &BTreeMap::new(),
                     &empty,
-                ),
+                    &ResolvedSecretMode::Unkeyed,
+                )),
                 &BTreeMap::new(),
                 &BTreeMap::new(),
             ),
@@ -1315,7 +1743,13 @@ mod tests {
         let alpha = BTreeMap::from([("y".to_string(), b"alpha".to_vec())]);
         let beta = BTreeMap::from([("y".to_string(), b"beta".to_vec())]);
 
-        let alpha_material = key_material_for_tool(&parts, &alpha, &empty_bindings, &literals);
+        let alpha_material = key_material_for_tool(
+            &parts,
+            &alpha,
+            &empty_bindings,
+            &literals,
+            &ResolvedSecretMode::Unkeyed,
+        );
         assert_eq!(
             alpha_material,
             vec![
@@ -1332,7 +1766,13 @@ mod tests {
         );
         assert_ne!(
             alpha_material,
-            key_material_for_tool(&parts, &beta, &empty_bindings, &literals),
+            key_material_for_tool(
+                &parts,
+                &beta,
+                &empty_bindings,
+                &literals,
+                &ResolvedSecretMode::Unkeyed
+            ),
             "the input beside the fixed literal still decides the key",
         );
     }
@@ -1344,8 +1784,20 @@ mod tests {
         let literals_a = BTreeMap::from([("UNUSED_TAG".to_string(), "one".to_string())]);
         let literals_b = BTreeMap::from([("UNUSED_TAG".to_string(), "two".to_string())]);
 
-        let a = key_material_for_tool(&parts, &BTreeMap::new(), &BTreeMap::new(), &literals_a);
-        let b = key_material_for_tool(&parts, &BTreeMap::new(), &BTreeMap::new(), &literals_b);
+        let a = key_material_for_tool(
+            &parts,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &literals_a,
+            &ResolvedSecretMode::Unkeyed,
+        );
+        let b = key_material_for_tool(
+            &parts,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &literals_b,
+            &ResolvedSecretMode::Unkeyed,
+        );
         assert_ne!(
             a, b,
             "a literal the command never reads is still a value the document fixes, so it must re-key the step",
@@ -1365,10 +1817,22 @@ mod tests {
         let on_linux =
             BTreeMap::from([("js_runtimes".to_string(), b"deno:deps/linux/deno#v1".to_vec())]);
 
-        let macos = key_material_for_tool(&parts, &on_macos, &bindings, &literals);
+        let macos = key_material_for_tool(
+            &parts,
+            &on_macos,
+            &bindings,
+            &literals,
+            &ResolvedSecretMode::Unkeyed,
+        );
         assert_eq!(
             macos,
-            key_material_for_tool(&parts, &on_linux, &bindings, &literals),
+            key_material_for_tool(
+                &parts,
+                &on_linux,
+                &bindings,
+                &literals,
+                &ResolvedSecretMode::Unkeyed
+            ),
             "the branch the host selects is environment, so one binding text must derive one key on both hosts",
         );
         assert_eq!(
@@ -1384,14 +1848,29 @@ mod tests {
     /// The input name is key material.
     #[test]
     fn same_bytes_under_different_names_produce_different_hashes() {
-        let left = instance_key_hash_from_resolved_value_bytes("message", "same", b"same")
-            .expect("a literal binding is deterministic");
-        let right = instance_key_hash_from_resolved_value_bytes("text", "same", b"same")
-            .expect("a literal binding is deterministic");
+        let left = instance_key_hash_from_resolved_value_bytes(
+            "message",
+            "same",
+            b"same",
+            &ResolvedSecretMode::Unkeyed,
+        )
+        .expect("a literal binding is deterministic");
+        let right = instance_key_hash_from_resolved_value_bytes(
+            "text",
+            "same",
+            b"same",
+            &ResolvedSecretMode::Unkeyed,
+        )
+        .expect("a literal binding is deterministic");
         assert_ne!(left, right, "the input name is part of the instance-key material");
 
-        let again = instance_key_hash_from_resolved_value_bytes("message", "same", b"same")
-            .expect("a literal binding is deterministic");
+        let again = instance_key_hash_from_resolved_value_bytes(
+            "message",
+            "same",
+            b"same",
+            &ResolvedSecretMode::Unkeyed,
+        )
+        .expect("a literal binding is deterministic");
         assert_eq!(left, again, "and the derivation stays deterministic");
     }
 
@@ -1401,8 +1880,8 @@ mod tests {
         let first = Hash::from_content(b"-i");
         let second = Hash::from_content(b"-y");
         assert_ne!(
-            derive_instance_key("tool", &[first, second]),
-            derive_instance_key("tool", &[second, first]),
+            derive_instance_key("tool", &derived([first, second]), ResolvedSecretMode::Unkeyed),
+            derive_instance_key("tool", &derived([second, first]), ResolvedSecretMode::Unkeyed),
             "argv order must move the key",
         );
     }
@@ -1420,10 +1899,20 @@ mod tests {
 
         let bindings =
             BTreeMap::from([("source".to_string(), "${step_output.step-0.primary}".to_string())]);
-        let first =
-            key_material_for_command_parts(&parts, &first_values, &bindings, &BTreeMap::new());
-        let second =
-            key_material_for_command_parts(&parts, &second_values, &bindings, &BTreeMap::new());
+        let first = key_material_for_command_parts(
+            &parts,
+            &first_values,
+            &bindings,
+            &BTreeMap::new(),
+            &ResolvedSecretMode::Unkeyed,
+        );
+        let second = key_material_for_command_parts(
+            &parts,
+            &second_values,
+            &bindings,
+            &BTreeMap::new(),
+            &ResolvedSecretMode::Unkeyed,
+        );
 
         assert_eq!(
             first,
@@ -1431,8 +1920,8 @@ mod tests {
             "the selector hashes its destination and the object it stages",
         );
         assert_ne!(
-            derive_instance_key("tool", &first),
-            derive_instance_key("tool", &second),
+            derive_instance_key("tool", &first, ResolvedSecretMode::Unkeyed),
+            derive_instance_key("tool", &second, ResolvedSecretMode::Unkeyed),
             "different staged bytes must derive different keys",
         );
     }
@@ -1446,12 +1935,14 @@ mod tests {
             &BTreeMap::from([("format".to_string(), b"mkv".to_vec())]),
             &BTreeMap::from([("format".to_string(), "mkv".to_string())]),
             &BTreeMap::new(),
+            &ResolvedSecretMode::Unkeyed,
         );
         let second = key_material_for_command_parts(
             &parts,
             &BTreeMap::from([("format".to_string(), b"mp4".to_vec())]),
             &BTreeMap::from([("format".to_string(), "mp4".to_string())]),
             &BTreeMap::new(),
+            &ResolvedSecretMode::Unkeyed,
         );
         assert_ne!(first, second, "a changed input value must move the key");
         assert_eq!(first.len(), 1, "one key-material part is one term");
@@ -1462,12 +1953,14 @@ mod tests {
             &BTreeMap::from([("extra".to_string(), b"[]".to_vec())]),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &ResolvedSecretMode::Unkeyed,
         );
         let filled = key_material_for_command_parts(
             &splat,
             &BTreeMap::from([("extra".to_string(), br#"["-y"]"#.to_vec())]),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &ResolvedSecretMode::Unkeyed,
         );
         assert_ne!(empty, filled, "a changed splat list must move the key");
     }
@@ -1481,12 +1974,14 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &ResolvedSecretMode::Unkeyed,
         );
         let second = key_material_for_command_parts(
             &parts[1..],
             &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &ResolvedSecretMode::Unkeyed,
         );
         assert_eq!(first, second, "the environment term must not reach the key");
         assert_eq!(first.len(), 1);
@@ -1503,8 +1998,20 @@ mod tests {
         let on_linux =
             BTreeMap::from([("js_runtimes".to_string(), b"deno:deps/linux/deno".to_vec())]);
 
-        let macos = key_material_for_tool(&parts, &on_macos, &bindings, &BTreeMap::new());
-        let linux = key_material_for_tool(&parts, &on_linux, &bindings, &BTreeMap::new());
+        let macos = key_material_for_tool(
+            &parts,
+            &on_macos,
+            &bindings,
+            &BTreeMap::new(),
+            &ResolvedSecretMode::Unkeyed,
+        );
+        let linux = key_material_for_tool(
+            &parts,
+            &on_linux,
+            &bindings,
+            &BTreeMap::new(),
+            &ResolvedSecretMode::Unkeyed,
+        );
         assert_eq!(
             macos, linux,
             "a binding that reads only the host names no work, so the branch it selects must not move the key",
@@ -1523,7 +2030,13 @@ mod tests {
             "deno:${context.os == \"macos\" ? deps/macos/other : deps/linux/other}".to_string(),
         )]);
         assert_ne!(
-            key_material_for_tool(&parts, &on_macos, &edited, &BTreeMap::new()),
+            key_material_for_tool(
+                &parts,
+                &on_macos,
+                &edited,
+                &BTreeMap::new(),
+                &ResolvedSecretMode::Unkeyed
+            ),
             macos,
             "editing the template is editing what the step asks for",
         );
@@ -1538,8 +2051,18 @@ mod tests {
         let on_linux = BTreeMap::from([("runtime".to_string(), b"payload/linux".to_vec())]);
 
         assert_eq!(
-            key_material_for_builtin(&on_macos, &bindings, &BTreeMap::new()),
-            key_material_for_builtin(&on_linux, &bindings, &BTreeMap::new()),
+            key_material_for_builtin(
+                &on_macos,
+                &bindings,
+                &BTreeMap::new(),
+                &ResolvedSecretMode::Unkeyed
+            ),
+            key_material_for_builtin(
+                &on_linux,
+                &bindings,
+                &BTreeMap::new(),
+                &ResolvedSecretMode::Unkeyed
+            ),
             "the host branch a builtin input selects is environment, not work",
         );
     }
@@ -1554,8 +2077,20 @@ mod tests {
         let bindings_high = BTreeMap::from([("crf".to_string(), "24".to_string())]);
 
         assert_ne!(
-            key_material_for_tool(&parts, &low, &bindings_low, &BTreeMap::new()),
-            key_material_for_tool(&parts, &high, &bindings_high, &BTreeMap::new()),
+            key_material_for_tool(
+                &parts,
+                &low,
+                &bindings_low,
+                &BTreeMap::new(),
+                &ResolvedSecretMode::Unkeyed
+            ),
+            key_material_for_tool(
+                &parts,
+                &high,
+                &bindings_high,
+                &BTreeMap::new(),
+                &ResolvedSecretMode::Unkeyed
+            ),
             "a changed literal is changed work",
         );
     }
@@ -1574,8 +2109,20 @@ mod tests {
             BTreeMap::from([("source".to_string(), second.to_string().into_bytes())]);
 
         assert_ne!(
-            key_material_for_tool(&parts, &first_values, &bindings, &BTreeMap::new()),
-            key_material_for_tool(&parts, &second_values, &bindings, &BTreeMap::new()),
+            key_material_for_tool(
+                &parts,
+                &first_values,
+                &bindings,
+                &BTreeMap::new(),
+                &ResolvedSecretMode::Unkeyed
+            ),
+            key_material_for_tool(
+                &parts,
+                &second_values,
+                &bindings,
+                &BTreeMap::new(),
+                &ResolvedSecretMode::Unkeyed
+            ),
             "a binding that names work keys the hash its source resolves to, not the binding text",
         );
     }
@@ -1592,8 +2139,20 @@ mod tests {
         let values_b = BTreeMap::from([("out".to_string(), b"/tmp/b".to_vec())]);
 
         assert_ne!(
-            key_material_for_tool(&parts, &values_a, &bindings, &literals_a),
-            key_material_for_tool(&parts, &values_b, &bindings, &literals_b),
+            key_material_for_tool(
+                &parts,
+                &values_a,
+                &bindings,
+                &literals_a,
+                &ResolvedSecretMode::Unkeyed
+            ),
+            key_material_for_tool(
+                &parts,
+                &values_b,
+                &bindings,
+                &literals_b,
+                &ResolvedSecretMode::Unkeyed
+            ),
             "editing a literal the document fixes is changed work",
         );
     }
@@ -1627,10 +2186,20 @@ mod tests {
         ]);
         let literal_env = BTreeMap::from([("FFMPEG_HIDE_BANNER".to_string(), "1".to_string())]);
 
-        let material_before_payload_update =
-            key_material_for_tool(&parts, &input_values, &bindings, &literal_env);
-        let material_after_payload_update =
-            key_material_for_tool(&parts, &input_values, &bindings, &literal_env);
+        let material_before_payload_update = key_material_for_tool(
+            &parts,
+            &input_values,
+            &bindings,
+            &literal_env,
+            &ResolvedSecretMode::Unkeyed,
+        );
+        let material_after_payload_update = key_material_for_tool(
+            &parts,
+            &input_values,
+            &bindings,
+            &literal_env,
+            &ResolvedSecretMode::Unkeyed,
+        );
 
         assert_eq!(
             material_before_payload_update, material_after_payload_update,

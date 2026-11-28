@@ -16,6 +16,7 @@ use mediapm_cas::{CasApi, CasMaintenanceApi, ConstraintApi};
 
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
 use crate::error::ConductorError;
+use crate::instance_key_secret::ResolvedSecretMode;
 use crate::state::ConductorState;
 
 use super::coordinator::WorkflowCoordinator;
@@ -44,6 +45,8 @@ pub(crate) enum ConductorMessage {
         /// from the documents the caller loaded, so the actor cannot re-derive
         /// it from what it holds.
         outermost_config_dir: PathBuf,
+        /// Digest mode resolved by the facade that started this run.
+        instance_key_mode: ResolvedSecretMode,
         /// Reply channel (returns summary + updated state).
         reply: RpcReplyPort<Result<(RunSummary, ConductorState), ConductorError>>,
     },
@@ -126,6 +129,7 @@ where
                 unified,
                 state: mut ws_state,
                 outermost_config_dir,
+                instance_key_mode,
                 reply,
             } => {
                 let summary = state
@@ -135,6 +139,7 @@ where
                         &mut ws_state,
                         &options,
                         &outermost_config_dir,
+                        instance_key_mode,
                     )
                     .await;
                 let _ = reply.send(summary.map(|s| (s, ws_state)));
@@ -221,6 +226,7 @@ impl ConductorActorClient {
         unified: UnifiedNickelDocument,
         state: ConductorState,
         outermost_config_dir: PathBuf,
+        instance_key_mode: ResolvedSecretMode,
     ) -> Result<(RunSummary, ConductorState), ConductorError> {
         match self
             .actor_ref
@@ -231,6 +237,7 @@ impl ConductorActorClient {
                     unified,
                     state,
                     outermost_config_dir,
+                    instance_key_mode,
                     reply,
                 },
                 Some(self.rpc_timeout),

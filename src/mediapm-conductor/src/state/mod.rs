@@ -179,13 +179,18 @@ impl Default for ConductorState {
     }
 }
 
-/// Re-derives a tool-call instance key from the same components recorded at
-/// execution time.
+/// Re-derives a tool-call instance key from command material alone.
 ///
-/// Compatibility helper: derives a v7 key from command/key material.
+/// Routes through the active v9 scheme in the caller's digest mode; callers with
+/// the full work material should derive through `StepWorkMaterial::key_at`, which
+/// also includes output tokens and staged inputs.
 #[must_use]
-pub fn derive_tool_call_instance_key(tool_call_id: &str, key_material: &[Hash]) -> Hash {
-    crate::instance_key::derive_instance_key(tool_call_id, key_material)
+pub fn derive_tool_call_instance_key(
+    tool_call_id: &str,
+    key_material: &[DerivedHash],
+    mode: &crate::instance_key_secret::ResolvedSecretMode,
+) -> DerivedHash {
+    crate::instance_key::derive_instance_key(tool_call_id, key_material, mode.clone())
 }
 
 /// The step and work a settlement is merging for.

@@ -615,6 +615,42 @@ mod tests {
         assert_eq!(decoded, state);
     }
 
+    /// v9 keyed instance keys and the secret verifier round trip without ever
+    /// storing the secret itself.
+    #[test]
+    fn keyed_records_and_secret_verifier_round_trip_through_v7_wire() {
+        use crate::instance_key_secret::InstanceKeySecret;
+        use crate::keyed_hash::KeyedHash;
+
+        let secret = InstanceKeySecret::from_bytes_for_test([13; 32]);
+        let verifier = secret.verifier();
+        let key = DerivedHash::Keyed(KeyedHash::hash(&secret, "test/instance", b"key"));
+        let mut state = sample_state();
+        let (old_key, mut instance) =
+            state.tool_call_instances.pop_first().expect("sample instance");
+        instance.key_version = crate::instance_key::INSTANCE_KEY_VERSION;
+        instance.attempted_key_version_nk = crate::instance_key::INSTANCE_KEY_VERSION;
+        instance.command_args =
+            vec![DerivedHash::Keyed(KeyedHash::hash(&secret, "test/command", b"arg"))];
+        state.tool_call_instances.remove(&old_key);
+        state.tool_call_instances.insert(key, instance.clone());
+        state
+            .step_instances
+            .insert("default".to_string(), BTreeMap::from([("step-0-echo".to_string(), key)]));
+        state.instance_key_secret_verifier = Some(verifier);
+
+        let encoded = encode_state_json(&state).expect("keyed state encodes");
+        let json: serde_json::Value = serde_json::from_slice(&encoded).expect("json reads");
+        assert!(
+            json["instance_key_secret_verifier"]
+                .as_str()
+                .expect("verifier is a string")
+                .starts_with("blake3-keyed:"),
+            "only the verifier, never the secret, is persisted",
+        );
+        assert_eq!(decode_state_json(&encoded).expect("keyed state decodes"), state);
+    }
+
     #[test]
     fn encoded_state_declares_the_current_version() {
         let encoded = encode_state_json(&sample_state()).unwrap();

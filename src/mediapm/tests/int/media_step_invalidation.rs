@@ -70,7 +70,7 @@ fn assert_step_instances_marked(
             instance.invalidated_at_nk.is_some(),
             marked,
             "{context}: instance {} of '{step_id}' must be {}",
-            key.to_hex(),
+            key,
             if marked { "marked" } else { "unmarked" },
         );
     }
@@ -420,8 +420,7 @@ async fn unknown_media_and_absent_step_indexes_are_errors() -> Result<(), MediaP
     for (key, instance) in &state.tool_call_instances {
         assert!(
             instance.invalidated_at_nk.is_none(),
-            "a rejected invalidation must not mark instance {}",
-            key.to_hex(),
+            "a rejected invalidation must not mark instance {key}",
         );
     }
 

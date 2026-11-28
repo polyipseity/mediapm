@@ -21,10 +21,12 @@ use std::collections::BTreeMap;
 use mediapm_cas::Hash;
 
 use crate::config::OutputCaptureSpec;
+use crate::derived_hash::DerivedHash;
 use crate::instance_key::{
-    V8KeyMaterial, derive_instance_key_for_version, key_material_for_tool,
+    V9KeyMaterial, derive_instance_key_for_version, key_material_for_tool,
     predicted_materialized_inputs,
 };
+use crate::instance_key_secret::ResolvedSecretMode;
 use crate::orchestration::step_worker::capture::implicit_stream_specs;
 use crate::state::ToolCallInstance;
 
@@ -32,12 +34,13 @@ use crate::state::ToolCallInstance;
 ///
 /// The three maps are exactly the terms [`crate::instance_key::derive_instance_key_for_version`]
 /// reads: `command_args` for every version, and the output tokens and staged
-/// inputs for v8.
+/// inputs for v8 and v9. Command terms carry their own digest mode; staged
+/// hashes stay ordinary CAS hashes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepWorkMaterial {
-    /// Key material in order, one hash per key-material part: a builtin's
-    /// declared inputs by name, or a command's parts in argv order.
-    pub command_args: Vec<Hash>,
+    /// Key material in order, one derived hash per key-material part: a
+    /// builtin's declared inputs by name, or a command's parts in argv order.
+    pub command_args: Vec<DerivedHash>,
     /// Capture token per output name this step can produce.
     pub output_tokens: BTreeMap<String, String>,
     /// Inputs the command's selectors stage, keyed by sandbox-relative
@@ -68,6 +71,7 @@ impl StepWorkMaterial {
         step_outputs: &BTreeMap<String, OutputCaptureSpec>,
         merged_bindings: &BTreeMap<String, String>,
         input_values: &BTreeMap<String, Vec<u8>>,
+        mode: &ResolvedSecretMode,
     ) -> Self {
         let merged = merge_output_specs(tool_outputs, step_outputs);
         let producible = producible_output_specs(&merged);
@@ -77,6 +81,7 @@ impl StepWorkMaterial {
                 input_values,
                 merged_bindings,
                 literal_env_vars,
+                mode,
             ),
             output_tokens: output_tokens(&producible),
             materialized_inputs: predicted_materialized_inputs(
@@ -90,19 +95,25 @@ impl StepWorkMaterial {
     /// Derives this material's instance key for one recorded key version.
     ///
     /// The version decides the derivation, and the material supplies every term
-    /// any known version needs: v7 derives from `command_args` alone, v8 also
-    /// reads the output tokens and staged inputs. `None` means the version has no
-    /// derivation this crate can evaluate.
+    /// any known version needs: v7 derives from unkeyed `command_args` alone,
+    /// v8 and v9 also read the output tokens and staged inputs. `None` means the
+    /// version has no derivation this crate can evaluate.
     #[must_use]
-    pub fn key_at(&self, tool_call_id: &str, version: u32) -> Option<Hash> {
+    pub fn key_at(
+        &self,
+        tool_call_id: &str,
+        version: u32,
+        mode: &ResolvedSecretMode,
+    ) -> Option<DerivedHash> {
         derive_instance_key_for_version(
             version,
             tool_call_id,
             &self.command_args,
-            Some(&V8KeyMaterial {
+            Some(&V9KeyMaterial {
                 output_tokens: &self.output_tokens,
                 materialized_inputs: &self.materialized_inputs,
             }),
+            mode,
         )
     }
 }
@@ -119,11 +130,12 @@ impl StepWorkMaterial {
 /// verified from any material and never matches.
 #[must_use]
 pub fn instance_matches_work(
-    stored_key: Hash,
+    stored_key: DerivedHash,
     instance: &ToolCallInstance,
     material: &StepWorkMaterial,
+    mode: &ResolvedSecretMode,
 ) -> bool {
-    material.key_at(&instance.tool_call_id, instance.key_version) == Some(stored_key)
+    material.key_at(&instance.tool_call_id, instance.key_version, mode) == Some(stored_key)
 }
 
 /// Merges tool-level output specs (defaults) with step-level output specs.
@@ -290,9 +302,11 @@ mod tests {
     use crate::config::{
         CaptureKind, OutputCaptureSpec, SaveMode, ToolKindSpec, ToolSpec, WorkflowStepSpec,
     };
+    use crate::derived_hash::DerivedHash;
     use crate::instance_key::{
         INSTANCE_KEY_VERSION, V7_INSTANCE_KEY_VERSION, derive_instance_key_v7,
     };
+    use crate::instance_key_secret::ResolvedSecretMode;
     use crate::state::ToolCallInstance;
 
     /// The command a tool runs, empty for a builtin.
@@ -379,6 +393,7 @@ mod tests {
             &step.outputs,
             &merged_bindings,
             &input_values,
+            &ResolvedSecretMode::Unkeyed,
         )
     }
 
@@ -409,21 +424,28 @@ mod tests {
     /// verification pinned to v7 rejects the record even though its stored key
     /// re-derives exactly.
     #[test]
-    fn a_v8_record_matches_the_material_that_produced_it() {
+    fn a_v9_record_matches_the_material_that_produced_it() {
         let (tool, step) = managed_tool_and_step();
         let material = material_for(&tool, &step, Hash::from_content(b"source-bytes"));
         let tool_call_id = step.tool.clone();
         let stored_key = material
-            .key_at(&tool_call_id, INSTANCE_KEY_VERSION)
-            .expect("a v8 derivation is defined for complete material");
+            .key_at(&tool_call_id, INSTANCE_KEY_VERSION, &ResolvedSecretMode::Unkeyed)
+            .expect("a v9 derivation is defined for complete material");
         let instance = recorded_instance(&tool_call_id, INSTANCE_KEY_VERSION);
 
         assert!(
-            instance_matches_work(stored_key, &instance, &material),
-            "the key a v8 record stores must re-derive from the material that produced it",
+            instance_matches_work(stored_key, &instance, &material, &ResolvedSecretMode::Unkeyed),
+            "the key a v9 record stores must re-derive from the material that produced it",
         );
         assert_ne!(
-            derive_instance_key_v7(&tool_call_id, &material.command_args),
+            derive_instance_key_v7(
+                &tool_call_id,
+                &material
+                    .command_args
+                    .iter()
+                    .filter_map(|value| value.as_unkeyed())
+                    .collect::<Vec<_>>(),
+            ),
             stored_key,
             "a v7 derivation of the same command args must differ, which is the old miss",
         );
@@ -438,16 +460,28 @@ mod tests {
         let (tool, step) = managed_tool_and_step();
         let material = material_for(&tool, &step, Hash::from_content(b"source-bytes"));
         let tool_call_id = step.tool.clone();
-        let stored_key = derive_instance_key_v7(&tool_call_id, &material.command_args);
+        let stored_key = derive_instance_key_v7(
+            &tool_call_id,
+            &material
+                .command_args
+                .iter()
+                .filter_map(|value| value.as_unkeyed())
+                .collect::<Vec<_>>(),
+        );
         let instance = recorded_instance(&tool_call_id, V7_INSTANCE_KEY_VERSION);
 
         assert_eq!(
-            material.key_at(&tool_call_id, V7_INSTANCE_KEY_VERSION),
-            Some(stored_key),
+            material.key_at(&tool_call_id, V7_INSTANCE_KEY_VERSION, &ResolvedSecretMode::Unkeyed),
+            Some(DerivedHash::from(stored_key)),
             "a v7 key derives from command args alone",
         );
         assert!(
-            instance_matches_work(stored_key, &instance, &material),
+            instance_matches_work(
+                DerivedHash::from(stored_key),
+                &instance,
+                &material,
+                &ResolvedSecretMode::Unkeyed
+            ),
             "a v7 record must verify against the material that reproduces its key",
         );
     }
@@ -463,13 +497,17 @@ mod tests {
         let material = material_for(&tool, &step, Hash::from_content(b"source-bytes"));
         let tool_call_id = step.tool.clone();
         let stored_key = material
-            .key_at(&tool_call_id, INSTANCE_KEY_VERSION)
-            .expect("a v8 derivation is defined for complete material");
+            .key_at(&tool_call_id, INSTANCE_KEY_VERSION, &ResolvedSecretMode::Unkeyed)
+            .expect("a v9 derivation is defined for complete material");
         let instance = recorded_instance(&tool_call_id, 99);
 
-        assert_eq!(material.key_at(&tool_call_id, 99), None, "version 99 has no derivation");
+        assert_eq!(
+            material.key_at(&tool_call_id, 99, &ResolvedSecretMode::Unkeyed),
+            None,
+            "version 99 has no derivation"
+        );
         assert!(
-            !instance_matches_work(stored_key, &instance, &material),
+            !instance_matches_work(stored_key, &instance, &material, &ResolvedSecretMode::Unkeyed),
             "a record of an unknown key version cannot be verified",
         );
     }

@@ -49,6 +49,23 @@ impl From<Hash> for DerivedHash {
     }
 }
 
+/// An unkeyed derived digest compares equal to the CAS hash it carries.
+///
+/// A keyed digest is never equal to a CAS hash: comparing the two must not
+/// quietly drop the keying. This makes assertions over unkeyed key material
+/// readable without weakening that boundary.
+impl PartialEq<Hash> for DerivedHash {
+    fn eq(&self, other: &Hash) -> bool {
+        matches!(self, Self::Unkeyed(hash) if hash == other)
+    }
+}
+
+impl PartialEq<DerivedHash> for Hash {
+    fn eq(&self, other: &DerivedHash) -> bool {
+        other == self
+    }
+}
+
 impl From<KeyedHash> for DerivedHash {
     fn from(value: KeyedHash) -> Self {
         Self::Keyed(value)
