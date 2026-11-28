@@ -26,10 +26,15 @@ use tokio::sync::OnceCell;
 
 use crate::api::{PathOverrides, RunWorkflowOptions, RuntimeStoragePaths};
 use crate::conductor_impl::Conductor;
+use crate::config::InstanceKeySecretConfig;
 use crate::defaults;
 use crate::derived_hash::DerivedHash;
 use crate::error::ConductorError;
 use crate::gc::{ConductorGcReport, GcClassification};
+use crate::instance_key_secret::{
+    InstanceKeySecretPolicy, ResolvedSecretMode, resolve_secret_mode,
+};
+use crate::keyed_hash::KeyedHash;
 use crate::state::ConductorState;
 use crate::tools::HostBuiltins;
 
@@ -50,11 +55,74 @@ pub use mediapm_conductor_cli::{
 static CONDUCTOR: OnceCell<Conductor<ConfiguredCas>> = OnceCell::const_new();
 static CONDUCTOR_DIR_OVERRIDE: OnceCell<Option<PathBuf>> = OnceCell::const_new();
 static STORAGE_OVERRIDES: OnceCell<PathOverrides> = OnceCell::const_new();
+static SECRET_POLICY: OnceCell<InstanceKeySecretPolicy> = OnceCell::const_new();
 
 /// Sets global path overrides for conductor initialization.
 fn set_conductor_overrides(conductor_dir_override: Option<PathBuf>, overrides: PathOverrides) {
     let _ = CONDUCTOR_DIR_OVERRIDE.set(conductor_dir_override);
     let _ = STORAGE_OVERRIDES.set(overrides);
+}
+
+/// Maps the parsed switches to the policy the secret resolver consumes.
+///
+/// Both spellings of the `use` pair are authoritative: the negative switch
+/// and an explicit `--use-instance-key-secret=false` each disable secrets.
+/// The generated-format check and the two force flags keep their own values.
+fn secret_policy_from_cli(cli: &Cli) -> InstanceKeySecretPolicy {
+    InstanceKeySecretPolicy {
+        use_secret: cli.use_instance_key_secret && !cli.no_use_instance_key_secret,
+        require_generated_format: cli.require_generated_instance_key_secret_format,
+        force_generate: cli.force_generate_instance_key_secret,
+        force_disable: cli.force_disable_instance_key_secret,
+    }
+}
+
+/// Combines the CLI policy with the resolved config policy at boot.
+///
+/// Each policy boolean is restrictive: a `false` on either side wins, so a
+/// user config can narrow what the operator's switches allow but never widen
+/// it. Force flags are CLI-only because config documents cannot state them.
+fn boot_secret_policy(
+    cli: InstanceKeySecretPolicy,
+    config: InstanceKeySecretConfig,
+) -> InstanceKeySecretPolicy {
+    InstanceKeySecretPolicy {
+        use_secret: cli.use_secret && config.use_secret,
+        require_generated_format: cli.require_generated_format && config.require_generated_format,
+        force_generate: cli.force_generate,
+        force_disable: cli.force_disable,
+    }
+}
+
+/// Returns the CLI policy stored at entry, or the default when a caller
+/// bypassed the entry point. Config policy is applied separately at boot.
+fn secret_policy() -> InstanceKeySecretPolicy {
+    SECRET_POLICY.get().copied().unwrap_or(InstanceKeySecretPolicy {
+        use_secret: true,
+        require_generated_format: true,
+        force_generate: false,
+        force_disable: false,
+    })
+}
+
+/// Resolves the instance-key mode from the state on disk and the boot policy.
+///
+/// The state is read before the facade exists so a newly generated secret can
+/// be recorded through the facade's initial state rather than lost.
+///
+/// # Errors
+///
+/// Returns [`ConductorError`] when the state cannot be read or the secret
+/// policy cannot be satisfied.
+async fn resolve_boot_secret_mode<C: mediapm_cas::CasApi>(
+    paths: &RuntimeStoragePaths,
+    cas: &C,
+    policy: InstanceKeySecretPolicy,
+) -> Result<(ResolvedSecretMode, Option<KeyedHash>), ConductorError> {
+    let stored_verifier = crate::conductor_impl::load_state_file_async(cas, paths)
+        .await?
+        .and_then(|state| state.instance_key_secret_verifier);
+    resolve_secret_mode(policy, &paths.state_file_path, stored_verifier)
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +189,8 @@ pub async fn run_from_args(args: &[&str]) -> Result<(), ConductorError> {
 // ---------------------------------------------------------------------------
 
 async fn run(cli: Cli) -> Result<(), ConductorError> {
+    // Read the policy before the path overrides move fields out of `cli`.
+    let secret_policy = secret_policy_from_cli(&cli);
     set_conductor_overrides(
         cli.conductor_dir,
         PathOverrides {
@@ -132,6 +202,7 @@ async fn run(cli: Cli) -> Result<(), ConductorError> {
             state_file: None,
         },
     );
+    let _ = SECRET_POLICY.set(secret_policy);
     match cli.command {
         CliCommand::Run { workflow, force_rerun } => cmd_run(&workflow, force_rerun).await,
         CliCommand::State(state_args) => cmd_state(state_args).await,
@@ -183,7 +254,18 @@ async fn ensure_conductor() -> Result<&'static Conductor<ConfiguredCas>, Conduct
                 &conductor_dir,
                 crate::runtime_env::default_runtime_env_file_names(),
             )?;
-            Ok(Conductor::new(paths, cas))
+            let config_paths = crate::conductor_impl::discover_config_paths(&paths);
+            let config = if config_paths.is_empty() {
+                InstanceKeySecretConfig::default()
+            } else {
+                crate::config::versions::merge_document_sources(&config_paths)?
+                    .runtime
+                    .instance_key_secret
+            };
+            let (mode, verifier) =
+                resolve_boot_secret_mode(&paths, &cas, boot_secret_policy(secret_policy(), config))
+                    .await?;
+            Ok(Conductor::new(paths, cas, mode, verifier))
         })
         .await
 }
@@ -513,18 +595,172 @@ fn cmd_completions(shell: Shell) {
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
+    use clap::Parser;
     use mediapm_cas::{Hash, InMemoryCas};
     use mediapm_utils::Timestamp;
 
     use super::{
-        MarkerChange, change_instance_invalidation, gc_summary_line, marker_change_message,
+        Cli, MarkerChange, change_instance_invalidation, gc_summary_line, marker_change_message,
         set_instance_invalidation,
     };
     use crate::api::RuntimeStoragePaths;
     use crate::conductor_impl::Conductor;
+    use crate::config::{InstanceKeySecretConfig, NickelDocument};
     use crate::derived_hash::DerivedHash;
     use crate::gc::{ConductorGcReport, GcClassification};
+    use crate::instance_key_secret::{InstanceKeySecretPolicy, ResolvedSecretMode};
     use crate::state::{CapturedOutput, ConductorState, StepRef, ToolCallInstance};
+
+    /// The negative switch must be the sole source of `use_secret`, while the
+    /// generated-format check and the two force switches keep their own values.
+    #[test]
+    fn secret_policy_follows_the_cli_switches() {
+        let default = Cli::try_parse_from(["conductor", "gc"]).expect("parse default gc");
+        assert_eq!(
+            super::secret_policy_from_cli(&default),
+            InstanceKeySecretPolicy {
+                use_secret: true,
+                require_generated_format: true,
+                force_generate: false,
+                force_disable: false,
+            }
+        );
+
+        let switched = Cli::try_parse_from([
+            "conductor",
+            "--no-use-instance-key-secret",
+            "--require-generated-instance-key-secret-format",
+            "false",
+            "--force-generate-instance-key-secret",
+            "--force-disable-instance-key-secret",
+            "gc",
+        ])
+        .expect("parse switched gc");
+        assert_eq!(
+            super::secret_policy_from_cli(&switched),
+            InstanceKeySecretPolicy {
+                use_secret: false,
+                require_generated_format: false,
+                force_generate: true,
+                force_disable: true,
+            }
+        );
+    }
+
+    /// A positive switch explicitly set to false must reach the boot policy:
+    /// disabling secrets cannot require knowing the negative spelling.
+    #[test]
+    fn secret_policy_honors_an_explicit_positive_false() {
+        let cli = Cli::try_parse_from(["conductor", "--use-instance-key-secret=false", "gc"])
+            .expect("parse explicit false");
+        assert!(!cli.use_instance_key_secret);
+        assert!(
+            !super::secret_policy_from_cli(&cli).use_secret,
+            "an explicit false must disable secret use",
+        );
+    }
+
+    /// Each restrictive boolean wins from whichever side states it, and the
+    /// force flags stay CLI-only.
+    #[test]
+    fn boot_secret_policy_combines_cli_and_config_restrictively() {
+        let cli = InstanceKeySecretPolicy {
+            use_secret: true,
+            require_generated_format: true,
+            force_generate: true,
+            force_disable: false,
+        };
+        let config = InstanceKeySecretConfig { use_secret: false, require_generated_format: false };
+        assert_eq!(
+            super::boot_secret_policy(cli, config),
+            InstanceKeySecretPolicy {
+                use_secret: false,
+                require_generated_format: false,
+                force_generate: true,
+                force_disable: false,
+            },
+        );
+
+        let cli_off = InstanceKeySecretPolicy {
+            use_secret: false,
+            require_generated_format: false,
+            force_generate: false,
+            force_disable: true,
+        };
+        assert_eq!(super::boot_secret_policy(cli_off, InstanceKeySecretConfig::default()), cli_off,);
+    }
+
+    /// A user-authored config that disables secrets must survive the same
+    /// merge other config fields use and leave a fresh boot unkeyed, with no
+    /// secret file published.
+    #[tokio::test]
+    async fn a_merged_config_disabling_secrets_produces_an_unkeyed_boot_policy() {
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
+        let conductor_dir = dir.path().join(".conductor");
+        std::fs::create_dir_all(&conductor_dir).expect("create conductor dir");
+        let document = NickelDocument {
+            runtime: crate::config::ConductorRuntimeConfig {
+                instance_key_secret: InstanceKeySecretConfig {
+                    use_secret: false,
+                    require_generated_format: true,
+                },
+                ..Default::default()
+            },
+            ..NickelDocument::default()
+        };
+        std::fs::write(
+            dir.path().join("conductor.ncl"),
+            crate::config::versions::encode_document(document).expect("encode config"),
+        )
+        .expect("write config");
+
+        let paths = RuntimeStoragePaths::new(&conductor_dir);
+        let config_paths = crate::conductor_impl::discover_config_paths(&paths);
+        let merged = crate::config::versions::merge_document_sources(&config_paths)
+            .expect("merge the config document");
+        let cli = Cli::try_parse_from(["conductor", "gc"]).expect("parse gc");
+        let policy = super::boot_secret_policy(
+            super::secret_policy_from_cli(&cli),
+            merged.runtime.instance_key_secret,
+        );
+        assert!(!policy.use_secret, "the config's false must restrict the CLI default");
+
+        let (mode, verifier) =
+            super::resolve_boot_secret_mode(&paths, &mediapm_cas::new_in_memory_cas(), policy)
+                .await
+                .expect("unkeyed boot resolves");
+        assert_eq!(mode, ResolvedSecretMode::Unkeyed);
+        assert_eq!(verifier, None);
+        assert!(
+            !crate::instance_key_secret::secret_path_for_state(&paths.state_file_path).exists(),
+            "an unkeyed boot must not publish a secret",
+        );
+    }
+
+    /// A fresh CLI boot over a temporary conductor directory must publish the
+    /// sibling secret file before any facade exists, so later state writes can
+    /// record only its non-secret verifier.
+    #[tokio::test]
+    async fn a_fresh_cli_boot_generates_the_instance_key_secret_beside_state() {
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
+        let conductor_dir = dir.path().join(".conductor");
+        std::fs::create_dir_all(&conductor_dir).expect("create conductor dir");
+        let paths = RuntimeStoragePaths::new(&conductor_dir);
+        let cas = mediapm_cas::new_in_memory_cas();
+        let cli = Cli::try_parse_from(["conductor", "gc"]).expect("parse gc");
+
+        let (mode, verifier) =
+            super::resolve_boot_secret_mode(&paths, &cas, super::secret_policy_from_cli(&cli))
+                .await
+                .expect("resolve secret mode on a fresh boot");
+
+        assert!(matches!(mode, ResolvedSecretMode::Keyed(_)));
+        assert!(verifier.is_some(), "a keyed boot must return a state verifier");
+        let secret_path = crate::instance_key_secret::secret_path_for_state(&paths.state_file_path);
+        let bytes = std::fs::read(&secret_path).expect("generated secret file");
+        assert_eq!(bytes.len(), 65, "generated format is 64 hex characters plus a newline");
+        assert!(bytes.ends_with(b"\n"));
+    }
 
     /// The conductor CLI boot must load the dotenv pair it seeds: a value a
     /// user puts in `.env` under the resolved conductor directory becomes
@@ -605,7 +841,15 @@ mod tests {
             .expect("create state dir");
         let bytes = crate::state::versions::encode_state_json(state).expect("encode state");
         std::fs::write(&paths.state_file_path, bytes).expect("write state file");
-        (dir, Conductor::new(paths, mediapm_cas::new_in_memory_cas()))
+        (
+            dir,
+            Conductor::new(
+                paths,
+                mediapm_cas::new_in_memory_cas(),
+                ResolvedSecretMode::Unkeyed,
+                None,
+            ),
+        )
     }
 
     /// Reloads the state file, which is the only place a command's effect

@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 
 use mediapm_conductor::RunWorkflowOptions;
+use mediapm_conductor::instance_key_secret::ResolvedSecretMode;
 
 use crate::{
     TestConductor, bare_step, doc_with_workflows, echo_step, echo_tool, echo_workflow,
@@ -137,8 +138,9 @@ async fn default_runtime_tmp_is_removed_after_a_failed_workflow() {
     let paths = RuntimeStoragePaths::new(dir.path());
     let state_file = paths.state_file_path.clone();
     write_seeded_state(&paths);
-    let conductor = Conductor::new(paths, mediapm_cas::InMemoryCas::new())
-        .with_gc_settings(86_400, interval_secs);
+    let conductor =
+        Conductor::new(paths, mediapm_cas::InMemoryCas::new(), ResolvedSecretMode::Unkeyed, None)
+            .with_gc_settings(86_400, interval_secs);
 
     let error = conductor
         .run_workflow("default", RunWorkflowOptions::default())

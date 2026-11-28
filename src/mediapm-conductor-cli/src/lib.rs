@@ -20,12 +20,16 @@ pub mod env_registry;
 
 use std::path::PathBuf;
 
-use clap::{Command, CommandFactory, Parser, Subcommand};
+use clap::{ArgAction, Command, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
 /// Top-level `mediapm-conductor` CLI arguments.
 #[derive(Parser)]
 #[command(name = "conductor", version, about = "mediapm-conductor workflow orchestrator")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the clap definition mirrors five independent operator switches whose names and defaults are the CLI contract"
+)]
 pub struct Cli {
     /// Override the conductor runtime directory.
     #[arg(long, env = "MEDIAPM_CONDUCTOR_DIR")]
@@ -42,6 +46,35 @@ pub struct Cli {
     /// Override the tools materialization directory.
     #[arg(long, env = "MEDIAPM_CONDUCTOR_TOOLS_DIR")]
     pub conductor_tools_dir: Option<PathBuf>,
+    /// Use a conductor-owned secret for instance-key derivation.
+    #[arg(
+        long,
+        env = "MEDIAPM_CONDUCTOR_USE_INSTANCE_KEY_SECRET",
+        default_value_t = true,
+        default_missing_value = "true",
+        num_args = 0..=1,
+        require_equals = true,
+        action = ArgAction::Set,
+        conflicts_with = "no_use_instance_key_secret"
+    )]
+    pub use_instance_key_secret: bool,
+    /// Disable conductor-owned secret use for instance-key derivation.
+    #[arg(long, env = "MEDIAPM_CONDUCTOR_NO_USE_INSTANCE_KEY_SECRET")]
+    pub no_use_instance_key_secret: bool,
+    /// Require the generated secret format and entropy sanity check.
+    #[arg(
+        long,
+        env = "MEDIAPM_CONDUCTOR_REQUIRE_GENERATED_INSTANCE_KEY_SECRET_FORMAT",
+        default_value_t = true,
+        action = ArgAction::Set
+    )]
+    pub require_generated_instance_key_secret_format: bool,
+    /// Generate a secret when state says no secret was used.
+    #[arg(long, env = "MEDIAPM_CONDUCTOR_FORCE_GENERATE_INSTANCE_KEY_SECRET")]
+    pub force_generate_instance_key_secret: bool,
+    /// Continue without a secret when state says one was used.
+    #[arg(long, env = "MEDIAPM_CONDUCTOR_FORCE_DISABLE_INSTANCE_KEY_SECRET")]
+    pub force_disable_instance_key_secret: bool,
 
     #[command(subcommand)]
     pub command: CliCommand,
@@ -214,6 +247,41 @@ mod tests {
     use clap::Parser;
     use clap::error::ErrorKind;
 
+    /// Serializes process-environment mutations made by tests in this crate.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Restores one environment variable when a test scope ends.
+    struct EnvValueGuard {
+        name: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvValueGuard {
+        /// Installs `value` for `name`.
+        ///
+        /// # Safety
+        ///
+        /// The caller must hold [`ENV_LOCK`] for the guard's whole lifetime.
+        unsafe fn set(name: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(name);
+            // SAFETY: the caller holds ENV_LOCK across the mutation and the guard.
+            unsafe { std::env::set_var(name, value) };
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for EnvValueGuard {
+        fn drop(&mut self) {
+            // SAFETY: the lock guard is declared first, so it is still held here.
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var(self.name, value),
+                    None => std::env::remove_var(self.name),
+                }
+            }
+        }
+    }
+
     /// Collects a command's declared subcommand names in declaration order.
     fn subcommand_names(command: &clap::Command) -> Vec<String> {
         command.get_subcommands().map(|sub| sub.get_name().to_owned()).collect()
@@ -268,6 +336,51 @@ mod tests {
                 .unwrap_or_else(|| panic!("the command tree has no {parent} subcommand"));
             assert_eq!(subcommand_names(child), expected, "wrong subcommands under {parent}");
         }
+    }
+
+    /// The paired instance-key switches must be mutually exclusive: an
+    /// operator who states both has contradictory intent, and clap must reject
+    /// the invocation instead of letting one switch silently win.
+    #[test]
+    fn instance_key_secret_flags_follow_pair_convention() {
+        let positive = Cli::try_parse_from(["conductor", "--use-instance-key-secret", "gc"])
+            .expect("positive flag parses");
+        let negative = Cli::try_parse_from(["conductor", "--no-use-instance-key-secret", "gc"])
+            .expect("negative flag parses");
+        assert!(!positive.no_use_instance_key_secret);
+        assert!(negative.no_use_instance_key_secret);
+        let both = Cli::try_parse_from([
+            "conductor",
+            "--use-instance-key-secret",
+            "--no-use-instance-key-secret",
+            "gc",
+        ]);
+        assert!(both.is_err(), "positive and negative switches conflict");
+    }
+
+    /// The positive switch accepts an explicit `false` at the command line:
+    /// disabling secrets must not depend on the negative spelling being known.
+    #[test]
+    fn instance_key_secret_positive_switch_accepts_explicit_false() {
+        let parsed = Cli::try_parse_from(["conductor", "--use-instance-key-secret=false", "gc"])
+            .expect("explicit false parses");
+        assert!(!parsed.use_instance_key_secret);
+    }
+
+    /// The positive switch's env var carries `false` into the parsed field.
+    /// The mutex keeps this process-global mutation away from sibling tests.
+    #[test]
+    fn instance_key_secret_positive_env_false_disables_the_switch() {
+        let name = "MEDIAPM_CONDUCTOR_USE_INSTANCE_KEY_SECRET";
+        let lock = ENV_LOCK.lock().expect("environment lock");
+        // SAFETY: this test holds ENV_LOCK for the whole mutation window.
+        let value = unsafe { EnvValueGuard::set(name, "false") };
+
+        let parsed = Cli::try_parse_from(["conductor", "gc"]).expect("parse gc under env false");
+
+        drop(value);
+        drop(lock);
+        assert!(!parsed.use_instance_key_secret);
     }
 
     /// The name stays `conductor` rather than following the crate name, because
@@ -337,6 +450,68 @@ mod tests {
                 "the {flag} argument does not read {variable}"
             );
         }
+    }
+
+    /// Every instance-key switch reads its own environment variable, so a
+    /// caller can set policy without adding flags to each invocation.
+    #[test]
+    fn instance_key_secret_switches_read_their_environment_variables() {
+        let command = command();
+        for (flag, variable) in [
+            ("use_instance_key_secret", "MEDIAPM_CONDUCTOR_USE_INSTANCE_KEY_SECRET"),
+            ("no_use_instance_key_secret", "MEDIAPM_CONDUCTOR_NO_USE_INSTANCE_KEY_SECRET"),
+            (
+                "require_generated_instance_key_secret_format",
+                "MEDIAPM_CONDUCTOR_REQUIRE_GENERATED_INSTANCE_KEY_SECRET_FORMAT",
+            ),
+            (
+                "force_generate_instance_key_secret",
+                "MEDIAPM_CONDUCTOR_FORCE_GENERATE_INSTANCE_KEY_SECRET",
+            ),
+            (
+                "force_disable_instance_key_secret",
+                "MEDIAPM_CONDUCTOR_FORCE_DISABLE_INSTANCE_KEY_SECRET",
+            ),
+        ] {
+            let arg = command
+                .get_arguments()
+                .find(|arg| arg.get_id().as_str() == flag)
+                .unwrap_or_else(|| panic!("the command declares no {flag} argument"));
+            assert_eq!(
+                arg.get_env().and_then(std::ffi::OsStr::to_str),
+                Some(variable),
+                "the {flag} argument does not read {variable}"
+            );
+        }
+    }
+
+    /// The generated-format check defaults on but accepts an explicit value,
+    /// while the two force switches are presence-only `SetTrue` flags.
+    #[test]
+    fn instance_key_secret_switch_values_follow_the_declared_actions() {
+        let default = Cli::try_parse_from(["conductor", "gc"]).expect("parse gc");
+        assert!(default.require_generated_instance_key_secret_format);
+        assert!(!default.force_generate_instance_key_secret);
+        assert!(!default.force_disable_instance_key_secret);
+
+        let relaxed = Cli::try_parse_from([
+            "conductor",
+            "--require-generated-instance-key-secret-format",
+            "false",
+            "gc",
+        ])
+        .expect("parse relaxed generated-format check");
+        assert!(!relaxed.require_generated_instance_key_secret_format);
+
+        let forced = Cli::try_parse_from([
+            "conductor",
+            "--force-generate-instance-key-secret",
+            "--force-disable-instance-key-secret",
+            "gc",
+        ])
+        .expect("parse force switches");
+        assert!(forced.force_generate_instance_key_secret);
+        assert!(forced.force_disable_instance_key_secret);
     }
 
     /// The same override works as a flag, which is the form that needs no

@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use mediapm_cas::{CasApi, CasMaintenanceApi, ConstraintApi, FileSystemCas, InMemoryCas};
 use mediapm_conductor::cache::{Cache, CacheDomainConfig, ENTRY_TTL_SECONDS};
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
+use mediapm_conductor::instance_key_secret::ResolvedSecretMode;
 use mediapm_conductor::provision::ProvisionedTool;
 use mediapm_conductor::runtime_env::{ensure_runtime_env_files, extend_runtime_gitignore};
 use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
@@ -1318,10 +1319,11 @@ impl MediaPmService<FileSystemCas> {
                 ],
                 effective_paths.conductor_state_config.clone(),
             );
-        let conductor = Conductor::new(runtime_storage, cas).with_gc_settings(
-            merged_runtime.lifecycle.instance_ttl_seconds,
-            merged_runtime.lifecycle.background_gc_interval_seconds,
-        );
+        let conductor = Conductor::new(runtime_storage, cas, ResolvedSecretMode::Unkeyed, None)
+            .with_gc_settings(
+                merged_runtime.lifecycle.instance_ttl_seconds,
+                merged_runtime.lifecycle.background_gc_interval_seconds,
+            );
 
         Ok(Self::new_with_runtime_storage_overrides(
             conductor,
@@ -1694,10 +1696,11 @@ impl MediaPmService<InMemoryCas> {
         // so the built-in defaults are the correct lifecycle input (there is
         // no `mediapm.ncl` value to consult yet).
         let lifecycle = MediaRuntimeStorage::default().lifecycle;
-        let conductor = Conductor::new(runtime_storage, cas).with_gc_settings(
-            lifecycle.instance_ttl_seconds,
-            lifecycle.background_gc_interval_seconds,
-        );
+        let conductor = Conductor::new(runtime_storage, cas, ResolvedSecretMode::Unkeyed, None)
+            .with_gc_settings(
+                lifecycle.instance_ttl_seconds,
+                lifecycle.background_gc_interval_seconds,
+            );
         Self::new(conductor, paths)
     }
 }

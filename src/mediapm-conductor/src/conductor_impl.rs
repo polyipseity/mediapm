@@ -18,6 +18,8 @@ use crate::api::{
 use crate::config::documents::NickelDocument;
 use crate::config::versions;
 use crate::error::ConductorError;
+use crate::instance_key_secret::ResolvedSecretMode;
+use crate::keyed_hash::KeyedHash;
 use crate::orchestration::node::ConductorActorClient;
 use crate::orchestration::protocol::{UnifiedNickelDocument, find_tool_by_name};
 use crate::orchestration::step_worker::process::set_child_environment;
@@ -64,6 +66,8 @@ where
     /// [`DEFAULT_CONDUCTOR_GC_TTL_SECONDS`](crate::defaults::DEFAULT_CONDUCTOR_GC_TTL_SECONDS);
     /// tests shorten it because seven days is not a test duration.
     gc_ttl_seconds: u64,
+    /// Instance-key mode resolved by the boot that created this facade.
+    instance_key_mode: ResolvedSecretMode,
 }
 
 impl<C> Conductor<C>
@@ -71,18 +75,36 @@ where
     C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static,
 {
     /// Creates a new conductor facade.
+    ///
+    /// `verifier` is the non-secret check value for `instance_key_mode`; it is
+    /// seeded into the initial state so a run that starts from a fresh state
+    /// still records which secret the instance keys were derived with.
     #[must_use]
-    pub fn new(storage_paths: RuntimeStoragePaths, cas: C) -> Self {
+    pub fn new(
+        storage_paths: RuntimeStoragePaths,
+        cas: C,
+        instance_key_mode: ResolvedSecretMode,
+        verifier: Option<KeyedHash>,
+    ) -> Self {
+        let mut initial_state = ConductorState::new_empty();
+        initial_state.instance_key_secret_verifier = verifier;
         Self {
             cas: Arc::new(cas),
             actor_client: OnceCell::new(),
             storage_paths,
-            state: Arc::new(std::sync::Mutex::new(ConductorState::default())),
+            state: Arc::new(std::sync::Mutex::new(initial_state)),
             state_gate: Arc::new(tokio::sync::Mutex::new(())),
             background_maintenance: std::sync::Mutex::new(None),
             background_gc_interval_secs: crate::defaults::DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS,
             gc_ttl_seconds: crate::defaults::DEFAULT_CONDUCTOR_GC_TTL_SECONDS,
+            instance_key_mode,
         }
+    }
+
+    /// Returns the instance-key mode this conductor facade resolved at startup.
+    #[must_use]
+    pub fn instance_key_mode(&self) -> ResolvedSecretMode {
+        self.instance_key_mode.clone()
     }
 
     /// Configures the two GC knobs both production triggers read.
@@ -96,9 +118,9 @@ where
     /// so a caller that configures nothing keeps today's behaviour.
     ///
     /// Consumes and returns the facade so a construction site can chain it
-    /// (`Conductor::new(paths, cas).with_gc_settings(ttl, interval)`); the
-    /// values must be set before the first workflow run, because that is when
-    /// the background loop captures them.
+    /// (`Conductor::new(paths, cas, ResolvedSecretMode::Unkeyed, None).with_gc_settings(ttl, interval)`).
+    /// The values must be set before the first workflow run, because that is
+    /// when the background loop captures them.
     #[must_use]
     pub fn with_gc_settings(mut self, ttl_seconds: u64, interval_seconds: u64) -> Self {
         self.gc_ttl_seconds = ttl_seconds;
@@ -917,7 +939,7 @@ async fn load_unified_config_and_state_async<C: CasApi>(
 }
 
 /// Loads the persisted conductor state from the state file, if present.
-async fn load_state_file_async<C: CasApi>(
+pub(crate) async fn load_state_file_async<C: CasApi>(
     cas: &C,
     storage_paths: &RuntimeStoragePaths,
 ) -> Result<Option<ConductorState>, ConductorError> {
@@ -1031,7 +1053,10 @@ fn runtime_root_is_gone(paths: &RuntimeStoragePaths) -> bool {
 /// Honors explicit config-document paths when set; otherwise scans
 /// [`RuntimeStoragePaths::conductor_dir`] for `.ncl` files and checks for
 /// `conductor.ncl` at the parent of `conductor_dir`.
-fn discover_config_paths(storage_paths: &RuntimeStoragePaths) -> Vec<PathBuf> {
+///
+/// The CLI boot calls this before resolving its secret policy, so policy
+/// loading and workflow loading see the same documents in the same order.
+pub(crate) fn discover_config_paths(storage_paths: &RuntimeStoragePaths) -> Vec<PathBuf> {
     // Explicit doc paths (mediapm passes `mediapm.conductor.ncl` +
     // `mediapm.conductor.generated.ncl`): load exactly those, in order,
     // skipping missing files so optional user docs do not fail loading.
@@ -1163,7 +1188,35 @@ mod tests {
 
     use super::*;
     use crate::derived_hash::DerivedHash;
+    use crate::instance_key_secret::{InstanceKeySecret, ResolvedSecretMode};
     use crate::state::ConductorState;
+
+    /// A facade constructed from a boot resolution must keep that mode and
+    /// carry only the secret's verifier into its initial state.
+    #[test]
+    fn conductor_keeps_the_resolved_mode_and_verifier_from_construction() {
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
+        let paths = RuntimeStoragePaths::new(dir.path());
+        let expected_mode =
+            ResolvedSecretMode::Keyed(InstanceKeySecret::from_bytes_for_test([7; 32]));
+        let verifier = match &expected_mode {
+            ResolvedSecretMode::Keyed(secret) => secret.verifier(),
+            ResolvedSecretMode::Unkeyed => panic!("the fixture is keyed"),
+        };
+
+        let conductor = Conductor::new(
+            paths,
+            mediapm_cas::new_in_memory_cas(),
+            expected_mode.clone(),
+            Some(verifier),
+        );
+
+        assert_eq!(conductor.instance_key_mode(), expected_mode);
+        assert_eq!(
+            conductor.get_state().expect("state").instance_key_secret_verifier,
+            Some(verifier)
+        );
+    }
 
     /// Explicit config-doc paths are used as-is (existing files only), in
     /// order; missing explicit paths are skipped.
@@ -1297,7 +1350,15 @@ mod tests {
         let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(dir.path());
         save_state_file(&paths, state).expect("seed state file");
-        (dir, Conductor::new(paths, mediapm_cas::new_in_memory_cas()))
+        (
+            dir,
+            Conductor::new(
+                paths,
+                mediapm_cas::new_in_memory_cas(),
+                ResolvedSecretMode::Unkeyed,
+                None,
+            ),
+        )
     }
 
     /// A step ref inside `workflow_id`, so a test names the pair an
@@ -1547,7 +1608,12 @@ mod tests {
         )]);
         save_state_file(&paths, &state).expect("seed state file");
 
-        let conductor = Conductor::new(paths, mediapm_cas::new_in_memory_cas());
+        let conductor = Conductor::new(
+            paths,
+            mediapm_cas::new_in_memory_cas(),
+            ResolvedSecretMode::Unkeyed,
+            None,
+        );
         conductor.replace_resolved_state(state).expect("replace state");
         conductor.run_gc().await.expect("gc");
         conductor.shutdown().await.expect("shutdown");
@@ -1576,9 +1642,13 @@ mod tests {
     #[test]
     fn gc_settings_reach_the_loop_interval_and_the_pass_ttl() {
         let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
-        let conductor =
-            Conductor::new(RuntimeStoragePaths::new(dir.path()), mediapm_cas::new_in_memory_cas())
-                .with_gc_settings(1, 1);
+        let conductor = Conductor::new(
+            RuntimeStoragePaths::new(dir.path()),
+            mediapm_cas::new_in_memory_cas(),
+            ResolvedSecretMode::Unkeyed,
+            None,
+        )
+        .with_gc_settings(1, 1);
 
         assert_eq!(
             conductor.background_gc_interval_secs, 1,
@@ -1696,7 +1766,12 @@ mod tests {
         let root = paths.state_file_path.parent().expect("state parent").to_path_buf();
         let state_file = paths.state_file_path.clone();
 
-        let mut conductor = Conductor::new(paths, mediapm_cas::new_in_memory_cas());
+        let mut conductor = Conductor::new(
+            paths,
+            mediapm_cas::new_in_memory_cas(),
+            ResolvedSecretMode::Unkeyed,
+            None,
+        );
         conductor.background_gc_interval_secs = 1;
         conductor.replace_resolved_state(state).expect("replace state");
         conductor.start_background_maintenance();
@@ -1741,7 +1816,12 @@ mod tests {
         )]);
         save_state_file(&paths, &state).expect("seed state file");
 
-        let mut conductor = Conductor::new(paths, mediapm_cas::new_in_memory_cas());
+        let mut conductor = Conductor::new(
+            paths,
+            mediapm_cas::new_in_memory_cas(),
+            ResolvedSecretMode::Unkeyed,
+            None,
+        );
         conductor.background_gc_interval_secs = 1;
         conductor.replace_resolved_state(state).expect("replace state");
         conductor.start_background_maintenance();
@@ -1816,7 +1896,12 @@ mod tests {
         )]);
         save_state_file(&paths, &state).expect("seed state file");
 
-        let mut conductor = Conductor::new(paths, mediapm_cas::new_in_memory_cas());
+        let mut conductor = Conductor::new(
+            paths,
+            mediapm_cas::new_in_memory_cas(),
+            ResolvedSecretMode::Unkeyed,
+            None,
+        );
         conductor.background_gc_interval_secs = 1;
         conductor.replace_resolved_state(state).expect("replace state");
         conductor.start_background_maintenance();
@@ -1871,7 +1956,7 @@ mod tests {
             .expect("put orphan payload");
         write_single_workflow_config_declaring(dir.path(), "default", &[declared]);
 
-        let mut conductor = Conductor::new(paths, cas);
+        let mut conductor = Conductor::new(paths, cas, ResolvedSecretMode::Unkeyed, None);
         conductor.background_gc_interval_secs = 1;
         conductor.replace_resolved_state(state).expect("replace state");
         conductor.start_background_maintenance();
@@ -1916,7 +2001,12 @@ mod tests {
         save_state_file(&paths, &state).expect("seed state file");
 
         let state_path = paths.state_file_path.clone();
-        let mut conductor = Conductor::new(paths, mediapm_cas::new_in_memory_cas());
+        let mut conductor = Conductor::new(
+            paths,
+            mediapm_cas::new_in_memory_cas(),
+            ResolvedSecretMode::Unkeyed,
+            None,
+        );
         conductor.background_gc_interval_secs = 1;
         conductor.replace_resolved_state(state).expect("replace state");
         conductor.start_background_maintenance();
@@ -2115,7 +2205,12 @@ mod tests {
         .expect("write config");
 
         let paths = RuntimeStoragePaths::new(dir.path());
-        let conductor = Conductor::new(paths.clone(), mediapm_cas::new_in_memory_cas());
+        let conductor = Conductor::new(
+            paths.clone(),
+            mediapm_cas::new_in_memory_cas(),
+            ResolvedSecretMode::Unkeyed,
+            None,
+        );
         conductor
             .run_workflow("default", crate::RunWorkflowOptions::default())
             .await

@@ -14,7 +14,8 @@ use std::collections::BTreeMap;
 use bytes::Bytes;
 use mediapm_cas::CasApi;
 use mediapm_conductor::{
-    Conductor, ExternalDataEntry, NickelDocument, OutputSaveMode, RuntimeStoragePaths, WorkflowSpec,
+    Conductor, ExternalDataEntry, NickelDocument, OutputSaveMode, RuntimeStoragePaths,
+    WorkflowSpec, instance_key_secret::ResolvedSecretMode,
 };
 use serde_json::json;
 
@@ -262,8 +263,12 @@ async fn run_tagging_step() -> String {
     let musicbrainz = wiremock::MockServer::start().await;
     mount_musicbrainz(&musicbrainz).await;
 
-    let conductor =
-        Conductor::new(RuntimeStoragePaths::new(workspace.path()), mediapm_cas::InMemoryCas::new());
+    let conductor = Conductor::new(
+        RuntimeStoragePaths::new(workspace.path()),
+        mediapm_cas::InMemoryCas::new(),
+        ResolvedSecretMode::Unkeyed,
+        None,
+    );
     let source_hash = conductor
         .cas()
         .put(Bytes::from_static(b"host-builtin tagging source bytes"))

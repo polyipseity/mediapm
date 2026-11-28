@@ -26,6 +26,7 @@ use mediapm_cas::{CasApi, Hash, InMemoryCas};
 use mediapm_conductor::api::RunWorkflowOptions;
 use mediapm_conductor::derived_hash::DerivedHash;
 use mediapm_conductor::gc::GcClassification;
+use mediapm_conductor::instance_key_secret::ResolvedSecretMode;
 use mediapm_conductor::{
     CapturedOutput, Conductor, ConductorState, RuntimeStoragePaths, ToolCallInstance,
 };
@@ -310,6 +311,8 @@ async fn the_seed_reaches_the_file_and_a_pass_classifies_with_it() {
     let reopened = Conductor::new(
         mediapm_conductor::api::RuntimeStoragePaths::new(tc.path()),
         InMemoryCas::new(),
+        ResolvedSecretMode::Unkeyed,
+        None,
     );
     reopened.ensure_persisted_state_loaded().await.expect("load the persisted state");
     let persisted = recorded_seed(&reopened, "default");
@@ -364,7 +367,8 @@ async fn an_unreferenced_instance_is_recoverable_until_its_ttl_passes() {
     // judgement below is written so only the configured value produces the
     // asserted outcome.
     let conductor =
-        Conductor::new(paths.clone(), InMemoryCas::new()).with_gc_settings(86_400, 86_400);
+        Conductor::new(paths.clone(), InMemoryCas::new(), ResolvedSecretMode::Unkeyed, None)
+            .with_gc_settings(86_400, 86_400);
 
     // A run records the seed a pass classifies against.
     let summary = conductor
@@ -425,7 +429,7 @@ async fn an_unreferenced_instance_is_recoverable_until_its_ttl_passes() {
     );
     conductor.shutdown().await.expect("shutdown");
 
-    let reopened = Conductor::new(paths, InMemoryCas::new());
+    let reopened = Conductor::new(paths, InMemoryCas::new(), ResolvedSecretMode::Unkeyed, None);
     reopened.ensure_persisted_state_loaded().await.expect("load the persisted state");
     let on_disk = reopened.get_state().expect("state");
     assert!(

@@ -165,6 +165,14 @@ let RuntimePlatformEnvConfigV6 = {
 }
 in
 
+# ||| Conductor-owned secret policy: booleans only, never secret material.
+# ||| Both fields default to true; a partial record leaves the unstated one true.
+let InstanceKeySecretConfigV6 = {
+  use_secret | std.contract.from_predicate (fun value => std.is_bool value) | optional,
+  require_generated_format | std.contract.from_predicate (fun value => std.is_bool value) | optional,
+}
+in
+
 # ||| Runtime configuration for the conductor itself (not per-tool).
 let ConductorRuntimeConfigV6 = {
   environment | RuntimePlatformEnvConfigV6 | optional,
@@ -172,6 +180,7 @@ let ConductorRuntimeConfigV6 = {
   # ||| How a step obtains the payload it executes from when the tool names no
   # ||| strategy of its own. Absent means `in_place`.
   payload_staging | PayloadStagingV6 | optional,
+  instance_key_secret | InstanceKeySecretConfigV6 | optional,
 }
 in
 

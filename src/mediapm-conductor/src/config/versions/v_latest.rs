@@ -18,9 +18,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    CaptureKind, ConfigPayloadStaging, DEFAULT_TOOL_MAX_RETRIES, NickelDocument, OutputCaptureSpec,
-    PayloadStaging, SaveMode, ToolInputKind, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec,
-    WorkflowSpec, WorkflowStepSpec,
+    CaptureKind, ConfigPayloadStaging, DEFAULT_TOOL_MAX_RETRIES, InstanceKeySecretConfig,
+    NickelDocument, OutputCaptureSpec, PayloadStaging, SaveMode, ToolInputKind, ToolInputSpec,
+    ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
 };
 use crate::error::ConductorError;
 
@@ -330,6 +330,50 @@ pub(crate) struct RuntimePlatformEnvConfigLatest {
     pub(crate) platform_inherited_env_vars: Option<super::super::PlatformInheritedEnvVars>,
 }
 
+/// Latest persisted conductor-owned secret policy (no secret material).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InstanceKeySecretConfigLatest {
+    /// Whether keyed derivation is enabled.
+    #[serde(default = "default_instance_key_secret_use_latest")]
+    pub(crate) use_secret: bool,
+    /// Whether generated-format and entropy checks apply.
+    #[serde(default = "default_instance_key_secret_require_generated_latest")]
+    pub(crate) require_generated_format: bool,
+}
+
+const fn default_instance_key_secret_use_latest() -> bool {
+    true
+}
+
+const fn default_instance_key_secret_require_generated_latest() -> bool {
+    true
+}
+
+impl Default for InstanceKeySecretConfigLatest {
+    fn default() -> Self {
+        Self { use_secret: true, require_generated_format: true }
+    }
+}
+
+impl From<InstanceKeySecretConfigLatest> for InstanceKeySecretConfig {
+    fn from(value: InstanceKeySecretConfigLatest) -> Self {
+        Self {
+            use_secret: value.use_secret,
+            require_generated_format: value.require_generated_format,
+        }
+    }
+}
+
+impl From<InstanceKeySecretConfig> for InstanceKeySecretConfigLatest {
+    fn from(value: InstanceKeySecretConfig) -> Self {
+        Self {
+            use_secret: value.use_secret,
+            require_generated_format: value.require_generated_format,
+        }
+    }
+}
+
 /// Runtime configuration for the conductor itself (not per-tool).
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub(crate) struct ConductorRuntimeConfigLatest {
@@ -341,6 +385,10 @@ pub(crate) struct ConductorRuntimeConfigLatest {
     /// `in_place`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) payload_staging: Option<PayloadStagingLatest>,
+    /// Conductor-owned secret policy. `None` means the document states no
+    /// policy, which resolves to the defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) instance_key_secret: Option<InstanceKeySecretConfigLatest>,
 }
 
 impl<'de> Deserialize<'de> for ConductorRuntimeConfigLatest {
@@ -366,6 +414,7 @@ impl<'de> Deserialize<'de> for ConductorRuntimeConfigLatest {
             {
                 let mut environment = RuntimePlatformEnvConfigLatest::default();
                 let mut payload_staging = None;
+                let mut instance_key_secret = None;
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -391,16 +440,28 @@ impl<'de> Deserialize<'de> for ConductorRuntimeConfigLatest {
                                     A::Error::custom(format!("invalid payload_staging: {error}"))
                                 })?);
                         }
+                        "instance_key_secret" => {
+                            instance_key_secret = Some(map.next_value()?);
+                        }
                         other => {
                             return Err(A::Error::unknown_field(
                                 other,
-                                &["environment", "payload_staging", "platform_inherited_env_vars"],
+                                &[
+                                    "environment",
+                                    "payload_staging",
+                                    "platform_inherited_env_vars",
+                                    "instance_key_secret",
+                                ],
                             ));
                         }
                     }
                 }
 
-                Ok(ConductorRuntimeConfigLatest { environment, payload_staging })
+                Ok(ConductorRuntimeConfigLatest {
+                    environment,
+                    payload_staging,
+                    instance_key_secret,
+                })
             }
         }
 
@@ -890,6 +951,9 @@ impl From<ConductorRuntimeConfigLatest> for super::super::ConductorRuntimeConfig
             payload_staging: rt
                 .payload_staging
                 .map_or(PayloadStaging::default(), PayloadStaging::from),
+            instance_key_secret: rt
+                .instance_key_secret
+                .map_or_else(InstanceKeySecretConfig::default, InstanceKeySecretConfig::from),
         }
     }
 }
@@ -906,6 +970,10 @@ impl From<super::super::ConductorRuntimeConfig> for ConductorRuntimeConfigLatest
             // restate the default the contract already carries.
             payload_staging: (rt.payload_staging != PayloadStaging::InPlace)
                 .then(|| PayloadStagingLatest::from(rt.payload_staging)),
+            // An all-default policy is already what an absent field means, so
+            // writing it would restate the contract's default.
+            instance_key_secret: (rt.instance_key_secret != InstanceKeySecretConfig::default())
+                .then(|| InstanceKeySecretConfigLatest::from(rt.instance_key_secret)),
         }
     }
 }
@@ -1418,6 +1486,23 @@ mod tests {
         assert!(format!("{err}").contains("bogus_field"));
     }
 
+    /// The latest wire shape accepts a partial secret sub-record and resolves
+    /// the unstated generated-format check to `true` through the boundary.
+    #[test]
+    fn instance_key_secret_config_latest_decodes_with_generated_format_default() {
+        let latest: ConductorRuntimeConfigLatest = serde_json::from_value(serde_json::json!({
+            "instance_key_secret": { "use_secret": false }
+        }))
+        .expect("partial instance_key_secret decodes at the boundary");
+        let secret = latest.instance_key_secret.expect("stated secret config survives decode");
+        assert!(!secret.use_secret);
+        assert!(secret.require_generated_format);
+
+        let resolved: crate::config::ConductorRuntimeConfig = latest.into();
+        assert!(!resolved.instance_key_secret.use_secret);
+        assert!(resolved.instance_key_secret.require_generated_format);
+    }
+
     /// Documents that a boundary `ConductorRuntimeConfigLatest` with no
     /// `payload_staging` and absent `platform_inherited_env_vars` resolves to
     /// `in_place` and the platform-default inherited env names through the
@@ -1427,6 +1512,7 @@ mod tests {
         let latest = ConductorRuntimeConfigLatest {
             environment: RuntimePlatformEnvConfigLatest::default(),
             payload_staging: None,
+            instance_key_secret: None,
         };
         let cfg: crate::config::ConductorRuntimeConfig = latest.into();
         assert_eq!(

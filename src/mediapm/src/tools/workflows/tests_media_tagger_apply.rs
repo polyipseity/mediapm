@@ -49,6 +49,7 @@ use mediapm_conductor::{
     Conductor, ExternalDataEntry, NickelDocument, OutputCaptureSpec, OutputSaveMode,
     RuntimeStoragePaths, SaveMode, ToolInputKind, ToolInputSpec, ToolKindSpec, ToolRuntime,
     ToolSpec, WorkflowSpec, WorkflowStepSpec, config::versions::encode_document,
+    instance_key_secret::ResolvedSecretMode,
 };
 use mediapm_test_support::stub_tool_path;
 use serde_json::json;
@@ -207,8 +208,12 @@ fn metadata_producer_step(id: &str, metadata_hash: Hash) -> WorkflowStepSpec {
 #[tokio::test]
 async fn the_synthesized_apply_step_consumes_the_metadata_document() {
     let workspace = mediapm_utils::temp::output_dir().expect("artifact dir");
-    let conductor =
-        Conductor::new(RuntimeStoragePaths::new(workspace.path()), mediapm_cas::InMemoryCas::new());
+    let conductor = Conductor::new(
+        RuntimeStoragePaths::new(workspace.path()),
+        mediapm_cas::InMemoryCas::new(),
+        ResolvedSecretMode::Unkeyed,
+        None,
+    );
 
     let source_hash = conductor
         .cas()

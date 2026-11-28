@@ -16,6 +16,7 @@ use bytes::Bytes;
 use mediapm_cas::{CasApi, Hash, InMemoryCas};
 use mediapm_conductor::derived_hash::DerivedHash;
 use mediapm_conductor::gc::GcClassification;
+use mediapm_conductor::instance_key_secret::ResolvedSecretMode;
 use mediapm_conductor::{
     CapturedOutput, Conductor, ConductorState, ExternalDataEntry, OutputCaptureSpec,
     OutputSaveMode, RunSummary, RunWorkflowOptions, RuntimeStoragePaths, WorkflowStepSpec,
@@ -168,8 +169,13 @@ async fn complicated(background_interval_secs: u64) -> AutomaticGc {
     );
     write_conductor_config(dir.path(), document);
 
-    let conductor = Conductor::new(RuntimeStoragePaths::new(dir.path()), InMemoryCas::new())
-        .with_gc_settings(TTL_SECONDS, background_interval_secs);
+    let conductor = Conductor::new(
+        RuntimeStoragePaths::new(dir.path()),
+        InMemoryCas::new(),
+        ResolvedSecretMode::Unkeyed,
+        None,
+    )
+    .with_gc_settings(TTL_SECONDS, background_interval_secs);
     conductor
         .cas()
         .put(Bytes::from_static(declared_bytes))
@@ -347,8 +353,13 @@ async fn the_background_pass_keeps_what_is_live_and_what_is_declared() {
     // finds nothing left to remove: the sweep is idempotent across ticks and
     // across restarts.
     fixture.conductor.shutdown().await.expect("shutdown");
-    let reopened = Conductor::new(RuntimeStoragePaths::new(fixture.dir.path()), InMemoryCas::new())
-        .with_gc_settings(TTL_SECONDS, 1);
+    let reopened = Conductor::new(
+        RuntimeStoragePaths::new(fixture.dir.path()),
+        InMemoryCas::new(),
+        ResolvedSecretMode::Unkeyed,
+        None,
+    )
+    .with_gc_settings(TTL_SECONDS, 1);
     reopened.ensure_persisted_state_loaded().await.expect("load persisted state");
     let second_pass = reopened.run_gc().await.expect("a pass over the restarted facade");
     assert!(

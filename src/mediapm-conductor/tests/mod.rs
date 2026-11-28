@@ -19,6 +19,7 @@ use mediapm_cas::InMemoryCas;
 use mediapm_conductor::{
     Conductor, NickelDocument, RuntimeStoragePaths, ToolInputKind, ToolInputSpec, ToolKindSpec,
     ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec, config::versions::encode_document,
+    instance_key_secret::ResolvedSecretMode,
 };
 
 mod e2e;
@@ -178,7 +179,12 @@ struct TestConductor {
 impl TestConductor {
     fn new() -> Self {
         let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
-        let conductor = Conductor::new(RuntimeStoragePaths::new(dir.path()), InMemoryCas::new());
+        let conductor = Conductor::new(
+            RuntimeStoragePaths::new(dir.path()),
+            InMemoryCas::new(),
+            ResolvedSecretMode::Unkeyed,
+            None,
+        );
         Self { dir, conductor }
     }
 
@@ -195,7 +201,8 @@ impl TestConductor {
         let state_file_path = paths.state_file_path.clone();
         let paths =
             paths.with_config_paths(vec![dir.path().join("conductor.ncl")], state_file_path);
-        let conductor = Conductor::new(paths, InMemoryCas::new());
+        let conductor =
+            Conductor::new(paths, InMemoryCas::new(), ResolvedSecretMode::Unkeyed, None);
         Self { dir, conductor }
     }
 
@@ -208,7 +215,8 @@ impl TestConductor {
         let runtime_tmp = mediapm_utils::temp::runtime_dir_for_workspace(dir.path());
         let mut paths = RuntimeStoragePaths::new(dir.path());
         paths.conductor_tmp_dir.clone_from(&runtime_tmp);
-        let conductor = Conductor::new(paths, InMemoryCas::new());
+        let conductor =
+            Conductor::new(paths, InMemoryCas::new(), ResolvedSecretMode::Unkeyed, None);
         (Self { dir, conductor }, runtime_tmp)
     }
 

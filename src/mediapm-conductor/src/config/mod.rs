@@ -749,6 +749,35 @@ pub struct RuntimePlatformEnvConfig {
     pub platform_inherited_env_vars: PlatformInheritedEnvVars,
 }
 
+/// Conductor-owned secret policy for instance-key derivation.
+///
+/// This carries only policy booleans: the secret bytes live beside the state
+/// file and never enter a config document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstanceKeySecretConfig {
+    /// Whether keyed derivation is enabled.
+    #[serde(default = "default_instance_key_secret_use")]
+    pub use_secret: bool,
+    /// Whether generated-format and entropy checks apply.
+    #[serde(default = "default_instance_key_secret_require_generated")]
+    pub require_generated_format: bool,
+}
+
+const fn default_instance_key_secret_use() -> bool {
+    true
+}
+
+const fn default_instance_key_secret_require_generated() -> bool {
+    true
+}
+
+impl Default for InstanceKeySecretConfig {
+    fn default() -> Self {
+        Self { use_secret: true, require_generated_format: true }
+    }
+}
+
 /// Runtime configuration for the conductor itself (not per-tool).
 ///
 /// This is a serde-deserialization boundary type. Fields with meaningful
@@ -767,6 +796,9 @@ pub struct ConductorRuntimeConfig {
     /// resolves to [`PayloadStaging::InPlace`] at the boundary.
     #[serde(default)]
     pub payload_staging: PayloadStaging,
+    /// Policy for the conductor-owned instance-key secret.
+    #[serde(default)]
+    pub instance_key_secret: InstanceKeySecretConfig,
 }
 
 impl<'de> Deserialize<'de> for ConductorRuntimeConfig {
@@ -792,6 +824,7 @@ impl<'de> Deserialize<'de> for ConductorRuntimeConfig {
             {
                 let mut environment = RuntimePlatformEnvConfig::default();
                 let mut payload_staging = PayloadStaging::default();
+                let mut instance_key_secret = InstanceKeySecretConfig::default();
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -807,16 +840,24 @@ impl<'de> Deserialize<'de> for ConductorRuntimeConfig {
                         "payload_staging" => {
                             payload_staging = map.next_value()?;
                         }
+                        "instance_key_secret" => {
+                            instance_key_secret = map.next_value()?;
+                        }
                         other => {
                             return Err(A::Error::unknown_field(
                                 other,
-                                &["environment", "payload_staging", "platform_inherited_env_vars"],
+                                &[
+                                    "environment",
+                                    "payload_staging",
+                                    "platform_inherited_env_vars",
+                                    "instance_key_secret",
+                                ],
                             ));
                         }
                     }
                 }
 
-                Ok(ConductorRuntimeConfig { environment, payload_staging })
+                Ok(ConductorRuntimeConfig { environment, payload_staging, instance_key_secret })
             }
         }
 
@@ -1694,6 +1735,41 @@ mod tests {
             !cfg.environment.platform_inherited_env_vars.is_empty(),
             "default platform lists are stated, so the struct is not empty"
         );
+    }
+
+    /// The resolved runtime config enables the conductor-owned secret and its
+    /// generated-format check unless a document says otherwise.
+    #[test]
+    fn instance_key_secret_config_defaults_enable_secret_and_generated_format() {
+        let cfg = ConductorRuntimeConfig::default();
+        assert_eq!(
+            cfg.instance_key_secret,
+            InstanceKeySecretConfig { use_secret: true, require_generated_format: true }
+        );
+    }
+
+    /// A document that states only `use_secret: false` keeps the generated
+    /// format check enabled: the two defaults are independent, and a partial
+    /// sub-record must not turn the other one off.
+    #[test]
+    fn instance_key_secret_config_decodes_with_generated_format_default() {
+        let cfg: ConductorRuntimeConfig = serde_json::from_value(serde_json::json!({
+            "instance_key_secret": { "use_secret": false }
+        }))
+        .expect("partial instance_key_secret decodes");
+        assert!(!cfg.instance_key_secret.use_secret);
+        assert!(cfg.instance_key_secret.require_generated_format);
+    }
+
+    /// The secret sub-record is closed, so a misspelled policy key fails at the
+    /// config boundary instead of being ignored.
+    #[test]
+    fn instance_key_secret_config_rejects_unknown_field() {
+        let error = serde_json::from_value::<ConductorRuntimeConfig>(serde_json::json!({
+            "instance_key_secret": { "use_secret": false, "typo": true }
+        }))
+        .expect_err("unknown instance_key_secret field must be rejected");
+        assert!(format!("{error}").contains("typo"), "unexpected error: {error}");
     }
 
     /// Absent `platform_inherited_env_vars` resolves to the platform defaults,

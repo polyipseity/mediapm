@@ -15,7 +15,7 @@ use std::sync::Arc;
 use mediapm_cas::FileSystemCas;
 use mediapm_conductor::{
     Conductor, NickelDocument, RunWorkflowOptions, RuntimeStoragePaths, WorkflowSpec,
-    WorkflowStepSpec, config::versions::encode_document,
+    WorkflowStepSpec, config::versions::encode_document, instance_key_secret::ResolvedSecretMode,
 };
 
 #[cfg(feature = "progress")]
@@ -68,8 +68,12 @@ async fn run_demo() -> ExampleResult<()> {
     let encoded = String::from_utf8(encode_document(doc)?)?;
     write_text_file(&config_path, &encoded)?;
 
-    let conductor =
-        Conductor::new(RuntimeStoragePaths::new(root), FileSystemCas::open(&cas_root).await?);
+    let conductor = Conductor::new(
+        RuntimeStoragePaths::new(root),
+        FileSystemCas::open(&cas_root).await?,
+        ResolvedSecretMode::Unkeyed,
+        None,
+    );
 
     println!("=== First run ===");
     // Hold each terminal for the rest of `run_demo`: a terminal owns the draw

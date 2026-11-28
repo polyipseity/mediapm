@@ -1,7 +1,7 @@
 //! This crate's environment-variable table.
 //!
-//! The five clap `env = "` readers this definition declares (`Cli`'s
-//! directory overrides) are catalogued here with the shared
+//! The ten clap `env = "` readers this definition declares (`Cli`'s
+//! directory overrides and instance-key switches) are catalogued here with the shared
 //! [`EnvVarEntry`] type, so the conductor root's composed registry can
 //! render them beside `mediapm-conductor`'s own table. Four names are shared
 //! with that table and carry byte-identical `default`, `doc` and `group`
@@ -15,6 +15,36 @@ use mediapm_utils::env_registry::{EnvVarEntry, EnvVarGroup};
 #[must_use]
 pub fn env_registry() -> &'static [EnvVarEntry] {
     &[
+        EnvVarEntry {
+            name: "MEDIAPM_CONDUCTOR_USE_INSTANCE_KEY_SECRET",
+            default: "true",
+            doc: "Use a conductor-owned secret for instance-key derivation.",
+            group: EnvVarGroup::Core,
+        },
+        EnvVarEntry {
+            name: "MEDIAPM_CONDUCTOR_NO_USE_INSTANCE_KEY_SECRET",
+            default: "false",
+            doc: "Disable conductor-owned secret use for instance-key derivation.",
+            group: EnvVarGroup::Core,
+        },
+        EnvVarEntry {
+            name: "MEDIAPM_CONDUCTOR_REQUIRE_GENERATED_INSTANCE_KEY_SECRET_FORMAT",
+            default: "true",
+            doc: "Require the generated secret format and entropy sanity check.",
+            group: EnvVarGroup::Core,
+        },
+        EnvVarEntry {
+            name: "MEDIAPM_CONDUCTOR_FORCE_GENERATE_INSTANCE_KEY_SECRET",
+            default: "false",
+            doc: "Generate a secret when state says no secret was used.",
+            group: EnvVarGroup::Core,
+        },
+        EnvVarEntry {
+            name: "MEDIAPM_CONDUCTOR_FORCE_DISABLE_INSTANCE_KEY_SECRET",
+            default: "false",
+            doc: "Continue without a secret when state says one was used.",
+            group: EnvVarGroup::Core,
+        },
         EnvVarEntry {
             name: "MEDIAPM_CONDUCTOR_DIR",
             default: "",
@@ -51,6 +81,26 @@ pub fn env_registry() -> &'static [EnvVarEntry] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The instance-key switches are operator-facing policy, so the rendered
+    /// `.env` template must list all five names even though none of them
+    /// carries a secret value.
+    #[test]
+    fn instance_key_secret_env_names_are_catalogued() {
+        let names: Vec<_> = env_registry().iter().map(|entry| entry.name).collect();
+        for expected in [
+            "MEDIAPM_CONDUCTOR_USE_INSTANCE_KEY_SECRET",
+            "MEDIAPM_CONDUCTOR_NO_USE_INSTANCE_KEY_SECRET",
+            "MEDIAPM_CONDUCTOR_REQUIRE_GENERATED_INSTANCE_KEY_SECRET_FORMAT",
+            "MEDIAPM_CONDUCTOR_FORCE_GENERATE_INSTANCE_KEY_SECRET",
+            "MEDIAPM_CONDUCTOR_FORCE_DISABLE_INSTANCE_KEY_SECRET",
+        ] {
+            assert!(
+                names.contains(&expected),
+                "conductor-cli's table is missing {expected}\ntable: {names:?}"
+            );
+        }
+    }
 
     /// The clap `env = "` readers declared in this crate's command
     /// definitions must each have a table entry, so `.env.example` at the

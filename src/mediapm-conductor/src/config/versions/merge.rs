@@ -12,6 +12,11 @@
 //! `display_name`/`description`) are never merged or compared across
 //! documents.
 //!
+//! The `instance_key_secret` policy merges restrictively: each boolean is the
+//! logical AND of the stated values, with an absent field meaning the default
+//! `true`. An explicit `false` in any document therefore wins, while an
+//! explicit `true` is indistinguishable from the default and never conflicts.
+//!
 //! ## DO NOT REMOVE: versions policy guard
 //!
 //! - This file is envelope-shaped by necessity, not by convenience: merging
@@ -31,8 +36,8 @@ use crate::config::NickelDocument;
 use crate::error::ConductorError;
 
 use super::v_latest::{
-    ConductorRuntimeConfigLatest, NICKEL_VERSION_LATEST, NickelEnvelopeLatest, OutputPolicyLatest,
-    WorkflowSpecLatest,
+    ConductorRuntimeConfigLatest, InstanceKeySecretConfigLatest, NICKEL_VERSION_LATEST,
+    NickelEnvelopeLatest, OutputPolicyLatest, WorkflowSpecLatest,
 };
 
 /// Reads and evaluates one `.ncl` file into a presence-preserving source
@@ -131,7 +136,9 @@ pub(super) enum MergeConflict {
 /// - **Runtime** — per-field merge of `platform_inherited_env_vars` and
 ///   `payload_staging` where an explicit value wins over an implicit (absent)
 ///   one; two explicit CONFLICTING values error
-///   ([`MergeConflict::ConflictingRuntime`]).
+///   ([`MergeConflict::ConflictingRuntime`]). The `instance_key_secret`
+///   booleans combine by logical AND instead, so any document's `false`
+///   restricts the policy and `true` never conflicts with the default.
 ///
 /// Boundary defaults (`save_mode = Saved`, `payload_staging = in_place`) are
 /// applied once at the end, so the returned document is definite for all
@@ -295,6 +302,16 @@ impl MergeState {
             }
             _ => {}
         }
+
+        let current = self.merged.runtime.instance_key_secret.unwrap_or_default();
+        let stated = rt.instance_key_secret.unwrap_or_default();
+        let merged_secret = InstanceKeySecretConfigLatest {
+            use_secret: current.use_secret && stated.use_secret,
+            require_generated_format: current.require_generated_format
+                && stated.require_generated_format,
+        };
+        self.merged.runtime.instance_key_secret =
+            (merged_secret != InstanceKeySecretConfigLatest::default()).then_some(merged_secret);
     }
 
     /// Applies boundary defaults once and returns the merged live document.
@@ -380,12 +397,13 @@ mod tests {
     use mediapm_cas::Hash;
 
     use super::*;
+    use crate::config::InstanceKeySecretConfig;
     use crate::config::PayloadStaging;
     use crate::config::PlatformInheritedEnvVars;
     use crate::config::ToolKindSpec;
     use crate::config::versions::v_latest::{
-        ConductorRuntimeConfigLatest, ExternalDataEntryLatest, NICKEL_VERSION_LATEST,
-        NickelEnvelopeLatest, OutputPolicyLatest, PayloadStagingLatest,
+        ConductorRuntimeConfigLatest, ExternalDataEntryLatest, InstanceKeySecretConfigLatest,
+        NICKEL_VERSION_LATEST, NickelEnvelopeLatest, OutputPolicyLatest, PayloadStagingLatest,
         RuntimePlatformEnvConfigLatest, ToolKindLatest, ToolRuntimeLatest, ToolSpecLatest,
         WorkflowSpecLatest, WorkflowStepSpecLatest,
     };
@@ -411,6 +429,7 @@ mod tests {
             runtime: ConductorRuntimeConfigLatest {
                 environment: RuntimePlatformEnvConfigLatest::default(),
                 payload_staging: Some(PayloadStagingLatest::HardLink),
+                instance_key_secret: None,
             },
         };
         let mut env_platform = env_staging.clone();
@@ -422,6 +441,7 @@ mod tests {
                 }),
             },
             payload_staging: None,
+            instance_key_secret: None,
         };
 
         let doc = merge_documents(&[
@@ -435,6 +455,39 @@ mod tests {
             doc.runtime.environment.platform_inherited_env_vars.macos.contains(&"PATH".to_string()),
             "platform env vars must survive merge"
         );
+    }
+
+    /// Two documents that each disable a different secret-policy boolean
+    /// merge to both restrictions; reversing their order cannot restore a
+    /// default that either document overrode.
+    #[test]
+    fn merge_instance_key_secret_keeps_a_false_from_each_document() {
+        let mut disables_use = envelope();
+        disables_use.runtime.instance_key_secret = Some(InstanceKeySecretConfigLatest {
+            use_secret: false,
+            require_generated_format: true,
+        });
+        let mut disables_generated = envelope();
+        disables_generated.runtime.instance_key_secret = Some(InstanceKeySecretConfigLatest {
+            use_secret: true,
+            require_generated_format: false,
+        });
+
+        let expected =
+            InstanceKeySecretConfig { use_secret: false, require_generated_format: false };
+        let forward = merge_documents(&[
+            source("use.ncl", disables_use.clone()),
+            source("generated.ncl", disables_generated.clone()),
+        ])
+        .expect("restrictive values merge");
+        assert_eq!(forward.runtime.instance_key_secret, expected);
+
+        let reverse = merge_documents(&[
+            source("generated.ncl", disables_generated),
+            source("use.ncl", disables_use),
+        ])
+        .expect("merge is order-independent");
+        assert_eq!(reverse.runtime.instance_key_secret, expected);
     }
 
     /// Documents that the document-level staging default merges field-wise: a
