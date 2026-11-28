@@ -225,6 +225,9 @@ fn write_secret_file(path: &Path, bytes: &[u8]) -> Result<(), ConductorError> {
 ///
 /// Force generation replaces an existing secret and invalidates cached
 /// instances. Force disable is available only when no secret file is present.
+/// An existing state file with a null verifier needs force generation even if
+/// a secret file is present: adopting that secret silently would leave the
+/// state unable to check which secret derived its instances.
 ///
 /// # Errors
 ///
@@ -235,8 +238,10 @@ pub fn resolve_secret_mode(
     state_path: &Path,
     stored_verifier: Option<KeyedHash>,
 ) -> Result<(ResolvedSecretMode, Option<KeyedHash>), ConductorError> {
+    const STRICT_FORMAT_GUIDANCE: &str = "; relax the check with instance_key_secret.require_generated_format = false, --require-generated-instance-key-secret-format false, or MEDIAPM_CONDUCTOR_REQUIRE_GENERATED_INSTANCE_KEY_SECRET_FORMAT=false";
     let secret_path = secret_path_for_state(state_path);
     let present = secret_path.exists();
+    let state_present = state_path.exists();
 
     if !policy.use_secret {
         let mut messages = Vec::new();
@@ -264,6 +269,13 @@ pub fn resolve_secret_mode(
         if !messages.is_empty() {
             return Err(ConductorError::Internal(messages.join("; ")));
         }
+        tracing::warn!("instance key secrets are disabled; instance keys are unprotected");
+        if policy.force_disable {
+            tracing::warn!(
+                "--force-disable-instance-key-secret continued without a secret; \
+                 cached instances are invalidated"
+            );
+        }
         return Ok((ResolvedSecretMode::Unkeyed, None));
     }
 
@@ -271,7 +283,20 @@ pub fn resolve_secret_mode(
         let secret = InstanceKeySecret::generate()?;
         let verifier = secret.verifier();
         write_secret_file(&secret_path, &secret.to_generated_bytes())?;
+        tracing::warn!(
+            "--force-generate-instance-key-secret replaced the secret; \
+             cached instances are invalidated"
+        );
         return Ok((ResolvedSecretMode::Keyed(secret), Some(verifier)));
+    }
+
+    if state_present && stored_verifier.is_none() {
+        return Err(ConductorError::Internal(
+            "state records no instance key secret verifier; pass \
+             --force-generate-instance-key-secret to replace the secret and invalidate cached \
+             instances"
+                .to_owned(),
+        ));
     }
 
     if present {
@@ -283,7 +308,11 @@ pub fn resolve_secret_mode(
         } else {
             InstanceKeySecret::parse_relaxed(&bytes)
         }
-        .map_err(|err| ConductorError::Internal(format!("invalid instance key secret: {err}")))?;
+        .map_err(|err| {
+            ConductorError::Internal(format!(
+                "invalid instance key secret: {err}{STRICT_FORMAT_GUIDANCE}"
+            ))
+        })?;
         if let Some(expected) = stored_verifier
             && expected != secret.verifier()
         {
@@ -309,7 +338,74 @@ pub fn resolve_secret_mode(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+
+    /// Writes the file whose presence the resolver branches on.
+    ///
+    /// The resolver only checks existence at this layer; a real state file is
+    /// encoded so the fixture still models the file a boot would read.
+    fn write_state_file(state_path: &Path) {
+        let state = crate::state::ConductorState::new_empty();
+        let bytes = crate::state::versions::encode_state_json(&state).expect("encode state");
+        std::fs::write(state_path, bytes).expect("write state file");
+    }
+
+    /// Collects WARN messages emitted inside a closure without adding a
+    /// logging dependency to this crate's tests.
+    #[derive(Default)]
+    struct WarningCapture {
+        messages: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl WarningCapture {
+        fn collect<T>(body: impl FnOnce() -> T) -> (T, Vec<String>) {
+            let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let capture = Self { messages: messages.clone() };
+            let outcome = tracing::subscriber::with_default(capture, body);
+            let recorded = messages.lock().expect("warning messages lock").clone();
+            (outcome, recorded)
+        }
+    }
+
+    impl tracing::Subscriber for WarningCapture {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            *metadata.level() <= tracing::Level::WARN
+        }
+
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            if *event.metadata().level() != tracing::Level::WARN {
+                return;
+            }
+            let mut visitor = MessageVisitor(Vec::new());
+            event.record(&mut visitor);
+            self.messages.lock().expect("warning messages lock").extend(visitor.0);
+        }
+
+        fn enter(&self, _: &tracing::span::Id) {}
+
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// Reads only the message field of an event.
+    struct MessageVisitor(Vec<String>);
+
+    impl tracing::field::Visit for MessageVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0.push(format!("{value:?}"));
+            }
+        }
+    }
 
     #[test]
     fn generated_secret_round_trips_under_strict_parse() {
@@ -404,6 +500,7 @@ mod tests {
     fn enabled_secret_state_without_secret_file_errors() {
         let root = mediapm_utils::temp::output_dir().expect("temp root");
         let state_path = root.path().join("state.conductor.json");
+        write_state_file(&state_path);
         let secret = InstanceKeySecret::from_bytes_for_test([9; 32]);
         let error = resolve_secret_mode(
             InstanceKeySecretPolicy {
@@ -447,6 +544,7 @@ mod tests {
     fn force_generate_replaces_null_verifier_state() {
         let root = mediapm_utils::temp::output_dir().expect("temp root");
         let state_path = root.path().join("state.conductor.json");
+        write_state_file(&state_path);
         let (mode, verifier) = resolve_secret_mode(
             InstanceKeySecretPolicy {
                 use_secret: true,
@@ -468,6 +566,7 @@ mod tests {
         let state_path = root.path().join("state.conductor.json");
         let secret = InstanceKeySecret::from_bytes_for_test(HIGH_ENTROPY_SECRET_BYTES);
         let expected_verifier = secret.verifier();
+        write_state_file(&state_path);
         std::fs::write(secret_path_for_state(&state_path), secret.to_generated_bytes()).unwrap();
         let (mode, verifier) = resolve_secret_mode(
             InstanceKeySecretPolicy {
@@ -488,6 +587,7 @@ mod tests {
     fn force_disable_with_non_null_verifier_returns_unkeyed() {
         let root = mediapm_utils::temp::output_dir().expect("temp root");
         let state_path = root.path().join("state.conductor.json");
+        write_state_file(&state_path);
         let secret = InstanceKeySecret::from_bytes_for_test([6; 32]);
         let (mode, verifier) = resolve_secret_mode(
             InstanceKeySecretPolicy {
@@ -508,6 +608,7 @@ mod tests {
     fn force_generate_replaces_existing_secret_file() {
         let root = mediapm_utils::temp::output_dir().expect("temp root");
         let state_path = root.path().join("state.conductor.json");
+        write_state_file(&state_path);
         let secret_path = secret_path_for_state(&state_path);
         std::fs::write(
             &secret_path,
@@ -556,6 +657,7 @@ mod tests {
     fn disabled_secret_with_invalid_present_secret_reports_both_errors() {
         let root = mediapm_utils::temp::output_dir().expect("temp root");
         let state_path = root.path().join("state.conductor.json");
+        write_state_file(&state_path);
         let secret_path = secret_path_for_state(&state_path);
         std::fs::write(&secret_path, b"not-hex-at-all\n").expect("invalid bytes wrote");
         let secret = InstanceKeySecret::from_bytes_for_test([7; 32]);
@@ -583,6 +685,7 @@ mod tests {
     fn disabled_secret_with_unreadable_file_reports_all_reasons() {
         let root = mediapm_utils::temp::output_dir().expect("temp root");
         let state_path = root.path().join("state.conductor.json");
+        write_state_file(&state_path);
         let secret_path = secret_path_for_state(&state_path);
         std::fs::create_dir(&secret_path).expect("a directory cannot be read as secret bytes");
         let secret = InstanceKeySecret::from_bytes_for_test([7; 32]);
@@ -635,6 +738,7 @@ mod tests {
     fn failed_secret_publish_leaves_no_temporary() {
         let root = mediapm_utils::temp::output_dir().expect("temp root");
         let state_path = root.path().join("state.conductor.json");
+        write_state_file(&state_path);
         let secret_path = secret_path_for_state(&state_path);
         std::fs::create_dir(&secret_path).expect("a directory target forces rename to fail");
         let error = resolve_secret_mode(
@@ -657,5 +761,184 @@ mod tests {
             })
             .collect();
         assert!(leftovers.is_empty(), "temporary secret file remained: {leftovers:?}");
+    }
+
+    /// A state file with a null verifier must refuse to generate a new secret
+    /// silently: the owner has to choose force generation explicitly.
+    #[test]
+    fn state_with_null_verifier_and_no_secret_file_requires_force_generate() {
+        let root = mediapm_utils::temp::output_dir().expect("temp root");
+        let state_path = root.path().join("state.conductor.json");
+        write_state_file(&state_path);
+        let secret_path = secret_path_for_state(&state_path);
+
+        let error = resolve_secret_mode(
+            InstanceKeySecretPolicy {
+                use_secret: true,
+                require_generated_format: true,
+                force_generate: false,
+                force_disable: false,
+            },
+            &state_path,
+            None,
+        )
+        .expect_err("a state file with no verifier must not auto-generate");
+
+        assert!(
+            error.to_string().contains("--force-generate-instance-key-secret"),
+            "the error must name the owner's escape hatch: {error}",
+        );
+        assert!(!secret_path.exists(), "a refused boot must not publish a secret");
+    }
+
+    /// The same rule applies when a secret file is already present: silently
+    /// adopting it would leave the state null while deriving keyed instances.
+    #[test]
+    fn state_with_null_verifier_and_present_secret_file_requires_force_generate() {
+        let root = mediapm_utils::temp::output_dir().expect("temp root");
+        let state_path = root.path().join("state.conductor.json");
+        write_state_file(&state_path);
+        let secret_path = secret_path_for_state(&state_path);
+        let bytes =
+            InstanceKeySecret::from_bytes_for_test(HIGH_ENTROPY_SECRET_BYTES).to_generated_bytes();
+        std::fs::write(&secret_path, &bytes).expect("write existing secret");
+
+        let error = resolve_secret_mode(
+            InstanceKeySecretPolicy {
+                use_secret: true,
+                require_generated_format: true,
+                force_generate: false,
+                force_disable: false,
+            },
+            &state_path,
+            None,
+        )
+        .expect_err("an existing secret cannot repair a null verifier silently");
+
+        assert!(
+            error.to_string().contains("--force-generate-instance-key-secret"),
+            "the error must name the owner's escape hatch: {error}",
+        );
+        assert_eq!(std::fs::read(&secret_path).expect("secret untouched"), bytes);
+    }
+
+    /// A strict parse failure must name the config key, flag, and env switch
+    /// that relax it, so the owner is not left with only a format error.
+    #[test]
+    fn strict_format_rejection_names_the_relaxing_options() {
+        let root = mediapm_utils::temp::output_dir().expect("temp root");
+        let state_path = root.path().join("state.conductor.json");
+        write_state_file(&state_path);
+        let secret = InstanceKeySecret::from_bytes_for_test(HIGH_ENTROPY_SECRET_BYTES);
+        let uppercase = secret.to_generated_bytes().to_ascii_uppercase();
+        std::fs::write(secret_path_for_state(&state_path), &uppercase).expect("write secret");
+
+        let error = resolve_secret_mode(
+            InstanceKeySecretPolicy {
+                use_secret: true,
+                require_generated_format: true,
+                force_generate: false,
+                force_disable: false,
+            },
+            &state_path,
+            Some(secret.verifier()),
+        )
+        .expect_err("strict format rejects uppercase hex");
+
+        let message = error.to_string();
+        assert!(message.contains("instance_key_secret.require_generated_format"), "{message}");
+        assert!(message.contains("--require-generated-instance-key-secret-format"), "{message}");
+        assert!(
+            message
+                .contains("MEDIAPM_CONDUCTOR_REQUIRE_GENERATED_INSTANCE_KEY_SECRET_FORMAT=false"),
+            "{message}",
+        );
+    }
+
+    /// Choosing non-keyed mode is itself a security-relevant decision and must
+    /// be announced even when the state says no secret was ever used.
+    #[test]
+    fn a_disabled_secret_success_emits_a_warning() {
+        let root = mediapm_utils::temp::output_dir().expect("temp root");
+        let state_path = root.path().join("state.conductor.json");
+        let policy = InstanceKeySecretPolicy {
+            use_secret: false,
+            require_generated_format: true,
+            force_generate: false,
+            force_disable: false,
+        };
+
+        let (outcome, warnings) =
+            WarningCapture::collect(|| resolve_secret_mode(policy, &state_path, None));
+        assert_eq!(outcome.expect("unkeyed resolution").0, ResolvedSecretMode::Unkeyed);
+        assert!(
+            warnings.iter().any(|warning| warning.contains("instance key secrets are disabled")),
+            "a disabled mode must warn: {warnings:?}",
+        );
+    }
+
+    /// Force-generating a secret invalidates cached instances, and the warning
+    /// must not carry the new secret's bytes.
+    #[test]
+    fn force_generate_success_emits_an_invalidation_warning() {
+        let root = mediapm_utils::temp::output_dir().expect("temp root");
+        let state_path = root.path().join("state.conductor.json");
+        write_state_file(&state_path);
+        let policy = InstanceKeySecretPolicy {
+            use_secret: true,
+            require_generated_format: true,
+            force_generate: true,
+            force_disable: false,
+        };
+
+        let (outcome, warnings) =
+            WarningCapture::collect(|| resolve_secret_mode(policy, &state_path, None));
+        outcome.expect("force generation proceeds");
+        let published =
+            std::fs::read_to_string(secret_path_for_state(&state_path)).expect("published secret");
+
+        assert!(
+            warnings.iter().any(|warning| {
+                warning.contains("--force-generate-instance-key-secret")
+                    && warning.contains("invalidated")
+            }),
+            "force generation must announce invalidation: {warnings:?}",
+        );
+        assert!(
+            warnings.iter().all(|warning| !warning.contains(published.trim_end())),
+            "a warning must not carry secret bytes: {warnings:?}",
+        );
+    }
+
+    /// Force-disable must announce both the non-keyed mode and the
+    /// invalidation of instances derived with the discarded secret.
+    #[test]
+    fn force_disable_success_emits_both_disabled_and_invalidation_warnings() {
+        let root = mediapm_utils::temp::output_dir().expect("temp root");
+        let state_path = root.path().join("state.conductor.json");
+        write_state_file(&state_path);
+        let secret = InstanceKeySecret::from_bytes_for_test([6; 32]);
+        let policy = InstanceKeySecretPolicy {
+            use_secret: false,
+            require_generated_format: true,
+            force_generate: false,
+            force_disable: true,
+        };
+
+        let (outcome, warnings) = WarningCapture::collect(|| {
+            resolve_secret_mode(policy, &state_path, Some(secret.verifier()))
+        });
+        assert_eq!(outcome.expect("force disable proceeds").0, ResolvedSecretMode::Unkeyed);
+        assert!(
+            warnings.iter().any(|warning| warning.contains("instance key secrets are disabled")),
+            "a disabled mode must warn: {warnings:?}",
+        );
+        assert!(
+            warnings.iter().any(|warning| {
+                warning.contains("--force-disable-instance-key-secret")
+                    && warning.contains("invalidated")
+            }),
+            "force disable must announce invalidation: {warnings:?}",
+        );
     }
 }

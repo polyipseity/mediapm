@@ -68,6 +68,9 @@ where
     gc_ttl_seconds: u64,
     /// Instance-key mode resolved by the boot that created this facade.
     instance_key_mode: ResolvedSecretMode,
+    /// Verifier resolved by that same boot, kept separately because a workflow
+    /// run reloads state from disk and can therefore start with a null one.
+    boot_verifier: Option<KeyedHash>,
 }
 
 impl<C> Conductor<C>
@@ -98,6 +101,7 @@ where
             background_gc_interval_secs: crate::defaults::DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS,
             gc_ttl_seconds: crate::defaults::DEFAULT_CONDUCTOR_GC_TTL_SECONDS,
             instance_key_mode,
+            boot_verifier: verifier,
         }
     }
 
@@ -282,7 +286,7 @@ where
         // never loaded from.
         let outermost_dir =
             outermost_config_dir(&config_paths, &self.storage_paths().conductor_dir);
-        let (summary, updated_state) = client
+        let (summary, mut updated_state) = client
             .run_workflow(
                 workflow_name,
                 options,
@@ -292,6 +296,11 @@ where
                 self.instance_key_mode.clone(),
             )
             .await?;
+        // The run started from the state file, which may predate this boot's
+        // secret and carry a null verifier. The boot's resolution is the one
+        // that matches the mode used for this run's keys, so it is authoritative
+        // for every state this facade publishes.
+        updated_state.instance_key_secret_verifier = self.boot_verifier;
         *self.state.lock().expect("state lock") = updated_state.clone();
         // Persist state after each run so later sessions resume from disk.
         save_state_file(self.storage_paths(), &updated_state)?;
@@ -1224,6 +1233,62 @@ mod tests {
             conductor.get_state().expect("state").instance_key_secret_verifier,
             Some(verifier)
         );
+    }
+
+    /// A keyed boot must record its verifier in the state file after a run.
+    ///
+    /// The run reloads state from disk and saves the actor's result, so a
+    /// verifier held only in the facade's initial state would be lost on the
+    /// first save after boot.
+    #[tokio::test]
+    async fn a_keyed_boot_persists_its_verifier_through_a_workflow_run() {
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
+        write_single_workflow_config(dir.path(), "default");
+        let paths = RuntimeStoragePaths::new(dir.path());
+        let secret = InstanceKeySecret::from_bytes_for_test([7; 32]);
+        let verifier = secret.verifier();
+        let conductor = Conductor::new(
+            paths,
+            mediapm_cas::new_in_memory_cas(),
+            ResolvedSecretMode::Keyed(secret),
+            Some(verifier),
+        );
+
+        conductor
+            .run_workflow("default", crate::RunWorkflowOptions::default())
+            .await
+            .expect("workflow run");
+
+        let saved = load_state_file(conductor.storage_paths())
+            .expect("load state file")
+            .expect("state file must exist");
+        assert_eq!(saved.instance_key_secret_verifier, Some(verifier));
+        conductor.shutdown().await.expect("conductor shutdown");
+    }
+
+    /// An unkeyed boot must keep the state verifier null after a run.
+    #[tokio::test]
+    async fn an_unkeyed_boot_persists_a_null_verifier_through_a_workflow_run() {
+        let dir = mediapm_utils::temp::output_dir().expect("artifact dir");
+        write_single_workflow_config(dir.path(), "default");
+        let paths = RuntimeStoragePaths::new(dir.path());
+        let conductor = Conductor::new(
+            paths,
+            mediapm_cas::new_in_memory_cas(),
+            ResolvedSecretMode::Unkeyed,
+            None,
+        );
+
+        conductor
+            .run_workflow("default", crate::RunWorkflowOptions::default())
+            .await
+            .expect("workflow run");
+
+        let saved = load_state_file(conductor.storage_paths())
+            .expect("load state file")
+            .expect("state file must exist");
+        assert_eq!(saved.instance_key_secret_verifier, None);
+        conductor.shutdown().await.expect("conductor shutdown");
     }
 
     /// Explicit config-doc paths are used as-is (existing files only), in
