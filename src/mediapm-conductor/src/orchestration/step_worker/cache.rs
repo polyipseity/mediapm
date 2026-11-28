@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use mediapm_cas::Hash;
 
 use crate::config::OutputCaptureSpec;
+use crate::derived_hash::DerivedHash;
 use crate::instance_key::{
     INSTANCE_KEY_VERSION, V8KeyMaterial, derive_instance_key_for_version, migrate_terms,
 };
@@ -41,6 +42,15 @@ impl CurrentMaterial {
             Some(&self.v8_material()),
         )
     }
+}
+
+/// Returns unkeyed command arguments for the legacy derivation helpers.
+///
+/// V7 state can store either digest mode, but the migration ladder in this
+/// module still derives v8 keys from plain CAS hashes; a keyed digest cannot
+/// participate in that derivation.
+fn unkeyed_command_args(args: &[DerivedHash]) -> Vec<Hash> {
+    args.iter().map(|value| value.as_unkeyed().expect("a legacy key argument is unkeyed")).collect()
 }
 
 /// Outcome of instance lookup.
@@ -114,7 +124,7 @@ fn migrate_instance(
             let Some(migrated_material) = migrate_terms(
                 source_version,
                 version,
-                &instance.command_args,
+                &unkeyed_command_args(&instance.command_args),
                 &instance.outputs,
                 &instance.materialized_inputs,
             ) else {
@@ -167,7 +177,7 @@ pub(super) fn lookup_instance(
 
     // Fast path: K_latest.
     if let Some(k_latest) = current.key(tool_call_id, INSTANCE_KEY_VERSION)
-        && let Some(instance) = state.tool_call_instances.get(&k_latest)
+        && let Some(instance) = state.tool_call_instances.get(&DerivedHash::from(k_latest))
         && instance.key_version == INSTANCE_KEY_VERSION
         && instance.invalidated_at_nk.is_none()
         && satisfies_requirements(instance, required)
@@ -200,12 +210,13 @@ pub(super) fn lookup_instance(
         // Cannot derive key for this version from current material.
         return LookupResult::Miss { side_effects };
     };
-    if k_current_a != mapped_key {
+    if DerivedHash::from(k_current_a) != mapped_key {
         // Work changed => miss and skip migration, but mark attempted up to latest.
         if instance.attempted_key_version_nk < INSTANCE_KEY_VERSION {
             let mut updated = instance.clone();
             updated.attempted_key_version_nk = INSTANCE_KEY_VERSION;
-            side_effects.insert(mapped_key, updated);
+            side_effects
+                .insert(mapped_key.as_unkeyed().expect("a mapped legacy key is unkeyed"), updated);
         }
         return LookupResult::Miss { side_effects };
     }
@@ -223,7 +234,7 @@ pub(super) fn lookup_instance(
     // persisted even when later rejected for missing blobs; the caller settles
     // the returned instance/re-key state.
     let mut hit_instance = instance.clone();
-    let mut hit_key = mapped_key;
+    let mut hit_key = mapped_key.as_unkeyed().expect("a mapped legacy key is unkeyed");
     let rekeyed_from = migrate_instance(&mut hit_instance, &mut hit_key, current);
 
     LookupResult::Hit { instance: Box::new(hit_instance), instance_key: hit_key, rekeyed_from }
@@ -271,7 +282,7 @@ mod tests {
             executed_at_nk: Timestamp::default(),
             last_referenced_at_nk: Timestamp::default(),
             step_ids_nk: BTreeSet::new(),
-            command_args,
+            command_args: command_args.into_iter().map(DerivedHash::from).collect(),
             env_vars_ck: BTreeMap::new(),
             materialized_inputs,
             outputs,
@@ -308,10 +319,11 @@ mod tests {
             BTreeMap::new(),
         );
         let mut state = empty_state();
-        state.tool_call_instances.insert(k_latest, instance.clone());
-        state
-            .step_instances
-            .insert("wf".to_string(), BTreeMap::from([("step".to_string(), k_latest)]));
+        state.tool_call_instances.insert(DerivedHash::from(k_latest), instance.clone());
+        state.step_instances.insert(
+            "wf".to_string(),
+            BTreeMap::from([("step".to_string(), DerivedHash::from(k_latest))]),
+        );
 
         let result = lookup_instance("wf", "step", tool_call_id, &current, &state, &outputs_spec);
         match result {
@@ -342,8 +354,11 @@ mod tests {
             BTreeMap::new(),
         );
         let mut state = empty_state();
-        state.tool_call_instances.insert(k7, instance);
-        state.step_instances.insert("wf".to_string(), BTreeMap::from([("step".to_string(), k7)]));
+        state.tool_call_instances.insert(DerivedHash::from(k7), instance);
+        state.step_instances.insert(
+            "wf".to_string(),
+            BTreeMap::from([("step".to_string(), DerivedHash::from(k7))]),
+        );
 
         let result = lookup_instance("wf", "step", tool_call_id, &current, &state, &outputs_spec);
         let (migrated, new_key) = match result {
@@ -359,13 +374,13 @@ mod tests {
         };
 
         // After settlement-like maintenance, the fast path must find it.
-        state.tool_call_instances.remove(&k7);
-        state.tool_call_instances.insert(new_key, migrated);
+        state.tool_call_instances.remove(&DerivedHash::from(k7));
+        state.tool_call_instances.insert(DerivedHash::from(new_key), migrated);
         state
             .step_instances
             .get_mut("wf")
             .expect("workflow map")
-            .insert("step".to_string(), new_key);
+            .insert("step".to_string(), DerivedHash::from(new_key));
         let fast = lookup_instance("wf", "step", tool_call_id, &current, &state, &outputs_spec);
         match fast {
             LookupResult::Hit { instance_key, rekeyed_from, .. } => {
@@ -392,10 +407,11 @@ mod tests {
         );
         instance.invalidated_at_nk = Some(Timestamp::from_unix_nanos(1));
         let mut state = empty_state();
-        state.tool_call_instances.insert(k_latest, instance);
-        state
-            .step_instances
-            .insert("wf".to_string(), BTreeMap::from([("step".to_string(), k_latest)]));
+        state.tool_call_instances.insert(DerivedHash::from(k_latest), instance);
+        state.step_instances.insert(
+            "wf".to_string(),
+            BTreeMap::from([("step".to_string(), DerivedHash::from(k_latest))]),
+        );
 
         let result = lookup_instance("wf", "step", tool_call_id, &current, &state, &outputs_spec);
         assert!(matches!(result, LookupResult::Miss { .. }));
@@ -417,8 +433,11 @@ mod tests {
             BTreeMap::new(),
         );
         let mut state = empty_state();
-        state.tool_call_instances.insert(k7, instance);
-        state.step_instances.insert("wf".to_string(), BTreeMap::from([("step".to_string(), k7)]));
+        state.tool_call_instances.insert(DerivedHash::from(k7), instance);
+        state.step_instances.insert(
+            "wf".to_string(),
+            BTreeMap::from([("step".to_string(), DerivedHash::from(k7))]),
+        );
 
         let result = lookup_instance("wf", "step", tool_call_id, &current, &state, &outputs_spec);
         match result {
@@ -456,10 +475,11 @@ mod tests {
             BTreeMap::new(),
         );
         let mut state = empty_state();
-        state.tool_call_instances.insert(k_latest, instance);
-        state
-            .step_instances
-            .insert("wf".to_string(), BTreeMap::from([("step".to_string(), k_latest)]));
+        state.tool_call_instances.insert(DerivedHash::from(k_latest), instance);
+        state.step_instances.insert(
+            "wf".to_string(),
+            BTreeMap::from([("step".to_string(), DerivedHash::from(k_latest))]),
+        );
 
         let hit = lookup_instance(
             "wf",
@@ -505,8 +525,11 @@ mod tests {
             BTreeMap::new(),
         );
         let mut state = empty_state();
-        state.tool_call_instances.insert(k7, instance);
-        state.step_instances.insert("wf".to_string(), BTreeMap::from([("step".to_string(), k7)]));
+        state.tool_call_instances.insert(DerivedHash::from(k7), instance);
+        state.step_instances.insert(
+            "wf".to_string(),
+            BTreeMap::from([("step".to_string(), DerivedHash::from(k7))]),
+        );
 
         let result =
             lookup_instance("wf", "step", tool_call_id, &current, &state, &current_outputs);
@@ -537,10 +560,11 @@ mod tests {
         );
         instance.invalidated_at_nk = Some(Timestamp::from_unix_nanos(1));
         let mut state = empty_state();
-        state.tool_call_instances.insert(k_latest, instance);
-        state
-            .step_instances
-            .insert("wf".to_string(), BTreeMap::from([("step".to_string(), k_latest)]));
+        state.tool_call_instances.insert(DerivedHash::from(k_latest), instance);
+        state.step_instances.insert(
+            "wf".to_string(),
+            BTreeMap::from([("step".to_string(), DerivedHash::from(k_latest))]),
+        );
 
         let result = lookup_instance("wf", "step", tool_call_id, &current, &state, &outputs_spec);
         match result {
@@ -562,10 +586,11 @@ mod tests {
             base_instance(tool_call_id, 99, command_args, BTreeMap::new(), BTreeMap::new());
         instance.attempted_key_version_nk = 99;
         let mut state = empty_state();
-        state.tool_call_instances.insert(mapped_key, instance);
-        state
-            .step_instances
-            .insert("wf".to_string(), BTreeMap::from([("step".to_string(), mapped_key)]));
+        state.tool_call_instances.insert(DerivedHash::from(mapped_key), instance);
+        state.step_instances.insert(
+            "wf".to_string(),
+            BTreeMap::from([("step".to_string(), DerivedHash::from(mapped_key))]),
+        );
 
         let result = lookup_instance("wf", "step", tool_call_id, &current, &state, &outputs_spec);
         assert!(matches!(result, LookupResult::Miss { .. }));

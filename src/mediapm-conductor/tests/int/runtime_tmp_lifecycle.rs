@@ -76,6 +76,7 @@ async fn default_runtime_tmp_is_removed_after_a_failed_workflow() {
 
     use mediapm_cas::Hash;
     use mediapm_conductor::api::RuntimeStoragePaths;
+    use mediapm_conductor::derived_hash::DerivedHash;
     use mediapm_conductor::{
         Conductor, ConductorState, RunWorkflowOptions, ToolCallInstance, encode_state_json,
     };
@@ -108,10 +109,11 @@ async fn default_runtime_tmp_is_removed_after_a_failed_workflow() {
             step_ids_nk: std::collections::BTreeSet::new(),
         };
         let mut state = ConductorState::new_empty();
-        state
-            .step_instances
-            .insert("default".to_string(), BTreeMap::from([("s1".to_string(), key)]));
-        state.tool_call_instances.insert(key, instance);
+        state.step_instances.insert(
+            "default".to_string(),
+            BTreeMap::from([("s1".to_string(), DerivedHash::from(key))]),
+        );
+        state.tool_call_instances.insert(DerivedHash::from(key), instance);
         let bytes = encode_state_json(&state).expect("encode the seeded state");
         std::fs::write(&paths.state_file_path, bytes).expect("write the seeded state file");
     }

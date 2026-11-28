@@ -10,12 +10,14 @@ use mediapm_cas::Hash;
 use mediapm_utils::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use crate::derived_hash::DerivedHash;
 use crate::error::ConductorError;
+use crate::keyed_hash::KeyedHash;
 
 pub mod versions;
 
 /// Current orchestration-state schema version.
-pub(crate) const STATE_VERSION: u32 = 6;
+pub(crate) const STATE_VERSION: u32 = 7;
 
 /// Persistence policy for a CAS-referenced blob declared as external data.
 ///
@@ -63,8 +65,8 @@ pub enum EnvVarSource {
 /// A recorded environment variable: hashed value and optional provenance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvVarEntry {
-    /// Hash of the env var value.
-    pub hash_ck: Hash,
+    /// Key-participating hash of the env var value.
+    pub hash_ck: DerivedHash,
     /// Provenance tag, or `None` when unknown (migrated/pre-provenance).
     pub source_nk: Option<EnvVarSource>,
 }
@@ -96,7 +98,7 @@ pub struct ToolCallInstance {
     /// key, so a tool payload update does not change step identity.
     pub tool_call_id: String,
     /// Effective command argv / key material hashes in order.
-    pub command_args: Vec<Hash>,
+    pub command_args: Vec<DerivedHash>,
     /// Execution environment variables (hashed), with optional provenance.
     pub env_vars_ck: BTreeMap<String, EnvVarEntry>,
     /// Inputs staged into the sandbox, keyed by destination.
@@ -125,9 +127,13 @@ pub struct ConductorState {
     pub conductor_gc_ran_at: Timestamp,
     /// Workflow -> step -> instance key map: sole GC seed and lookup map.
     #[serde(default)]
-    pub step_instances: BTreeMap<String, BTreeMap<String, Hash>>,
+    pub step_instances: BTreeMap<String, BTreeMap<String, DerivedHash>>,
     /// Recorded tool-call instances keyed by instance key.
-    pub tool_call_instances: BTreeMap<Hash, ToolCallInstance>,
+    pub tool_call_instances: BTreeMap<DerivedHash, ToolCallInstance>,
+    /// Non-secret verifier for the conductor-owned instance key secret.
+    ///
+    /// `None` is serialized as explicit `null` and means no secret was used.
+    pub instance_key_secret_verifier: Option<KeyedHash>,
 }
 
 impl ConductorState {
@@ -139,6 +145,7 @@ impl ConductorState {
             conductor_gc_ran_at: Timestamp::default(),
             step_instances: BTreeMap::new(),
             tool_call_instances: BTreeMap::new(),
+            instance_key_secret_verifier: None,
         }
     }
 
@@ -146,8 +153,8 @@ impl ConductorState {
     ///
     /// `reachable_keys` must be derived by the caller (T5 owns the full
     /// seed/closure/prune algorithm). This method performs the mechanical TTL
-    /// retention/refreshed-clock behavior against the new v6 state shape.
-    pub fn run_conductor_gc(&mut self, reachable_keys: &BTreeSet<Hash>, ttl_seconds: u64) {
+    /// retention/refreshed-clock behavior against the current v7 state shape.
+    pub fn run_conductor_gc(&mut self, reachable_keys: &BTreeSet<DerivedHash>, ttl_seconds: u64) {
         let ttl_nanos = ttl_seconds.saturating_mul(1_000_000_000);
         let epoch = self.conductor_gc_ran_at;
         let epoch_nanos = epoch.as_unix_nanos();
@@ -302,6 +309,7 @@ mod tests {
         merge_captured_outputs,
     };
     use crate::config::{OutputCaptureSpec, SaveMode};
+    use crate::derived_hash::DerivedHash;
     use mediapm_cas::Hash;
     use mediapm_utils::Timestamp;
     use std::collections::{BTreeMap, BTreeSet};
@@ -604,7 +612,7 @@ mod tests {
 
     #[test]
     fn a_pass_stamps_the_epoch_on_every_instance_it_keeps() {
-        let key = Hash::from_content(b"instance");
+        let key = DerivedHash::Unkeyed(Hash::from_content(b"instance"));
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
             key,
@@ -632,8 +640,8 @@ mod tests {
     }
 
     #[test]
-    fn state_version_is_v6() {
-        assert_eq!(STATE_VERSION, 6);
-        assert_eq!(ConductorState::new_empty().version, 6);
+    fn state_version_is_v7() {
+        assert_eq!(STATE_VERSION, 7);
+        assert_eq!(ConductorState::new_empty().version, 7);
     }
 }

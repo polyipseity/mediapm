@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use mediapm_cas::{CasApi, Hash, InMemoryCas};
+use mediapm_conductor::derived_hash::DerivedHash;
 use mediapm_conductor::gc::GcClassification;
 use mediapm_conductor::{
     CapturedOutput, Conductor, ConductorState, ExternalDataEntry, OutputCaptureSpec,
@@ -23,6 +24,11 @@ use mediapm_conductor::{
 use mediapm_utils::Timestamp;
 
 use super::gc::sample_instance;
+
+/// Wraps a test key in the unkeyed digest the state stores.
+fn dk(hash: Hash) -> DerivedHash {
+    DerivedHash::from(hash)
+}
 use crate::{
     doc_with_workflows, echo_step, echo_tool, workflow_with_steps, write_conductor_config,
 };
@@ -47,7 +53,7 @@ pub(crate) fn backdate(state: &mut ConductorState, key: &str, secs_ago: u64) {
     let backdated = Timestamp::now().as_unix_nanos().saturating_sub(age_nanos);
     let instance = state
         .tool_call_instances
-        .get_mut(&key)
+        .get_mut(&dk(key))
         .expect("backdate target must be a recorded instance");
     instance.last_referenced_at_nk = Timestamp::from_unix_nanos(backdated);
 }
@@ -190,7 +196,11 @@ impl AutomaticGc {
     /// name, so a scenario compares exact sets rather than counts.
     fn snapshot(&self) -> (BTreeSet<Hash>, BTreeSet<Hash>) {
         let state = self.conductor.get_state().expect("state");
-        let keys = state.tool_call_instances.keys().copied().collect();
+        let keys = state
+            .tool_call_instances
+            .keys()
+            .map(|key| key.as_unkeyed().expect("an unkeyed test key"))
+            .collect();
         let blobs = state
             .tool_call_instances
             .values()
@@ -224,7 +234,7 @@ impl AutomaticGc {
             "result".to_string(),
             CapturedOutput { capture: "stdout".to_string(), hash_nk: Some(blob), saved_nk: true },
         )]);
-        state.tool_call_instances.insert(key, instance);
+        state.tool_call_instances.insert(dk(key), instance);
         backdate(&mut state, &key.to_hex(), BACKDATE_SECONDS);
         self.conductor.replace_resolved_state(state).expect("insert the orphan");
         (key, blob)
@@ -294,7 +304,7 @@ async fn the_background_pass_keeps_what_is_live_and_what_is_declared() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
         let state = fixture.conductor.get_state().expect("state");
-        if !state.tool_call_instances.contains_key(&superseded) {
+        if !state.tool_call_instances.contains_key(&dk(superseded)) {
             break;
         }
         assert!(
@@ -351,8 +361,11 @@ async fn the_background_pass_keeps_what_is_live_and_what_is_declared() {
         "a pass over an already-swept library must remove nothing extra"
     );
     let reopened_state = reopened.get_state().expect("state");
-    let reopened_keys: BTreeSet<Hash> =
-        reopened_state.tool_call_instances.keys().copied().collect();
+    let reopened_keys: BTreeSet<Hash> = reopened_state
+        .tool_call_instances
+        .keys()
+        .map(|key| key.as_unkeyed().expect("an unkeyed test key"))
+        .collect();
     assert_eq!(
         reopened_keys, after_keys,
         "the second pass must leave exactly the records the sweep left"
@@ -392,7 +405,7 @@ async fn an_abstaining_pass_freezes_until_the_declared_workflow_runs() {
         }
     }
     assert!(
-        fixture.conductor.get_state().expect("state").tool_call_instances.contains_key(&aged),
+        fixture.conductor.get_state().expect("state").tool_call_instances.contains_key(&dk(aged)),
         "an abstaining pass must not evict, however old the record is"
     );
     assert!(
@@ -419,7 +432,7 @@ async fn an_abstaining_pass_freezes_until_the_declared_workflow_runs() {
         swept.classification
     );
     assert!(
-        !fixture.conductor.get_state().expect("state").tool_call_instances.contains_key(&aged),
+        !fixture.conductor.get_state().expect("state").tool_call_instances.contains_key(&dk(aged)),
         "once judged, a record past its TTL must be evicted"
     );
     assert!(!fixture.holds(aged_blob).await, "the evicted record's blob goes with it");

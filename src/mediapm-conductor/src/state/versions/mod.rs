@@ -6,9 +6,10 @@
 //!   `vN.rs` plus a new arm in the decoders below.
 //! - Do not directly re-export `versions::vX` structs or paths as public API.
 //! - Never delete a read path for a version that could exist on disk.
-//! - V1 and V2 are migration-only formats that stay readable; V3, V4 and V5
-//!   migrate forward to V6; V6 is the current format.
+//! - V1 and V2 are migration-only formats that stay readable; V3 through V6
+//!   migrate forward to V7; V7 is the current format.
 
+use crate::derived_hash::DerivedHash;
 use crate::error::ConductorError;
 use crate::state::{
     CapturedOutput, ConductorState, EnvVarEntry, EnvVarSource, StepRef, ToolCallInstance,
@@ -22,10 +23,22 @@ mod v3;
 mod v4;
 mod v5;
 mod v6;
+pub(crate) mod v7;
 
 // ---------------------------------------------------------------------------
-// Bridge: V6 wire types ↔ runtime types
+// Bridge: versioned wire types ↔ runtime types
 // ---------------------------------------------------------------------------
+
+/// Reduces a key-participating digest to a V6 hash.
+///
+/// V6 is a read-only migration format, so a keyed digest cannot be written
+/// back into it without changing what the digest means.
+fn v6_hash_from_derived(value: DerivedHash) -> mediapm_cas::Hash {
+    match value {
+        DerivedHash::Unkeyed(hash) => hash,
+        DerivedHash::Keyed(_) => panic!("a keyed digest cannot be written as V6 state"),
+    }
+}
 
 impl From<v6::EnvVarSourceV6> for EnvVarSource {
     fn from(source: v6::EnvVarSourceV6) -> Self {
@@ -47,13 +60,16 @@ impl From<EnvVarSource> for v6::EnvVarSourceV6 {
 
 impl From<v6::EnvVarEntryV6> for EnvVarEntry {
     fn from(entry: v6::EnvVarEntryV6) -> Self {
-        Self { hash_ck: entry.hash_ck, source_nk: entry.source_nk.map(Into::into) }
+        Self { hash_ck: entry.hash_ck.into(), source_nk: entry.source_nk.map(Into::into) }
     }
 }
 
 impl From<EnvVarEntry> for v6::EnvVarEntryV6 {
     fn from(entry: EnvVarEntry) -> Self {
-        Self { hash_ck: entry.hash_ck, source_nk: entry.source_nk.map(Into::into) }
+        Self {
+            hash_ck: v6_hash_from_derived(entry.hash_ck),
+            source_nk: entry.source_nk.map(Into::into),
+        }
     }
 }
 
@@ -87,7 +103,7 @@ impl From<v6::ToolCallInstanceV6> for ToolCallInstance {
             key_version: inst.key_version,
             attempted_key_version_nk: inst.attempted_key_version_nk,
             tool_call_id: inst.tool_call_id,
-            command_args: inst.command_args,
+            command_args: inst.command_args.into_iter().map(Into::into).collect(),
             env_vars_ck: inst.env_vars_ck.into_iter().map(|(k, v)| (k, v.into())).collect(),
             materialized_inputs: inst.materialized_inputs,
             outputs: inst.outputs.into_iter().map(|(k, v)| (k, v.into())).collect(),
@@ -108,7 +124,7 @@ impl From<ToolCallInstance> for v6::ToolCallInstanceV6 {
             key_version: inst.key_version,
             attempted_key_version_nk: inst.attempted_key_version_nk,
             tool_call_id: inst.tool_call_id,
-            command_args: inst.command_args,
+            command_args: inst.command_args.into_iter().map(v6_hash_from_derived).collect(),
             env_vars_ck: inst.env_vars_ck.into_iter().map(|(k, v)| (k, v.into())).collect(),
             materialized_inputs: inst.materialized_inputs,
             outputs: inst.outputs.into_iter().map(|(k, v)| (k, v.into())).collect(),
@@ -128,12 +144,19 @@ impl From<v6::ConductorStateV6> for ConductorState {
         Self {
             version: state.version,
             conductor_gc_ran_at: Timestamp::from_unix_nanos(state.conductor_gc_ran_at),
-            step_instances: state.step_instances,
+            step_instances: state
+                .step_instances
+                .into_iter()
+                .map(|(workflow, steps)| {
+                    (workflow, steps.into_iter().map(|(step, key)| (step, key.into())).collect())
+                })
+                .collect(),
             tool_call_instances: state
                 .tool_call_instances
                 .into_iter()
-                .map(|(k, v)| (k, v.into()))
+                .map(|(k, v)| (k.into(), v.into()))
                 .collect(),
+            instance_key_secret_verifier: None,
         }
     }
 }
@@ -143,12 +166,183 @@ impl From<ConductorState> for v6::ConductorStateV6 {
         Self {
             version: v6::CONDUCTOR_STATE_VERSION_V6,
             conductor_gc_ran_at: state.conductor_gc_ran_at.as_unix_nanos(),
-            step_instances: state.step_instances,
+            step_instances: state
+                .step_instances
+                .into_iter()
+                .map(|(workflow, steps)| {
+                    (
+                        workflow,
+                        steps
+                            .into_iter()
+                            .map(|(step, key)| (step, v6_hash_from_derived(key)))
+                            .collect(),
+                    )
+                })
+                .collect(),
             tool_call_instances: state
                 .tool_call_instances
                 .into_iter()
-                .map(|(k, v)| (k, v.into()))
+                .map(|(k, v)| (v6_hash_from_derived(k), v.into()))
                 .collect(),
+        }
+    }
+}
+
+impl From<v7::EnvVarSourceV7> for EnvVarSource {
+    fn from(source: v7::EnvVarSourceV7) -> Self {
+        match source {
+            v7::EnvVarSourceV7::Literal => Self::Literal,
+            v7::EnvVarSourceV7::Inherited => Self::Inherited,
+        }
+    }
+}
+
+impl From<EnvVarSource> for v7::EnvVarSourceV7 {
+    fn from(source: EnvVarSource) -> Self {
+        match source {
+            EnvVarSource::Literal => Self::Literal,
+            EnvVarSource::Inherited => Self::Inherited,
+        }
+    }
+}
+
+impl From<v7::EnvVarEntryV7> for EnvVarEntry {
+    fn from(entry: v7::EnvVarEntryV7) -> Self {
+        Self { hash_ck: entry.hash_ck.into(), source_nk: entry.source_nk.map(Into::into) }
+    }
+}
+
+impl From<EnvVarEntry> for v7::EnvVarEntryV7 {
+    fn from(entry: EnvVarEntry) -> Self {
+        Self { hash_ck: entry.hash_ck.into(), source_nk: entry.source_nk.map(Into::into) }
+    }
+}
+
+impl From<v7::CapturedOutputV7> for CapturedOutput {
+    fn from(output: v7::CapturedOutputV7) -> Self {
+        Self { capture: output.capture, hash_nk: output.hash_nk, saved_nk: output.saved_nk }
+    }
+}
+
+impl From<CapturedOutput> for v7::CapturedOutputV7 {
+    fn from(output: CapturedOutput) -> Self {
+        Self { capture: output.capture, hash_nk: output.hash_nk, saved_nk: output.saved_nk }
+    }
+}
+
+impl From<v7::StepRefV7> for StepRef {
+    fn from(step: v7::StepRefV7) -> Self {
+        Self { workflow_id: step.workflow_id, step_id: step.step_id }
+    }
+}
+
+impl From<StepRef> for v7::StepRefV7 {
+    fn from(step: StepRef) -> Self {
+        Self { workflow_id: step.workflow_id, step_id: step.step_id }
+    }
+}
+
+impl From<v7::ToolCallInstanceV7> for ToolCallInstance {
+    fn from(inst: v7::ToolCallInstanceV7) -> Self {
+        Self {
+            key_version: inst.key_version,
+            attempted_key_version_nk: inst.attempted_key_version_nk,
+            tool_call_id: inst.tool_call_id,
+            command_args: inst.command_args.into_iter().map(Into::into).collect(),
+            env_vars_ck: inst.env_vars_ck.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            materialized_inputs: inst.materialized_inputs,
+            outputs: inst.outputs.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            impure_nk: inst.impure_nk,
+            invalidated_at_nk: inst
+                .invalidated_at_nk
+                .map(|stamp| Timestamp::from_unix_nanos(stamp.0)),
+            executed_at_nk: Timestamp::from_unix_nanos(inst.executed_at_nk.0),
+            last_referenced_at_nk: Timestamp::from_unix_nanos(inst.last_referenced_at_nk.0),
+            step_ids_nk: inst.step_ids_nk.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<ToolCallInstance> for v7::ToolCallInstanceV7 {
+    fn from(inst: ToolCallInstance) -> Self {
+        Self {
+            key_version: inst.key_version,
+            attempted_key_version_nk: inst.attempted_key_version_nk,
+            tool_call_id: inst.tool_call_id,
+            command_args: inst.command_args.into_iter().map(Into::into).collect(),
+            env_vars_ck: inst.env_vars_ck.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            materialized_inputs: inst.materialized_inputs,
+            outputs: inst.outputs.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            impure_nk: inst.impure_nk,
+            invalidated_at_nk: inst
+                .invalidated_at_nk
+                .map(|stamp| v7::WireTimestampV7(stamp.as_unix_nanos())),
+            executed_at_nk: v7::WireTimestampV7(inst.executed_at_nk.as_unix_nanos()),
+            last_referenced_at_nk: v7::WireTimestampV7(inst.last_referenced_at_nk.as_unix_nanos()),
+            step_ids_nk: inst.step_ids_nk.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<v7::ConductorStateV7> for ConductorState {
+    fn from(state: v7::ConductorStateV7) -> Self {
+        Self {
+            version: state.version,
+            conductor_gc_ran_at: Timestamp::from_unix_nanos(state.conductor_gc_ran_at),
+            step_instances: state
+                .step_instances
+                .into_iter()
+                .map(|(workflow, steps)| {
+                    (workflow, steps.into_iter().map(|(step, key)| (step, key.into())).collect())
+                })
+                .collect(),
+            tool_call_instances: state
+                .tool_call_instances
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+            instance_key_secret_verifier: state.instance_key_secret_verifier.map(|verifier| {
+                verifier.keyed_hash().expect("V7 deserialization validated the verifier")
+            }),
+        }
+    }
+}
+
+impl From<ConductorState> for v7::ConductorStateV7 {
+    fn from(state: ConductorState) -> Self {
+        Self {
+            version: v7::CONDUCTOR_STATE_VERSION_V7,
+            conductor_gc_ran_at: state.conductor_gc_ran_at.as_unix_nanos(),
+            step_instances: state
+                .step_instances
+                .into_iter()
+                .map(|(workflow, steps)| {
+                    (workflow, steps.into_iter().map(|(step, key)| (step, key.into())).collect())
+                })
+                .collect(),
+            tool_call_instances: state
+                .tool_call_instances
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+            instance_key_secret_verifier: state
+                .instance_key_secret_verifier
+                .map(v7::WireKeyedHashV7::from_keyed),
+        }
+    }
+}
+
+impl From<v7::DerivedHashV7> for DerivedHash {
+    fn from(value: v7::DerivedHashV7) -> Self {
+        value.as_str().parse().expect("V7 deserialization validated the digest")
+    }
+}
+
+impl From<DerivedHash> for v7::DerivedHashV7 {
+    fn from(value: DerivedHash) -> Self {
+        match value {
+            DerivedHash::Unkeyed(hash) => Self::from_hash(hash),
+            DerivedHash::Keyed(keyed) => Self::from_keyed(keyed),
         }
     }
 }
@@ -180,27 +374,34 @@ pub(crate) fn peek_version_marker(bytes: &[u8]) -> Result<u32, ConductorError> {
 pub fn decode_state_json(bytes: &[u8]) -> Result<ConductorState, ConductorError> {
     let version = peek_version_marker(bytes)?;
 
-    if v6::is_conductor_state_version_v6(version) {
+    if v7::is_conductor_state_version_v7(version) {
+        let v7_state: v7::ConductorStateV7 = serde_json::from_slice(bytes)
+            .map_err(|e| ConductorError::Serialization(e.to_string()))?;
+        Ok(v7_state.into())
+    } else if v6::is_conductor_state_version_v6(version) {
         let v6_state: v6::ConductorStateV6 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v6_state.into())
+        Ok(v7::from_v6_into_v7(v6_state).into())
     } else if v5::is_conductor_state_version_v5(version) {
         let v5_state: v5::ConductorStateV5 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v6::from_v5_into_v6(v5_state).into())
+        Ok(v7::from_v6_into_v7(v6::from_v5_into_v6(v5_state)).into())
     } else if v4::is_conductor_state_version_v4(version) {
         let v4_state: v4::ConductorStateV4 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v6::from_v5_into_v6(v5::from_v4_into_v5(v4_state)).into())
+        Ok(v7::from_v6_into_v7(v6::from_v5_into_v6(v5::from_v4_into_v5(v4_state))).into())
     } else if v3::is_conductor_state_version_v3(version) {
         let v3_state: v3::ConductorStateV3 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v6::from_v5_into_v6(v5::from_v4_into_v5(v4::from_v3_into_v4(v3_state))).into())
+        Ok(v7::from_v6_into_v7(v6::from_v5_into_v6(v5::from_v4_into_v5(v4::from_v3_into_v4(
+            v3_state,
+        ))))
+        .into())
     } else if v2::is_conductor_state_version_v2(version) {
         let v2_state: v2::ConductorStateV2 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v6::from_v5_into_v6(v5::from_v4_into_v5(v4::from_v3_into_v4(v3::from_v2_into_v3(
-            v2_state,
+        Ok(v7::from_v6_into_v7(v6::from_v5_into_v6(v5::from_v4_into_v5(v4::from_v3_into_v4(
+            v3::from_v2_into_v3(v2_state),
         ))))
         .into())
     } else if v1::is_orchestration_state_version_v1(version) {
@@ -211,7 +412,8 @@ pub fn decode_state_json(bytes: &[u8]) -> Result<ConductorState, ConductorError>
     } else {
         Err(ConductorError::Serialization(format!(
             "unsupported orchestration state version: {version} \
-             (supported: {}, {}, {}, {}, {}, {})",
+             (supported: {}, {}, {}, {}, {}, {}, {})",
+            v7::CONDUCTOR_STATE_VERSION_V7,
             v6::CONDUCTOR_STATE_VERSION_V6,
             v5::CONDUCTOR_STATE_VERSION_V5,
             v4::CONDUCTOR_STATE_VERSION_V4,
@@ -233,41 +435,49 @@ pub async fn decode_state_json_with_cas<C: CasApi>(
 ) -> Result<ConductorState, ConductorError> {
     let version = peek_version_marker(bytes)?;
 
-    if v6::is_conductor_state_version_v6(version) {
+    if v7::is_conductor_state_version_v7(version) {
+        let v7_state: v7::ConductorStateV7 = serde_json::from_slice(bytes)
+            .map_err(|e| ConductorError::Serialization(e.to_string()))?;
+        Ok(v7_state.into())
+    } else if v6::is_conductor_state_version_v6(version) {
         let v6_state: v6::ConductorStateV6 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v6_state.into())
+        Ok(v7::from_v6_into_v7(v6_state).into())
     } else if v5::is_conductor_state_version_v5(version) {
         let v5_state: v5::ConductorStateV5 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v6::from_v5_into_v6(v5_state).into())
+        Ok(v7::from_v6_into_v7(v6::from_v5_into_v6(v5_state)).into())
     } else if v4::is_conductor_state_version_v4(version) {
         let v4_state: v4::ConductorStateV4 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v6::from_v5_into_v6(v5::from_v4_into_v5(v4_state)).into())
+        Ok(v7::from_v6_into_v7(v6::from_v5_into_v6(v5::from_v4_into_v5(v4_state))).into())
     } else if v3::is_conductor_state_version_v3(version) {
         let v3_state: v3::ConductorStateV3 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v6::from_v5_into_v6(v5::from_v4_into_v5(v4::from_v3_into_v4(v3_state))).into())
+        Ok(v7::from_v6_into_v7(v6::from_v5_into_v6(v5::from_v4_into_v5(v4::from_v3_into_v4(
+            v3_state,
+        ))))
+        .into())
     } else if v2::is_conductor_state_version_v2(version) {
         let v2_state: v2::ConductorStateV2 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v6::from_v5_into_v6(v5::from_v4_into_v5(v4::from_v3_into_v4(v3::from_v2_into_v3(
-            v2_state,
+        Ok(v7::from_v6_into_v7(v6::from_v5_into_v6(v5::from_v4_into_v5(v4::from_v3_into_v4(
+            v3::from_v2_into_v3(v2_state),
         ))))
         .into())
     } else if v1::is_orchestration_state_version_v1(version) {
         let envelope: v1::OrchestrationStateEnvelopeV1 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
         let v2_state = v2::migrate_v1_to_v2(cas, envelope).await?;
-        Ok(v6::from_v5_into_v6(v5::from_v4_into_v5(v4::from_v3_into_v4(v3::from_v2_into_v3(
-            v2_state,
+        Ok(v7::from_v6_into_v7(v6::from_v5_into_v6(v5::from_v4_into_v5(v4::from_v3_into_v4(
+            v3::from_v2_into_v3(v2_state),
         ))))
         .into())
     } else {
         Err(ConductorError::Serialization(format!(
             "unsupported orchestration state version: {version} \
-             (supported: {}, {}, {}, {}, {}, {})",
+             (supported: {}, {}, {}, {}, {}, {}, {})",
+            v7::CONDUCTOR_STATE_VERSION_V7,
             v6::CONDUCTOR_STATE_VERSION_V6,
             v5::CONDUCTOR_STATE_VERSION_V5,
             v4::CONDUCTOR_STATE_VERSION_V4,
@@ -285,8 +495,8 @@ pub async fn decode_state_json_with_cas<C: CasApi>(
 ///
 /// Returns an error if serialization to JSON fails.
 pub fn encode_state_json(state: &ConductorState) -> Result<Vec<u8>, ConductorError> {
-    let v6_state: v6::ConductorStateV6 = state.clone().into();
-    serde_json::to_vec_pretty(&v6_state).map_err(|e| ConductorError::Serialization(e.to_string()))
+    let v7_state: v7::ConductorStateV7 = state.clone().into();
+    serde_json::to_vec_pretty(&v7_state).map_err(|e| ConductorError::Serialization(e.to_string()))
 }
 
 #[cfg(test)]
@@ -300,16 +510,16 @@ mod tests {
     use crate::state::{STATE_VERSION, StepRef};
 
     fn sample_state() -> ConductorState {
-        let key = Hash::from_content(b"key");
+        let key = DerivedHash::Unkeyed(Hash::from_content(b"key"));
         let instance = ToolCallInstance {
             key_version: 8,
             attempted_key_version_nk: 8,
             tool_call_id: "echo@v1".to_string(),
-            command_args: vec![Hash::from_content(b"arg")],
+            command_args: vec![DerivedHash::Unkeyed(Hash::from_content(b"arg"))],
             env_vars_ck: BTreeMap::from([(
                 "FOO".to_string(),
                 EnvVarEntry {
-                    hash_ck: Hash::from_content(b"val"),
+                    hash_ck: DerivedHash::Unkeyed(Hash::from_content(b"val")),
                     source_nk: Some(EnvVarSource::Literal),
                 },
             )]),
@@ -342,7 +552,59 @@ mod tests {
                 BTreeMap::from([("step-0-echo".to_string(), key)]),
             )]),
             tool_call_instances: BTreeMap::from([(key, instance)]),
+            instance_key_secret_verifier: None,
         }
+    }
+
+    /// Builds a raw V6 document so migration is exercised from the wire shape,
+    /// not from a runtime value that already uses the current schema.
+    fn sample_v6_state_bytes() -> Vec<u8> {
+        let key = Hash::from_content(b"key");
+        let state = v6::ConductorStateV6 {
+            version: v6::CONDUCTOR_STATE_VERSION_V6,
+            conductor_gc_ran_at: 9,
+            step_instances: BTreeMap::from([(
+                "default".to_string(),
+                BTreeMap::from([("step-0-echo".to_string(), key)]),
+            )]),
+            tool_call_instances: BTreeMap::from([(
+                key,
+                v6::ToolCallInstanceV6 {
+                    key_version: 8,
+                    attempted_key_version_nk: 8,
+                    tool_call_id: "echo@v1".to_string(),
+                    command_args: vec![Hash::from_content(b"arg")],
+                    env_vars_ck: BTreeMap::from([(
+                        "FOO".to_string(),
+                        v6::EnvVarEntryV6 {
+                            hash_ck: Hash::from_content(b"val"),
+                            source_nk: Some(v6::EnvVarSourceV6::Literal),
+                        },
+                    )]),
+                    materialized_inputs: BTreeMap::from([(
+                        "bin/tool".to_string(),
+                        Hash::from_content(b"payload"),
+                    )]),
+                    outputs: BTreeMap::from([(
+                        "stdout".to_string(),
+                        v6::CapturedOutputV6 {
+                            capture: "stdout".to_string(),
+                            hash_nk: Some(Hash::from_content(b"out")),
+                            saved_nk: true,
+                        },
+                    )]),
+                    impure_nk: false,
+                    invalidated_at_nk: Some(v6::WireTimestampV6(11)),
+                    executed_at_nk: v6::WireTimestampV6(5),
+                    last_referenced_at_nk: v6::WireTimestampV6(42),
+                    step_ids_nk: BTreeSet::from([v6::StepRefV6 {
+                        workflow_id: "default".to_string(),
+                        step_id: "step-0-echo".to_string(),
+                    }]),
+                },
+            )]),
+        };
+        serde_json::to_vec(&state).expect("v6 fixture encodes")
     }
 
     #[test]
@@ -358,16 +620,16 @@ mod tests {
         let encoded = encode_state_json(&sample_state()).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(json["version"], serde_json::json!(STATE_VERSION));
-        assert_eq!(json["version"], serde_json::json!(6));
+        assert_eq!(json["version"], serde_json::json!(7));
     }
 
     #[test]
-    fn a_v6_document_decodes_unchanged() {
+    fn a_v7_document_decodes_unchanged() {
         let state = sample_state();
         let encoded = encode_state_json(&state).expect("state encodes");
-        assert_eq!(peek_version_marker(&encoded).expect("marker is readable"), 6);
+        assert_eq!(peek_version_marker(&encoded).expect("marker is readable"), 7);
 
-        let decoded = decode_state_json(&encoded).expect("the v6 document decodes");
+        let decoded = decode_state_json(&encoded).expect("the v7 document decodes");
         assert_eq!(decoded, state);
         let instance = decoded.tool_call_instances.values().next().expect("one instance");
         assert_eq!(instance.invalidated_at_nk, Some(Timestamp::from_unix_nanos(11)));
@@ -378,7 +640,19 @@ mod tests {
     }
 
     #[test]
-    fn a_v5_document_migrates_to_v6() {
+    fn v6_state_migrates_to_v7_with_null_secret_verifier() {
+        let v6 = sample_v6_state_bytes();
+        let state = decode_state_json(&v6).expect("v6 state migrates");
+        assert_eq!(state.version, 7);
+        assert_eq!(state.instance_key_secret_verifier, None);
+        let encoded = encode_state_json(&state).expect("v7 state encodes");
+        let value: serde_json::Value = serde_json::from_slice(&encoded).expect("state is JSON");
+        assert_eq!(value["version"], 7);
+        assert!(value["instance_key_secret_verifier"].is_null());
+    }
+
+    #[test]
+    fn a_v5_document_migrates_to_v7() {
         let key = Hash::from_content(b"key");
         let json = format!(
             r#"{{
@@ -416,10 +690,10 @@ mod tests {
         );
 
         let decoded = decode_state_json(json.as_bytes()).expect("a v5 document decodes");
-        assert_eq!(decoded.version, 6);
+        assert_eq!(decoded.version, 7);
         assert_eq!(decoded.conductor_gc_ran_at, Timestamp::from_unix_nanos(9));
-        assert_eq!(decoded.step_instances["default"]["step-0-echo"], key);
-        let instance = &decoded.tool_call_instances[&key];
+        assert_eq!(decoded.step_instances["default"]["step-0-echo"], DerivedHash::Unkeyed(key));
+        let instance = &decoded.tool_call_instances[&DerivedHash::Unkeyed(key)];
         assert_eq!(instance.key_version, 7);
         assert_eq!(instance.attempted_key_version_nk, 7);
         assert_eq!(instance.env_vars_ck["FOO"].source_nk, None);
@@ -461,8 +735,11 @@ mod tests {
         assert_eq!(decoded.conductor_gc_ran_at, Timestamp::from_unix_nanos(2));
         assert_eq!(
             decoded.step_instances,
-            BTreeMap::from([(String::new(), BTreeMap::from([("step-0-echo".to_string(), key)]),)]),
-            "v6 migration backfills step_instances from instance step provenance",
+            BTreeMap::from([(
+                String::new(),
+                BTreeMap::from([("step-0-echo".to_string(), DerivedHash::Unkeyed(key))]),
+            )]),
+            "V7 migration backfills step_instances from instance step provenance",
         );
         let instance = decoded.tool_call_instances.values().next().expect("one instance");
         assert_eq!(instance.invalidated_at_nk, None);
@@ -484,7 +761,7 @@ mod tests {
             decode_state_json(br#"{"version": 99}"#).expect_err("version 99 must not be decoded");
         let message = error.to_string();
         assert!(message.contains("unsupported orchestration state version: 99"), "{message}");
-        for supported in ["6", "5", "4", "3", "2", "1"] {
+        for supported in ["7", "6", "5", "4", "3", "2", "1"] {
             assert!(message.contains(supported), "missing {supported} in {message}");
         }
     }
@@ -501,10 +778,10 @@ mod tests {
     }
 
     #[test]
-    fn nullable_facts_are_explicit_null_in_v6_json() {
-        let key = Hash::from_content(b"key");
+    fn nullable_facts_are_explicit_null_in_v7_json() {
+        let key = DerivedHash::Unkeyed(Hash::from_content(b"key"));
         let state = ConductorState {
-            version: 6,
+            version: 7,
             conductor_gc_ran_at: Timestamp::from_unix_nanos(1),
             step_instances: BTreeMap::new(),
             tool_call_instances: BTreeMap::from([(
@@ -516,7 +793,10 @@ mod tests {
                     command_args: Vec::new(),
                     env_vars_ck: BTreeMap::from([(
                         "K".to_string(),
-                        EnvVarEntry { hash_ck: Hash::from_content(b"v"), source_nk: None },
+                        EnvVarEntry {
+                            hash_ck: DerivedHash::Unkeyed(Hash::from_content(b"v")),
+                            source_nk: None,
+                        },
                     )]),
                     materialized_inputs: BTreeMap::new(),
                     outputs: BTreeMap::from([(
@@ -534,12 +814,14 @@ mod tests {
                     step_ids_nk: BTreeSet::new(),
                 },
             )]),
+            instance_key_secret_verifier: None,
         };
         let encoded = serde_json::to_value(encode_state_json(&state).unwrap()).unwrap();
         let inst = encoded["tool_call_instances"][key.to_string()].clone();
         assert_eq!(inst["invalidated_at_nk"], serde_json::Value::Null);
         assert_eq!(inst["outputs"]["o"]["hash_nk"], serde_json::Value::Null);
         assert_eq!(inst["env_vars_ck"]["K"]["source_nk"], serde_json::Value::Null);
+        assert_eq!(encoded["instance_key_secret_verifier"], serde_json::Value::Null);
     }
 
     #[test]

@@ -24,6 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bytes::Bytes;
 use mediapm_cas::{CasApi, Hash, InMemoryCas};
 use mediapm_conductor::api::RunWorkflowOptions;
+use mediapm_conductor::derived_hash::DerivedHash;
 use mediapm_conductor::gc::GcClassification;
 use mediapm_conductor::{
     CapturedOutput, Conductor, ConductorState, RuntimeStoragePaths, ToolCallInstance,
@@ -64,12 +65,17 @@ pub(crate) fn sample_instance(_key: Hash) -> ToolCallInstance {
     }
 }
 
+/// Wraps a test key in the unkeyed digest the state stores.
+fn dk(hash: Hash) -> DerivedHash {
+    DerivedHash::from(hash)
+}
+
 /// Seeds instances whose own `last_referenced_at` is far enough in the past to
 /// be evicted by a zero-TTL sweep.
 fn seed_state_with(keys: &[Hash]) -> ConductorState {
     let mut state = ConductorState::new_empty();
     state.conductor_gc_ran_at = Timestamp::now();
-    state.tool_call_instances = keys.iter().map(|key| (*key, sample_instance(*key))).collect();
+    state.tool_call_instances = keys.iter().map(|key| (dk(*key), sample_instance(*key))).collect();
     state
 }
 
@@ -84,12 +90,15 @@ fn run_conductor_gc_evicts_unreferenced_past_ttl() {
     let remove = Hash::from_content(b"remove");
     let mut state = seed_state_with(&[keep, remove]);
 
-    let referenced: BTreeSet<Hash> = [keep].into();
+    let referenced: BTreeSet<DerivedHash> = [dk(keep)].into();
     state.run_conductor_gc(&referenced, 0); // TTL = 0 → anything unreferenced is evicted
 
-    assert!(state.tool_call_instances.contains_key(&keep), "referenced instance should survive");
     assert!(
-        !state.tool_call_instances.contains_key(&remove),
+        state.tool_call_instances.contains_key(&dk(keep)),
+        "referenced instance should survive"
+    );
+    assert!(
+        !state.tool_call_instances.contains_key(&dk(remove)),
         "unreferenced instance past TTL should be evicted"
     );
 }
@@ -101,11 +110,11 @@ fn run_conductor_gc_preserves_referenced() {
     let b = Hash::from_content(b"b");
     let mut state = seed_state_with(&[a, b]);
 
-    let referenced: BTreeSet<Hash> = [a, b].into();
+    let referenced: BTreeSet<DerivedHash> = [dk(a), dk(b)].into();
     state.run_conductor_gc(&referenced, 0);
 
-    assert!(state.tool_call_instances.contains_key(&a));
-    assert!(state.tool_call_instances.contains_key(&b));
+    assert!(state.tool_call_instances.contains_key(&dk(a)));
+    assert!(state.tool_call_instances.contains_key(&dk(b)));
     assert_eq!(state.tool_call_instances.len(), 2);
 }
 
@@ -139,7 +148,10 @@ fn run_conductor_gc_within_ttl_preserves_unreferenced() {
     // Seeded aux has last_referenced = 0 (unix epoch).
     // TTL = 10^18 seconds is far larger than any real test duration.
     state.run_conductor_gc(&BTreeSet::new(), 1_000_000_000_000_000);
-    assert!(state.tool_call_instances.contains_key(&fresh), "instance within TTL should survive");
+    assert!(
+        state.tool_call_instances.contains_key(&dk(fresh)),
+        "instance within TTL should survive"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +165,9 @@ fn recorded_seed(conductor: &Conductor<InMemoryCas>, workflow: &str) -> BTreeSet
         .expect("the conductor state must be readable")
         .step_instances
         .get(workflow)
-        .map(|steps| steps.values().copied().collect())
+        .map(|steps| {
+            steps.values().map(|key| key.as_unkeyed().expect("an unkeyed test seed")).collect()
+        })
         .unwrap_or_default()
 }
 
@@ -187,7 +201,7 @@ async fn a_successful_run_records_the_instances_it_executed_and_reused() {
             .expect("state")
             .tool_call_instances
             .keys()
-            .copied()
+            .map(|key| key.as_unkeyed().expect("an unkeyed test key"))
             .collect::<BTreeSet<_>>(),
         "the seed must name every instance the run left behind"
     );
@@ -305,7 +319,7 @@ async fn the_seed_reaches_the_file_and_a_pass_classifies_with_it() {
     // from nothing. Its clock is old, so the pass may evict it.
     let superseded = Hash::from_content(b"superseded");
     let mut state = reopened.get_state().expect("state");
-    state.tool_call_instances.insert(superseded, sample_instance(superseded));
+    state.tool_call_instances.insert(dk(superseded), sample_instance(superseded));
     reopened.replace_resolved_state(state).expect("replace state");
 
     // Two passes: the grace period is measured against the epoch the previous
@@ -316,9 +330,9 @@ async fn the_seed_reaches_the_file_and_a_pass_classifies_with_it() {
     reopened.run_gc().await.expect("second gc classifies against it");
 
     let after = reopened.get_state().expect("state");
-    assert!(after.tool_call_instances.contains_key(&live), "a seeded instance must survive");
+    assert!(after.tool_call_instances.contains_key(&dk(live)), "a seeded instance must survive");
     assert!(
-        !after.tool_call_instances.contains_key(&superseded),
+        !after.tool_call_instances.contains_key(&dk(superseded)),
         "a pass that classified must evict the unreachable record; keeping it means it abstained",
     );
     tc.shutdown().await;
@@ -373,7 +387,7 @@ async fn an_unreferenced_instance_is_recoverable_until_its_ttl_passes() {
         "result".to_string(),
         CapturedOutput { capture: "stdout".to_string(), hash_nk: Some(blob), saved_nk: true },
     )]);
-    state.tool_call_instances.insert(candidate, instance);
+    state.tool_call_instances.insert(dk(candidate), instance);
     conductor.replace_resolved_state(state).expect("insert the candidate");
 
     // Pass 1, inside the grace period: the record and its blob survive.
@@ -384,7 +398,7 @@ async fn an_unreferenced_instance_is_recoverable_until_its_ttl_passes() {
     );
     let after_first = conductor.get_state().expect("state");
     assert!(
-        after_first.tool_call_instances.contains_key(&candidate),
+        after_first.tool_call_instances.contains_key(&dk(candidate)),
         "a fresh unreachable record must stay recoverable inside its TTL",
     );
     assert!(
@@ -402,7 +416,7 @@ async fn an_unreferenced_instance_is_recoverable_until_its_ttl_passes() {
     conductor.run_gc().await.expect("second pass");
     let after = conductor.get_state().expect("state");
     assert!(
-        !after.tool_call_instances.contains_key(&candidate),
+        !after.tool_call_instances.contains_key(&dk(candidate)),
         "a record older than the configured TTL must be evicted, not kept as if the default applied",
     );
     assert!(
@@ -415,7 +429,7 @@ async fn an_unreferenced_instance_is_recoverable_until_its_ttl_passes() {
     reopened.ensure_persisted_state_loaded().await.expect("load the persisted state");
     let on_disk = reopened.get_state().expect("state");
     assert!(
-        !on_disk.tool_call_instances.contains_key(&candidate),
+        !on_disk.tool_call_instances.contains_key(&dk(candidate)),
         "the eviction must reach the state file, not only the memory snapshot",
     );
     reopened.shutdown().await.expect("shutdown");

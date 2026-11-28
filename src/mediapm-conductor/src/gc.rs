@@ -59,6 +59,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_cas::{CasApi, CasMaintenanceApi, Hash, PruneReport};
 
+use crate::derived_hash::DerivedHash;
 use crate::error::ConductorError;
 use crate::orchestration::protocol::UnifiedNickelDocument;
 
@@ -135,8 +136,8 @@ pub struct ConductorGcReport {
 /// reads today, so its record and its blobs stay until that consumer moves on
 /// and the seven-day clock starts.
 #[must_use]
-pub(crate) fn reachability_closure(state: &ConductorState) -> BTreeSet<Hash> {
-    let mut producers: BTreeMap<Hash, Vec<Hash>> = BTreeMap::new();
+pub(crate) fn reachability_closure(state: &ConductorState) -> BTreeSet<DerivedHash> {
+    let mut producers: BTreeMap<Hash, Vec<DerivedHash>> = BTreeMap::new();
     for (instance_key, instance) in &state.tool_call_instances {
         for record in instance.outputs.values() {
             if let Some(hash) = record.hash_nk {
@@ -145,14 +146,14 @@ pub(crate) fn reachability_closure(state: &ConductorState) -> BTreeSet<Hash> {
         }
     }
 
-    let mut reached: BTreeSet<Hash> = state
+    let mut reached: BTreeSet<DerivedHash> = state
         .step_instances
         .values()
         .flat_map(|steps| steps.values())
         .filter(|key| state.tool_call_instances.contains_key(*key))
         .copied()
         .collect();
-    let mut pending: Vec<Hash> = reached.iter().copied().collect();
+    let mut pending: Vec<DerivedHash> = reached.iter().copied().collect();
     while let Some(instance_key) = pending.pop() {
         let Some(instance) = state.tool_call_instances.get(&instance_key) else {
             continue;
@@ -302,8 +303,8 @@ fn output_is_unsaved(record: &CapturedOutput) -> bool {
 /// doubt that stops it evicting records stops it reclaiming their bytes.
 fn keeps_output(
     record: &CapturedOutput,
-    instance_key: &Hash,
-    reachable: Option<&BTreeSet<Hash>>,
+    instance_key: &DerivedHash,
+    reachable: Option<&BTreeSet<DerivedHash>>,
 ) -> bool {
     if !output_is_unsaved(record) {
         return true;
@@ -480,6 +481,11 @@ mod tests {
     /// root set alone decides which bytes survive.
     const A_GRACE_PERIOD_THAT_OUTLASTS_THE_TEST: u64 = 86_400;
 
+    /// Wraps a test instance key in the unkeyed digest the state now stores.
+    fn dk(hash: Hash) -> DerivedHash {
+        DerivedHash::Unkeyed(hash)
+    }
+
     /// One instance with the given inputs and outputs, keyed by `b"instance-{n}"`.
     ///
     /// Inputs are recorded under `in-{i}` and outputs under `out-{i}`, which is
@@ -563,7 +569,7 @@ mod tests {
     ) -> ConductorState {
         let mut state = ConductorState::new_empty();
         state.tool_call_instances =
-            instances.into_iter().map(|fixture| (fixture.key, fixture.instance)).collect();
+            instances.into_iter().map(|fixture| (dk(fixture.key), fixture.instance)).collect();
         state.conductor_gc_ran_at = Timestamp::now();
         state.step_instances = seeds
             .into_iter()
@@ -572,7 +578,7 @@ mod tests {
                     wf,
                     keys.into_iter()
                         .enumerate()
-                        .map(|(i, k)| (format!("step-{i}"), k))
+                        .map(|(i, k)| (format!("step-{i}"), dk(k)))
                         .collect::<BTreeMap<_, _>>(),
                 )
             })
@@ -634,7 +640,7 @@ mod tests {
         run_conductor_gc(&cas, &mut state, &unified_with(&[]), 0).await.expect("gc");
 
         assert!(
-            state.tool_call_instances.contains_key(&orphan),
+            state.tool_call_instances.contains_key(&dk(orphan)),
             "an empty document must abstain, not sweep the store",
         );
     }
@@ -790,7 +796,7 @@ mod tests {
             state.step_instances.contains_key("removed"),
             "an abstaining pass must not prune a seed it cannot replace",
         );
-        assert!(state.tool_call_instances.contains_key(&kept_key), "and evicts nothing either");
+        assert!(state.tool_call_instances.contains_key(&dk(kept_key)), "and evicts nothing either");
     }
 
     /// Two instances that consume each other's outputs terminate.
@@ -814,7 +820,7 @@ mod tests {
 
         assert_eq!(
             reached,
-            BTreeSet::from([Hash::from_content(b"first"), Hash::from_content(b"second")]),
+            BTreeSet::from([dk(Hash::from_content(b"first")), dk(Hash::from_content(b"second"))]),
             "both members of the cycle are reachable and the walk stops",
         );
     }
@@ -842,7 +848,7 @@ mod tests {
         let report = run_conductor_gc(&cas, &mut state, &unified, 0).await.expect("gc");
 
         assert!(
-            state.tool_call_instances.contains_key(&producer_key),
+            state.tool_call_instances.contains_key(&dk(producer_key)),
             "the consumer lists the producer's blob, so the producer is reachable"
         );
         assert_eq!(report.reachable_instances, 2, "both ends of the edge are in the closure");
@@ -872,14 +878,14 @@ mod tests {
 
         run_conductor_gc(&cas, &mut state, &unified, 0).await.expect("first gc");
         assert!(
-            state.tool_call_instances.contains_key(&producer_key),
+            state.tool_call_instances.contains_key(&dk(producer_key)),
             "the first pass must keep the producer, or the second proves nothing"
         );
 
         let moved_on = cas.put(bytes::Bytes::from_static(b"new inputs")).await.expect("put");
         state
             .tool_call_instances
-            .get_mut(&consumer_key)
+            .get_mut(&dk(consumer_key))
             .expect("consumer")
             .materialized_inputs
             .insert("in-0".to_string(), moved_on);
@@ -887,7 +893,7 @@ mod tests {
         let report = run_conductor_gc(&cas, &mut state, &unified, 0).await.expect("second gc");
 
         assert!(
-            !state.tool_call_instances.contains_key(&producer_key),
+            !state.tool_call_instances.contains_key(&dk(producer_key)),
             "nothing reads the producer's blob any more, so it ages out"
         );
         assert_eq!(report.superseded_instances, 1, "the walk classifies it as superseded");
@@ -897,7 +903,7 @@ mod tests {
             "the blob is reclaimed once no surviving record names it"
         );
         assert!(
-            state.tool_call_instances.contains_key(&consumer_key),
+            state.tool_call_instances.contains_key(&dk(consumer_key)),
             "the live consumer itself is seeded and stays"
         );
     }
@@ -918,7 +924,7 @@ mod tests {
         let report = run_conductor_gc(&cas, &mut state, &unified, 0).await.expect("gc");
 
         assert!(
-            state.tool_call_instances.contains_key(&instance_key),
+            state.tool_call_instances.contains_key(&dk(instance_key)),
             "a workflow with no seed protects every recorded instance"
         );
         assert_eq!(report.instances_removed, 0, "an abstaining pass removes nothing");
@@ -949,13 +955,13 @@ mod tests {
         let report = run_conductor_gc(&cas, &mut state, &unified, 0).await.expect("gc");
 
         assert!(
-            state.tool_call_instances.contains_key(&producer_key),
+            state.tool_call_instances.contains_key(&dk(producer_key)),
             "closure membership outranks the invalidation marker"
         );
         assert!(
             state
                 .tool_call_instances
-                .get(&producer_key)
+                .get(&dk(producer_key))
                 .expect("producer")
                 .invalidated_at_nk
                 .is_some(),
@@ -991,7 +997,7 @@ mod tests {
             "a workflow the document no longer declares must not keep its seed"
         );
         assert!(
-            !state.tool_call_instances.contains_key(&abandoned_key),
+            !state.tool_call_instances.contains_key(&dk(abandoned_key)),
             "with the seed gone the instance is unreachable and ages out"
         );
         assert_eq!(report.instances_removed, 1, "the abandoned instance is the one removed");
@@ -1023,7 +1029,7 @@ mod tests {
         .expect("gc");
 
         assert!(
-            state.tool_call_instances.contains_key(&producer_key),
+            state.tool_call_instances.contains_key(&dk(producer_key)),
             "the grace period is about the record, so the record stays while its bytes go"
         );
         assert!(
@@ -1234,8 +1240,8 @@ mod tests {
         );
 
         let reached = reachability_closure(&state);
-        assert!(reached.contains(&a_key));
-        assert!(reached.contains(&b_key));
+        assert!(reached.contains(&dk(a_key)));
+        assert!(reached.contains(&dk(b_key)));
         assert_eq!(reached.len(), 2);
     }
 
@@ -1257,7 +1263,10 @@ mod tests {
         // (BTreeSet sorted by hash), so override explicitly for determinism.
         state.step_instances.insert(
             "wf".to_string(),
-            BTreeMap::from([("keep".to_string(), kept_key), ("gone".to_string(), gone_key)]),
+            BTreeMap::from([
+                ("keep".to_string(), dk(kept_key)),
+                ("gone".to_string(), dk(gone_key)),
+            ]),
         );
         keep_records_within_their_grace_period(&mut state);
 
@@ -1290,8 +1299,8 @@ mod tests {
         state.step_instances.insert(
             "removed".to_string(),
             BTreeMap::from([
-                ("live".to_string(), kept_key),
-                ("dangling".to_string(), dangling_key),
+                ("live".to_string(), dk(kept_key)),
+                ("dangling".to_string(), dk(dangling_key)),
             ]),
         );
 

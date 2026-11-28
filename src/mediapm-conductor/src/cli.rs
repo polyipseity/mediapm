@@ -27,6 +27,7 @@ use tokio::sync::OnceCell;
 use crate::api::{PathOverrides, RunWorkflowOptions, RuntimeStoragePaths};
 use crate::conductor_impl::Conductor;
 use crate::defaults;
+use crate::derived_hash::DerivedHash;
 use crate::error::ConductorError;
 use crate::gc::{ConductorGcReport, GcClassification};
 use crate::state::ConductorState;
@@ -294,7 +295,7 @@ fn set_instance_invalidation(
     key: &Hash,
     invalidated: bool,
 ) -> Result<MarkerChange, ConductorError> {
-    let Some(instance) = state.tool_call_instances.get_mut(key) else {
+    let Some(instance) = state.tool_call_instances.get_mut(&DerivedHash::from(*key)) else {
         return Err(ConductorError::Workflow(format!("tool call instance '{key}' not found")));
     };
     if invalidated {
@@ -521,6 +522,7 @@ mod tests {
     };
     use crate::api::RuntimeStoragePaths;
     use crate::conductor_impl::Conductor;
+    use crate::derived_hash::DerivedHash;
     use crate::gc::{ConductorGcReport, GcClassification};
     use crate::state::{CapturedOutput, ConductorState, StepRef, ToolCallInstance};
 
@@ -563,7 +565,7 @@ mod tests {
     fn state_with_one_instance(key: Hash) -> ConductorState {
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
-            key,
+            DerivedHash::from(key),
             ToolCallInstance {
                 key_version: 8,
                 attempted_key_version_nk: 8,
@@ -673,20 +675,22 @@ mod tests {
             set_instance_invalidation(&mut state, &key, true).expect("mark"),
             MarkerChange::Changed,
         );
-        let marked_at = state.tool_call_instances[&key].invalidated_at_nk;
+        let marked_at = state.tool_call_instances[&DerivedHash::from(key)].invalidated_at_nk;
         assert!(marked_at.is_some(), "marking must record when it happened");
-        let outputs = state.tool_call_instances[&key].outputs.clone();
+        let outputs = state.tool_call_instances[&DerivedHash::from(key)].outputs.clone();
 
         assert_eq!(
             set_instance_invalidation(&mut state, &key, false).expect("unmark"),
             MarkerChange::Changed,
         );
         assert_eq!(
-            state.tool_call_instances[&key].invalidated_at_nk, None,
+            state.tool_call_instances[&DerivedHash::from(key)].invalidated_at_nk,
+            None,
             "revalidating must remove the marker",
         );
         assert_eq!(
-            state.tool_call_instances[&key].outputs, outputs,
+            state.tool_call_instances[&DerivedHash::from(key)].outputs,
+            outputs,
             "a marker change must never touch what the instance recorded",
         );
     }
@@ -704,15 +708,18 @@ mod tests {
         // microsecond apart can be equal on a coarse system clock, which would
         // let a restarting implementation pass. A fixed timestamp makes the
         // comparison exact wherever the suite runs.
-        state.tool_call_instances.get_mut(&key).expect("seeded instance").invalidated_at_nk =
-            Some(Timestamp::from_unix_nanos(7));
+        state
+            .tool_call_instances
+            .get_mut(&DerivedHash::from(key))
+            .expect("seeded instance")
+            .invalidated_at_nk = Some(Timestamp::from_unix_nanos(7));
 
         assert_eq!(
             set_instance_invalidation(&mut state, &key, true).expect("mark again"),
             MarkerChange::AlreadyInRequestedState,
         );
         assert_eq!(
-            state.tool_call_instances[&key].invalidated_at_nk,
+            state.tool_call_instances[&DerivedHash::from(key)].invalidated_at_nk,
             Some(Timestamp::from_unix_nanos(7)),
             "a repeated mark must not restart the invalidated-since clock",
         );
@@ -742,7 +749,8 @@ mod tests {
 
         assert_eq!(change, MarkerChange::Changed);
         let recorded = state_on_disk(&conductor);
-        let instance = recorded.tool_call_instances.get(&key).expect("record kept");
+        let instance =
+            recorded.tool_call_instances.get(&DerivedHash::from(key)).expect("record kept");
         assert!(
             instance.invalidated_at_nk.is_some(),
             "the marker must survive the process, or the next sync would reuse the record",
@@ -753,7 +761,8 @@ mod tests {
             "a marker change must not disturb the GC clock",
         );
         assert_eq!(
-            instance.outputs, seeded.tool_call_instances[&key].outputs,
+            instance.outputs,
+            seeded.tool_call_instances[&DerivedHash::from(key)].outputs,
             "invalidation must keep the recorded outputs, not delete them",
         );
     }
@@ -764,8 +773,11 @@ mod tests {
     async fn revalidating_persists_the_cleared_marker() {
         let key = Hash::from_content(b"instance");
         let mut seeded = state_with_one_instance(key);
-        seeded.tool_call_instances.get_mut(&key).expect("seeded instance").invalidated_at_nk =
-            Some(Timestamp::from_unix_nanos(7));
+        seeded
+            .tool_call_instances
+            .get_mut(&DerivedHash::from(key))
+            .expect("seeded instance")
+            .invalidated_at_nk = Some(Timestamp::from_unix_nanos(7));
         let (_dir, conductor) = conductor_in_scratch_dir(&seeded);
 
         let change = change_instance_invalidation(&conductor, &key.to_string(), false)
@@ -775,7 +787,8 @@ mod tests {
         assert_eq!(change, MarkerChange::Changed);
         let recorded = state_on_disk(&conductor);
         assert_eq!(
-            recorded.tool_call_instances[&key].invalidated_at_nk, None,
+            recorded.tool_call_instances[&DerivedHash::from(key)].invalidated_at_nk,
+            None,
             "revalidating must clear the marker on disk",
         );
     }

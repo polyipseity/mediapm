@@ -12,6 +12,7 @@ use mediapm_cas::{CasApi, ConstraintApi, Hash};
 use mediapm_utils::Timestamp;
 
 use crate::config::OutputCaptureSpec;
+use crate::derived_hash::DerivedHash;
 use crate::error::ConductorError;
 use crate::instance_key::{INSTANCE_KEY_VERSION, input_binding_to_string};
 use crate::orchestration::protocol::{
@@ -409,7 +410,7 @@ async fn execute_miss<C: CasApi + ConstraintApi + Send + Sync>(
         key_version: INSTANCE_KEY_VERSION,
         attempted_key_version_nk: INSTANCE_KEY_VERSION,
         tool_call_id: tool_call_id.clone(),
-        command_args: dispatched.command_args,
+        command_args: dispatched.command_args.into_iter().map(DerivedHash::from).collect(),
         env_vars_ck: env_vars,
         materialized_inputs: actual_materialized_inputs,
         outputs: captured.records,
@@ -497,7 +498,13 @@ fn build_env_vars(
             } else {
                 Some(EnvVarSource::Inherited)
             };
-            (name.clone(), EnvVarEntry { hash_ck: Hash::from_content(value.as_bytes()), source_nk })
+            (
+                name.clone(),
+                EnvVarEntry {
+                    hash_ck: DerivedHash::from(Hash::from_content(value.as_bytes())),
+                    source_nk,
+                },
+            )
         })
         .collect()
 }
@@ -511,6 +518,7 @@ mod tests {
 
     use super::{build_env_vars, execute_step};
     use crate::config::{OutputCaptureSpec, SaveMode, WorkflowStepSpec};
+    use crate::derived_hash::DerivedHash;
     use crate::orchestration::protocol::{
         StepExecutionBundle, StepExecutionRequest, UnifiedNickelDocument, UnifiedToolSpec,
     };
@@ -667,10 +675,12 @@ mod tests {
         assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
 
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
+        state
+            .tool_call_instances
+            .insert(DerivedHash::from(first.instance_key), first.instance.clone());
         state.step_instances.insert(
             "test-workflow".to_string(),
-            BTreeMap::from([("step-a-echo".to_string(), first.instance_key)]),
+            BTreeMap::from([("step-a-echo".to_string(), DerivedHash::from(first.instance_key))]),
         );
 
         let second = execute_echo_step(
@@ -781,7 +791,9 @@ mod tests {
         );
 
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
+        state
+            .tool_call_instances
+            .insert(DerivedHash::from(first.instance_key), first.instance.clone());
         let second = execute_echo_step(
             &cas,
             state,
@@ -840,7 +852,13 @@ mod tests {
         let result_output =
             downgraded.outputs.get_mut("result").expect("echo step records result output");
         result_output.hash_nk = Some(Hash::from_content(b"missing-blob"));
-        let v7_key = derive_instance_key_v7(&downgraded.tool_call_id, &downgraded.command_args);
+        let unkeyed_args: Vec<Hash> = downgraded
+            .command_args
+            .iter()
+            .copied()
+            .map(|value| value.as_unkeyed().expect("a legacy key argument is unkeyed"))
+            .collect();
+        let v7_key = derive_instance_key_v7(&downgraded.tool_call_id, &unkeyed_args);
         assert_ne!(v7_key, first.instance_key);
 
         let output_tokens: BTreeMap<String, String> = downgraded
@@ -851,7 +869,7 @@ mod tests {
         let migrated_v8_key = derive_instance_key_for_version(
             INSTANCE_KEY_VERSION,
             &downgraded.tool_call_id,
-            &downgraded.command_args,
+            &unkeyed_args,
             Some(&V8KeyMaterial {
                 output_tokens: &output_tokens,
                 materialized_inputs: &downgraded.materialized_inputs,
@@ -860,10 +878,10 @@ mod tests {
         .expect("v8 key derivable for migrated record");
 
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(v7_key, downgraded);
+        state.tool_call_instances.insert(DerivedHash::from(v7_key), downgraded);
         state.step_instances.insert(
             "test-workflow".to_string(),
-            BTreeMap::from([("step-a-echo".to_string(), v7_key)]),
+            BTreeMap::from([("step-a-echo".to_string(), DerivedHash::from(v7_key))]),
         );
 
         let bundle =
@@ -949,7 +967,9 @@ mod tests {
         .await;
 
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
+        state
+            .tool_call_instances
+            .insert(DerivedHash::from(first.instance_key), first.instance.clone());
 
         let second = execute_echo_step(
             &cas,
@@ -1028,7 +1048,9 @@ mod tests {
         assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
 
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
+        state
+            .tool_call_instances
+            .insert(DerivedHash::from(first.instance_key), first.instance.clone());
 
         let second = execute_echo_step(
             &cas,
@@ -1082,7 +1104,9 @@ mod tests {
         assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
 
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
+        state
+            .tool_call_instances
+            .insert(DerivedHash::from(first.instance_key), first.instance.clone());
 
         let second = execute_echo_step(
             &cas,
@@ -1273,7 +1297,9 @@ mod tests {
         );
 
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
+        state
+            .tool_call_instances
+            .insert(DerivedHash::from(first.instance_key), first.instance.clone());
 
         let second = execute_echo_step(
             &cas,
@@ -1300,7 +1326,9 @@ mod tests {
             "the reusing step must be recorded beside the step that executed the work",
         );
 
-        state.tool_call_instances.insert(second.instance_key, second.instance.clone());
+        state
+            .tool_call_instances
+            .insert(DerivedHash::from(second.instance_key), second.instance.clone());
         let third =
             execute_echo_step(&cas, state, "step-b-echo", tool_defaults, BTreeMap::new(), required)
                 .await;
@@ -1336,8 +1364,8 @@ mod tests {
             &BTreeMap::new(),
         );
         let record = &records["FOO"];
-        assert_eq!(record.hash_ck, Hash::from_content(b"raw-secret"));
-        assert_ne!(record.hash_ck, Hash::from_content(b"raw-secret-other"));
+        assert_eq!(record.hash_ck, DerivedHash::from(Hash::from_content(b"raw-secret")));
+        assert_ne!(record.hash_ck, DerivedHash::from(Hash::from_content(b"raw-secret-other")));
     }
 
     #[test]
@@ -1367,12 +1395,12 @@ mod tests {
         );
         assert_eq!(
             records["DOC"].hash_ck,
-            Hash::from_content(b"fixed"),
+            DerivedHash::from(Hash::from_content(b"fixed")),
             "literal entries are still hashed, never stored literally",
         );
         assert_eq!(
             records["HOST"].hash_ck,
-            Hash::from_content(b"ambient"),
+            DerivedHash::from(Hash::from_content(b"ambient")),
             "inherited entries are still hashed, never stored literally",
         );
     }

@@ -1162,6 +1162,7 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+    use crate::derived_hash::DerivedHash;
     use crate::state::ConductorState;
 
     /// Explicit config-doc paths are used as-is (existing files only), in
@@ -1314,7 +1315,7 @@ mod tests {
         let key = Hash::from_content(format!("{}/{}", step.workflow_id, step.step_id).as_bytes());
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
-            key,
+            DerivedHash::from(key),
             crate::state::ToolCallInstance {
                 key_version: 8,
                 attempted_key_version_nk: 8,
@@ -1370,11 +1371,12 @@ mod tests {
             .expect("load state file")
             .expect("state file must exist");
         assert!(
-            on_disk.tool_call_instances[&left_key].invalidated_at_nk.is_some(),
+            on_disk.tool_call_instances[&DerivedHash::from(left_key)].invalidated_at_nk.is_some(),
             "the targeted workflow's instance must be marked",
         );
         assert_eq!(
-            on_disk.tool_call_instances[&right_key].invalidated_at_nk, None,
+            on_disk.tool_call_instances[&DerivedHash::from(right_key)].invalidated_at_nk,
+            None,
             "another workflow's same-named step must be untouched",
         );
     }
@@ -1398,7 +1400,7 @@ mod tests {
         let on_disk = load_state_file(conductor.storage_paths())
             .expect("load state file")
             .expect("state file must exist");
-        let marked_at = on_disk.tool_call_instances[&key]
+        let marked_at = on_disk.tool_call_instances[&DerivedHash::from(key)]
             .invalidated_at_nk
             .expect("the marker must reach the file");
 
@@ -1409,7 +1411,10 @@ mod tests {
         let on_disk = load_state_file(conductor.storage_paths())
             .expect("load state file")
             .expect("state file must exist");
-        assert_eq!(on_disk.tool_call_instances[&key].invalidated_at_nk, Some(marked_at));
+        assert_eq!(
+            on_disk.tool_call_instances[&DerivedHash::from(key)].invalidated_at_nk,
+            Some(marked_at)
+        );
 
         // A step no instance served reaches nothing and says so.
         let unrelated = conductor
@@ -1423,7 +1428,7 @@ mod tests {
         let on_disk = load_state_file(conductor.storage_paths())
             .expect("load state file")
             .expect("state file must exist");
-        assert_eq!(on_disk.tool_call_instances[&key].invalidated_at_nk, None);
+        assert_eq!(on_disk.tool_call_instances[&DerivedHash::from(key)].invalidated_at_nk, None);
     }
 
     /// Clearing a marker that is not there changes nothing, including the file.
@@ -1533,11 +1538,13 @@ mod tests {
         live_instance.last_referenced_at_nk = mediapm_utils::Timestamp::now();
         let mut superseded_instance = bare_instance(superseded);
         superseded_instance.last_referenced_at_nk = mediapm_utils::Timestamp::from_unix_nanos(0);
-        state.tool_call_instances.insert(live, live_instance);
-        state.tool_call_instances.insert(superseded, superseded_instance);
+        state.tool_call_instances.insert(DerivedHash::from(live), live_instance);
+        state.tool_call_instances.insert(DerivedHash::from(superseded), superseded_instance);
         state.conductor_gc_ran_at = mediapm_utils::Timestamp::now();
-        state.step_instances =
-            BTreeMap::from([("default".to_string(), BTreeMap::from([("step".to_string(), live)]))]);
+        state.step_instances = BTreeMap::from([(
+            "default".to_string(),
+            BTreeMap::from([("step".to_string(), DerivedHash::from(live))]),
+        )]);
         save_state_file(&paths, &state).expect("seed state file");
 
         let conductor = Conductor::new(paths, mediapm_cas::new_in_memory_cas());
@@ -1549,11 +1556,11 @@ mod tests {
             .expect("load state file")
             .expect("state file must exist");
         assert!(
-            !on_disk.tool_call_instances.contains_key(&superseded),
+            !on_disk.tool_call_instances.contains_key(&DerivedHash::from(superseded)),
             "the eviction must reach the file: {on_disk:?}",
         );
         assert!(
-            on_disk.tool_call_instances.contains_key(&live),
+            on_disk.tool_call_instances.contains_key(&DerivedHash::from(live)),
             "a seeded instance survives the pass and the write",
         );
     }
@@ -1600,7 +1607,7 @@ mod tests {
         assert_eq!(loaded, state, "the file must hold the whole document");
         let written = std::fs::read_to_string(&paths.state_file_path).expect("read state file");
         assert!(
-            !written.contains("instance_key"),
+            !written.contains("\"instance_key\":"),
             "the record is filed under its key and must not repeat it: {written}",
         );
         assert!(
@@ -1727,9 +1734,11 @@ mod tests {
         let root = paths.state_file_path.parent().expect("state parent").to_path_buf();
         let live = Hash::from_content(b"live");
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(live, bare_instance(live));
-        state.step_instances =
-            BTreeMap::from([("default".to_string(), BTreeMap::from([("step".to_string(), live)]))]);
+        state.tool_call_instances.insert(DerivedHash::from(live), bare_instance(live));
+        state.step_instances = BTreeMap::from([(
+            "default".to_string(),
+            BTreeMap::from([("step".to_string(), DerivedHash::from(live))]),
+        )]);
         save_state_file(&paths, &state).expect("seed state file");
 
         let mut conductor = Conductor::new(paths, mediapm_cas::new_in_memory_cas());
@@ -1800,9 +1809,11 @@ mod tests {
         let paths = RuntimeStoragePaths::new(dir.path());
         let live = Hash::from_content(b"live");
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(live, bare_instance(live));
-        state.step_instances =
-            BTreeMap::from([("default".to_string(), BTreeMap::from([("step".to_string(), live)]))]);
+        state.tool_call_instances.insert(DerivedHash::from(live), bare_instance(live));
+        state.step_instances = BTreeMap::from([(
+            "default".to_string(),
+            BTreeMap::from([("step".to_string(), DerivedHash::from(live))]),
+        )]);
         save_state_file(&paths, &state).expect("seed state file");
 
         let mut conductor = Conductor::new(paths, mediapm_cas::new_in_memory_cas());
@@ -1842,9 +1853,11 @@ mod tests {
         let paths = RuntimeStoragePaths::new(dir.path());
         let live = Hash::from_content(b"live");
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(live, bare_instance(live));
-        state.step_instances =
-            BTreeMap::from([("default".to_string(), BTreeMap::from([("step".to_string(), live)]))]);
+        state.tool_call_instances.insert(DerivedHash::from(live), bare_instance(live));
+        state.step_instances = BTreeMap::from([(
+            "default".to_string(),
+            BTreeMap::from([("step".to_string(), DerivedHash::from(live))]),
+        )]);
         save_state_file(&paths, &state).expect("seed state file");
 
         let cas = mediapm_cas::new_in_memory_cas();
@@ -1895,9 +1908,11 @@ mod tests {
         let paths = RuntimeStoragePaths::new(dir.path());
         let live = Hash::from_content(b"live");
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(live, bare_instance(live));
-        state.step_instances =
-            BTreeMap::from([("default".to_string(), BTreeMap::from([("step".to_string(), live)]))]);
+        state.tool_call_instances.insert(DerivedHash::from(live), bare_instance(live));
+        state.step_instances = BTreeMap::from([(
+            "default".to_string(),
+            BTreeMap::from([("step".to_string(), DerivedHash::from(live))]),
+        )]);
         save_state_file(&paths, &state).expect("seed state file");
 
         let state_path = paths.state_file_path.clone();
@@ -2049,9 +2064,7 @@ mod tests {
         }
     }
 
-    fn downgrade_step_a_instance_to_v7(
-        state: &mut crate::state::ConductorState,
-    ) -> mediapm_cas::Hash {
+    fn downgrade_step_a_instance_to_v7(state: &mut crate::state::ConductorState) -> DerivedHash {
         use crate::instance_key::{V7_INSTANCE_KEY_VERSION, derive_instance_key_v7};
 
         let step_a_key = state
@@ -2062,7 +2075,14 @@ mod tests {
             .expect("step-a pointer");
         let mut step_a =
             state.tool_call_instances.get(&step_a_key).cloned().expect("step-a instance");
-        let v7_key = derive_instance_key_v7(&step_a.tool_call_id, &step_a.command_args);
+        let unkeyed_args: Vec<Hash> = step_a
+            .command_args
+            .iter()
+            .copied()
+            .map(|value| value.as_unkeyed().expect("a legacy key argument is unkeyed"))
+            .collect();
+        let v7_hash = derive_instance_key_v7(&step_a.tool_call_id, &unkeyed_args);
+        let v7_key = DerivedHash::from(v7_hash);
         assert_ne!(v7_key, step_a_key, "downgrade requires a different v7 key");
         step_a.key_version = V7_INSTANCE_KEY_VERSION;
         step_a.attempted_key_version_nk = V7_INSTANCE_KEY_VERSION;

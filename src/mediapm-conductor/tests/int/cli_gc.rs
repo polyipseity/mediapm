@@ -18,11 +18,17 @@ use std::path::Path;
 
 use bytes::Bytes;
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
+use mediapm_conductor::derived_hash::DerivedHash;
 use mediapm_conductor::{
     CapturedOutput, ConductorState, RuntimeStoragePaths, decode_state_json, encode_state_json,
 };
 
 use super::gc::sample_instance;
+
+/// Wraps a test key in the unkeyed digest the state stores.
+fn dk(hash: Hash) -> DerivedHash {
+    DerivedHash::from(hash)
+}
 use super::gc_automatic::BACKDATE_SECONDS;
 use crate::{
     doc_with_workflows, echo_step, echo_tool, run_binary, workflow_with_steps,
@@ -62,10 +68,10 @@ async fn write_starting_state(
                     saved_nk: true,
                 },
             )]);
-            state.tool_call_instances.insert(key, instance);
+            state.tool_call_instances.insert(dk(key), instance);
             state
                 .step_instances
-                .insert(workflow.to_string(), BTreeMap::from([("s1".to_string(), key)]));
+                .insert(workflow.to_string(), BTreeMap::from([("s1".to_string(), dk(key))]));
             Some((key, blob))
         }
         None => None,
@@ -81,7 +87,7 @@ async fn write_starting_state(
         "result".to_string(),
         CapturedOutput { capture: "stdout".to_string(), hash_nk: Some(aged_blob), saved_nk: true },
     )]);
-    state.tool_call_instances.insert(aged, instance);
+    state.tool_call_instances.insert(dk(aged), instance);
     super::gc_automatic::backdate(&mut state, &aged.to_hex(), BACKDATE_SECONDS);
 
     store.flush().await.expect("stage the blobs");
@@ -165,11 +171,11 @@ async fn the_spawned_gc_pass_starts_the_clock_then_reclaims_the_aged_record() {
     );
     let after_second = read_state(&state_file);
     assert!(
-        !after_second.tool_call_instances.contains_key(&aged),
+        !after_second.tool_call_instances.contains_key(&dk(aged)),
         "the record past its TTL must be gone from the state file"
     );
     assert!(
-        after_second.tool_call_instances.contains_key(&live_key),
+        after_second.tool_call_instances.contains_key(&dk(live_key)),
         "the seeded record must survive the same pass"
     );
 
@@ -231,7 +237,7 @@ async fn the_spawned_gc_pass_abstains_on_a_workflow_that_never_ran() {
 
     let after = read_state(&state_file);
     assert!(
-        after.tool_call_instances.contains_key(&aged),
+        after.tool_call_instances.contains_key(&dk(aged)),
         "an abstaining pass must not evict, however old the record is"
     );
     assert_eq!(
